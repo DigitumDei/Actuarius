@@ -1,0 +1,13 @@
+services:
+  actuarius:
+    build: .
+    image: actuarius:latest
+    env_file:
+      - .env
+    volumes:
+      - actuarius_data:/data
+    restart: unless-stopped
+
+volumes:
+  actuarius_data:
+
