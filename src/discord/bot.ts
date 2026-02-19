@@ -185,7 +185,7 @@ export class ActuariusBot {
       });
 
       await interaction.editReply(
-        `Connected \`${inserted.full_name}\` to <#${inserted.channel_id}>.\nUse \`/ask repo:${inserted.full_name} prompt:<text>\` in that channel.`
+        `Connected \`${inserted.full_name}\` to <#${inserted.channel_id}>.\nUse \`/ask prompt:<text>\` in that channel.`
       );
     } catch (error) {
       if (error instanceof GitHubRepoLookupError) {
@@ -233,7 +233,6 @@ export class ActuariusBot {
       return;
     }
 
-    const rawRepo = interaction.options.getString("repo", true);
     const prompt = interaction.options.getString("prompt", true).trim();
 
     if (!prompt) {
@@ -241,24 +240,21 @@ export class ActuariusBot {
       return;
     }
 
-    const parsedReference = parseRepoReference(rawRepo);
-    if (!parsedReference) {
-      await interaction.reply({ content: "Use repo format `owner/name`.", ephemeral: true });
-      return;
-    }
+    const resolvedChannelId =
+      interaction.channel && interaction.channel.isThread() ? interaction.channel.parentId : interaction.channelId;
 
-    const repo = this.db.getRepoByFullName(interaction.guildId, parsedReference.fullName);
-    if (!repo) {
+    if (!resolvedChannelId) {
       await interaction.reply({
-        content: `Repo \`${parsedReference.fullName}\` is not connected in this server. Use \`/connect-repo\` first.`,
+        content: "Could not resolve a parent channel for this thread.",
         ephemeral: true
       });
       return;
     }
 
-    if (interaction.channelId !== repo.channel_id) {
+    const repo = this.db.getRepoByChannelId(interaction.guildId, resolvedChannelId);
+    if (!repo) {
       await interaction.reply({
-        content: `Run this in <#${repo.channel_id}> so request threads stay tied to that repo channel.`,
+        content: "This channel (or its parent thread channel) is not mapped to a repository. Run `/connect-repo` first.",
         ephemeral: true
       });
       return;

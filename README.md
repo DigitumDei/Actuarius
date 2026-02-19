@@ -84,7 +84,7 @@ docker run --rm \
 
 - Lists connected repos for the current Discord server.
 
-### `/ask repo:<owner/name> prompt:<text>`
+### `/ask prompt:<text>`
 
 - Must be run in the mapped repo channel.
 - Creates a new thread automatically.

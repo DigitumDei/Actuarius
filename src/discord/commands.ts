@@ -14,9 +14,6 @@ export const commandBuilders = [
   new SlashCommandBuilder()
     .setName("ask")
     .setDescription("Create a request thread in the connected repo channel.")
-    .addStringOption((option) =>
-      option.setName("repo").setDescription("Repo as owner/name (must already be connected).").setRequired(true)
-    )
     .addStringOption((option) => option.setName("prompt").setDescription("Request text for this thread.").setRequired(true))
 ];
 
@@ -35,4 +32,3 @@ export async function registerSlashCommands(config: AppConfig, logger: pino.Logg
   await rest.put(Routes.applicationCommands(config.discordClientId), { body });
   logger.info("Registered global slash commands");
 }
-

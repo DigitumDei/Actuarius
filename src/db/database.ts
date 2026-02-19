@@ -90,6 +90,21 @@ export class AppDatabase {
     };
   }
 
+  public getRepoByChannelId(guildId: string, channelId: string): RepoRow | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM repos WHERE guild_id = ? AND channel_id = ?")
+      .get(guildId, channelId) as (RepoRow & { id: number | bigint }) | undefined;
+
+    if (!row) {
+      return undefined;
+    }
+
+    return {
+      ...row,
+      id: toNumber(row.id)
+    };
+  }
+
   public listReposByGuild(guildId: string): RepoRow[] {
     const rows = this.db.prepare("SELECT * FROM repos WHERE guild_id = ? ORDER BY created_at ASC").all(guildId) as unknown as Array<
       RepoRow & { id: number | bigint }
