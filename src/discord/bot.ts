@@ -15,6 +15,7 @@ import { commandBuilders } from "./commands.js";
 import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
 import { GitHubRepoLookupError, lookupRepo, parseRepoReference } from "../services/githubService.js";
+import { GitWorkspaceError, ensureRepoCheckedOutToMaster } from "../services/gitWorkspaceService.js";
 
 export class ActuariusBot {
   private readonly client: Client;
@@ -107,6 +108,9 @@ export class ActuariusBot {
       case "connect-repo":
         await this.handleConnectRepo(interaction);
         return;
+      case "sync-repo":
+        await this.handleSyncRepo(interaction);
+        return;
       case "repos":
         await this.handleRepos(interaction);
         return;
@@ -162,6 +166,8 @@ export class ActuariusBot {
         return;
       }
 
+      const checkout = await ensureRepoCheckedOutToMaster(this.config.reposRootPath, lookup);
+
       const channelName = buildRepoChannelName(
         lookup.owner,
         lookup.repo,
@@ -185,7 +191,11 @@ export class ActuariusBot {
       });
 
       await interaction.editReply(
-        `Connected \`${inserted.full_name}\` to <#${inserted.channel_id}>.\nUse \`/ask prompt:<text>\` in that channel.`
+        [
+          `Connected \`${inserted.full_name}\` to <#${inserted.channel_id}>.`,
+          `Checked out \`master\` at \`${checkout.localPath}\`.`,
+          "Use `/ask prompt:<text>` in that channel."
+        ].join("\n")
       );
     } catch (error) {
       if (error instanceof GitHubRepoLookupError) {
@@ -200,6 +210,18 @@ export class ActuariusBot {
         }
 
         await interaction.editReply(`GitHub lookup failed: ${error.message}`);
+        return;
+      }
+
+      if (error instanceof GitWorkspaceError) {
+        if (error.code === "MASTER_BRANCH_MISSING") {
+          await interaction.editReply(
+            "Repo connected to GitHub lookup, but neither `master` nor `main` was found on origin to source local `master`."
+          );
+          return;
+        }
+
+        await interaction.editReply(`Git checkout failed: ${error.message}`);
         return;
       }
 
@@ -225,6 +247,80 @@ export class ActuariusBot {
       content: ["Connected repositories:", ...lines].join("\n"),
       ephemeral: true
     });
+  }
+
+  private async handleSyncRepo(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to sync a repository checkout.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const rawRepo = interaction.options.getString("repo");
+    const resolvedChannelId =
+      interaction.channel && interaction.channel.isThread() ? interaction.channel.parentId : interaction.channelId;
+
+    let repo = null;
+
+    if (rawRepo) {
+      const parsedReference = parseRepoReference(rawRepo);
+      if (!parsedReference) {
+        await interaction.reply({
+          content: "Invalid repo format. Use `owner/name` or `https://github.com/owner/name`.",
+          ephemeral: true
+        });
+        return;
+      }
+
+      repo = this.db.getRepoByFullName(interaction.guildId, parsedReference.fullName);
+    } else if (resolvedChannelId) {
+      repo = this.db.getRepoByChannelId(interaction.guildId, resolvedChannelId);
+    }
+
+    if (!repo) {
+      await interaction.reply({
+        content:
+          "No connected repo could be resolved. Provide `repo:<owner/name>` or run this in a mapped repo channel/thread.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const checkout = await ensureRepoCheckedOutToMaster(this.config.reposRootPath, {
+        owner: repo.owner,
+        repo: repo.repo,
+        fullName: repo.full_name
+      });
+
+      await interaction.editReply(
+        [`Synced \`${repo.full_name}\`.`, `Checked out \`master\` at \`${checkout.localPath}\`.`].join("\n")
+      );
+    } catch (error) {
+      if (error instanceof GitWorkspaceError) {
+        if (error.code === "MASTER_BRANCH_MISSING") {
+          await interaction.editReply(
+            "Connected repo found, but neither `master` nor `main` was found on origin to source local `master`."
+          );
+          return;
+        }
+
+        await interaction.editReply(`Git checkout failed: ${error.message}`);
+        return;
+      }
+
+      this.logger.error({ error }, "sync-repo failed");
+      await interaction.editReply("Failed to sync repository due to an unexpected error.");
+    }
   }
 
   private async handleAsk(interaction: ChatInputCommandInteraction): Promise<void> {

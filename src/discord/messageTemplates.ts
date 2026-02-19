@@ -3,6 +3,7 @@ export function buildHelpText(): string {
     "**Actuarius Commands**",
     "- `/help` Show this command list.",
     "- `/connect-repo repo:<owner/name>` Link a public GitHub repo to this server and create its channel.",
+    "- `/sync-repo [repo:<owner/name>]` Sync an existing connected repo checkout to `master`.",
     "- `/repos` List connected repos and their channels.",
     "- `/ask prompt:<text>` Create a new thread for this request in the current repo channel.",
     "",

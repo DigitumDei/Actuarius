@@ -17,6 +17,7 @@ Discord bot container that links GitHub repos to Discord channels and creates re
 - Registers slash commands:
   - `/help`
   - `/connect-repo`
+  - `/sync-repo`
   - `/repos`
   - `/ask`
 - Creates one dedicated channel per connected repo (per Discord server).
@@ -48,7 +49,9 @@ Copy `.env.example` to `.env` and set:
 - `DISCORD_TOKEN` (required)
 - `DISCORD_CLIENT_ID` (required)
 - `DISCORD_GUILD_ID` (optional, for fast guild-scoped command registration during development)
+- `GH_TOKEN` (recommended for GitHub CLI operations)
 - `DATABASE_PATH` (default `/data/app.db`)
+- `REPOS_ROOT_PATH` (default `/data/repos`)
 - `LOG_LEVEL` (default `info`)
 - `THREAD_AUTO_ARCHIVE_MINUTES` (`60`, `1440`, `4320`, or `10080`)
 
@@ -77,8 +80,16 @@ docker run --rm \
 - Requires `Manage Server` permission.
 - Verifies repo with `gh repo view`.
 - Public repos only in v1.
+- Checks out the repository locally and forces branch to `master`.
 - Creates channel `repo-<owner>-<repo>` (normalized).
 - Stores guild->repo->channel mapping in SQLite.
+
+### `/sync-repo [repo:<owner/name>]`
+
+- Requires `Manage Server` permission.
+- Re-syncs an existing connected repository checkout.
+- Checks out local branch `master` from `origin/master`.
+- If `repo` is omitted, infers from the current mapped repo channel (or its thread parent).
 
 ### `/repos`
 

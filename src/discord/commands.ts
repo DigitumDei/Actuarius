@@ -10,6 +10,15 @@ export const commandBuilders = [
     .addStringOption((option) =>
       option.setName("repo").setDescription("GitHub repo as owner/name or https://github.com/owner/name").setRequired(true)
     ),
+  new SlashCommandBuilder()
+    .setName("sync-repo")
+    .setDescription("Sync an already connected repo checkout to origin/master.")
+    .addStringOption((option) =>
+      option
+        .setName("repo")
+        .setDescription("Optional owner/name. If omitted, infer from current repo channel or thread.")
+        .setRequired(false)
+    ),
   new SlashCommandBuilder().setName("repos").setDescription("List repos connected in this Discord server."),
   new SlashCommandBuilder()
     .setName("ask")
@@ -17,7 +26,7 @@ export const commandBuilders = [
     .addStringOption((option) => option.setName("prompt").setDescription("Request text for this thread.").setRequired(true))
 ];
 
-export type CommandName = "help" | "connect-repo" | "repos" | "ask";
+export type CommandName = "help" | "connect-repo" | "sync-repo" | "repos" | "ask";
 
 export async function registerSlashCommands(config: AppConfig, logger: pino.Logger): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(config.discordToken);

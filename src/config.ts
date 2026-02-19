@@ -21,6 +21,7 @@ const envSchema = z.object({
   DISCORD_CLIENT_ID: z.string().min(1),
   DISCORD_GUILD_ID: z.string().min(1).optional(),
   DATABASE_PATH: z.string().default("/data/app.db"),
+  REPOS_ROOT_PATH: z.string().default("/data/repos"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   THREAD_AUTO_ARCHIVE_MINUTES: z
     .string()
@@ -39,15 +40,16 @@ if (!parsed.success) {
 const rawConfig = parsed.data;
 const databaseDirectory = dirname(rawConfig.DATABASE_PATH);
 mkdirSync(databaseDirectory, { recursive: true });
+mkdirSync(rawConfig.REPOS_ROOT_PATH, { recursive: true });
 
 export const appConfig = {
   discordToken: rawConfig.DISCORD_TOKEN,
   discordClientId: rawConfig.DISCORD_CLIENT_ID,
   discordGuildId: rawConfig.DISCORD_GUILD_ID,
   databasePath: rawConfig.DATABASE_PATH,
+  reposRootPath: rawConfig.REPOS_ROOT_PATH,
   logLevel: rawConfig.LOG_LEVEL,
   threadAutoArchiveMinutes: normalizeArchiveDuration(rawConfig.THREAD_AUTO_ARCHIVE_MINUTES)
 };
 
 export type AppConfig = typeof appConfig;
-
