@@ -22,11 +22,13 @@ Discord bot container that links GitHub repos to Discord channels and creates re
   - `/ask`
 - Creates one dedicated channel per connected repo (per Discord server).
 - Creates one thread per `/ask` request to preserve request-specific history.
+- Runs Claude for each `/ask` request in an isolated git worktree.
+- Queues `/ask` jobs with bounded per-guild concurrency.
 - Stores guild/repo/request mappings in SQLite.
 
 ## What v1 does not do
 
-- Execute Codex/Claude/Gemini tasks from Discord requests yet.
+- Execute Codex/Gemini tasks from Discord requests yet.
 - Support private repos.
 - Use GitHub App installation flow.
 
@@ -54,6 +56,8 @@ Copy `.env.example` to `.env` and set:
 - `REPOS_ROOT_PATH` (default `/data/repos`)
 - `LOG_LEVEL` (default `info`)
 - `THREAD_AUTO_ARCHIVE_MINUTES` (`60`, `1440`, `4320`, or `10080`)
+- `ASK_CONCURRENCY_PER_GUILD` (default `3`)
+- `ASK_EXECUTION_TIMEOUT_MS` (default `1200000`)
 
 ## Local development
 
@@ -100,7 +104,9 @@ docker run --rm \
 - Must be run in the mapped repo channel.
 - Creates a new thread automatically.
 - Posts the prompt in the thread.
-- Persists request metadata for history/audit.
+- Queues the request and runs Claude in a per-request worktree rooted under `REPOS_ROOT_PATH/.worktrees`.
+- Posts a final completion/failure message in the thread.
+- Persists request metadata and lifecycle status for history/audit.
 
 ## Data model
 

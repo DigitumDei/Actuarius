@@ -16,17 +16,34 @@ import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
 import { GitHubRepoLookupError, lookupRepo, parseRepoReference } from "../services/githubService.js";
 import { GitWorkspaceError, ensureRepoCheckedOutToMaster } from "../services/gitWorkspaceService.js";
+import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
+import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
+import { cleanupRequestWorktree, createRequestWorktree, RequestWorktreeError } from "../services/requestWorktreeService.js";
+
+const DISCORD_MESSAGE_LIMIT = 2_000;
+const CLAUDE_RESULT_LIMIT = 1_500;
+
+function clipForDiscord(input: string, maxLength: number): string {
+  const text = input.trim();
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength - 15).trimEnd()}\n...(truncated)`;
+}
 
 export class ActuariusBot {
   private readonly client: Client;
   private readonly config: AppConfig;
   private readonly logger: pino.Logger;
   private readonly db: AppDatabase;
+  private readonly requestQueue: RequestExecutionQueue;
 
   public constructor(config: AppConfig, logger: pino.Logger, db: AppDatabase) {
     this.config = config;
     this.logger = logger;
     this.db = db;
+    this.requestQueue = new RequestExecutionQueue(this.config.askConcurrencyPerGuild);
     this.client = new Client({
       intents: [GatewayIntentBits.Guilds]
     });
@@ -379,23 +396,138 @@ export class ActuariusBot {
         `Request by <@${interaction.user.id}>`,
         "",
         `**Prompt**`,
-        prompt,
-        "",
-        "_LLM execution is not enabled in v1. This thread is the canonical history container for the request._"
+        prompt
       ].join("\n")
     );
 
-    this.db.createRequest({
+    const request = this.db.createRequest({
       guildId: interaction.guildId,
       repoId: repo.id,
       channelId: repo.channel_id,
       threadId: thread.id,
       userId: interaction.user.id,
       prompt,
-      status: "created"
+      status: "queued"
     });
 
-    await interaction.editReply(`Created request thread <#${thread.id}>.`);
+    this.requestQueue.enqueue(interaction.guildId, async () => {
+      await this.runQueuedRequest({
+        requestId: request.id,
+        threadId: thread.id,
+        repo: {
+          owner: repo.owner,
+          repo: repo.repo,
+          fullName: repo.full_name
+        },
+        prompt
+      });
+    });
+
+    await interaction.editReply(`Created request thread <#${thread.id}>. Request queued for Claude execution.`);
+  }
+
+  private async runQueuedRequest(input: {
+    requestId: number;
+    threadId: string;
+    repo: {
+      owner: string;
+      repo: string;
+      fullName: string;
+    };
+    prompt: string;
+  }): Promise<void> {
+    let worktreePath: string | null = null;
+    this.db.updateRequestStatus(input.requestId, "running");
+
+    const channel = await this.client.channels.fetch(input.threadId);
+    if (!channel || !channel.isThread()) {
+      this.db.updateRequestStatus(input.requestId, "failed");
+      this.logger.error({ requestId: input.requestId, threadId: input.threadId }, "Request thread no longer available");
+      return;
+    }
+
+    await channel.send("Claude execution started.");
+
+    try {
+      await ensureRepoCheckedOutToMaster(this.config.reposRootPath, {
+        owner: input.repo.owner,
+        repo: input.repo.repo,
+        fullName: input.repo.fullName
+      });
+
+      const worktree = await createRequestWorktree(
+        this.config.reposRootPath,
+        {
+          owner: input.repo.owner,
+          repo: input.repo.repo,
+          fullName: input.repo.fullName
+        },
+        input.requestId
+      );
+      worktreePath = worktree.path;
+
+      const result = await runClaudeRequest({
+        prompt: input.prompt,
+        cwd: worktree.path,
+        timeoutMs: this.config.askExecutionTimeoutMs
+      });
+
+      const response = [
+        "**Claude execution completed**",
+        "",
+        "```text",
+        clipForDiscord(result.text, CLAUDE_RESULT_LIMIT),
+        "```"
+      ].join("\n");
+
+      await channel.send(
+        response.length > DISCORD_MESSAGE_LIMIT
+          ? `**Claude execution completed**\n\n${clipForDiscord(result.text, DISCORD_MESSAGE_LIMIT - 40)}`
+          : response
+      );
+      this.db.updateRequestStatus(input.requestId, "succeeded");
+    } catch (error) {
+      this.db.updateRequestStatus(input.requestId, "failed");
+      const message = this.describeExecutionError(error);
+      await channel.send(`**Claude execution failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
+      this.logger.error({ error, requestId: input.requestId }, "Queued Claude request failed");
+    } finally {
+      if (worktreePath) {
+        try {
+          await cleanupRequestWorktree(
+            this.config.reposRootPath,
+            {
+              owner: input.repo.owner,
+              repo: input.repo.repo,
+              fullName: input.repo.fullName
+            },
+            worktreePath
+          );
+        } catch (cleanupError) {
+          this.logger.error({ error: cleanupError, requestId: input.requestId, worktreePath }, "Worktree cleanup failed");
+        }
+      }
+    }
+  }
+
+  private describeExecutionError(error: unknown): string {
+    if (error instanceof ClaudeExecutionError) {
+      return error.message;
+    }
+
+    if (error instanceof RequestWorktreeError) {
+      return `Worktree operation failed: ${error.message}`;
+    }
+
+    if (error instanceof GitWorkspaceError) {
+      return `Repository sync failed: ${error.message}`;
+    }
+
+    if (error instanceof Error) {
+      return error.message;
+    }
+
+    return "Unknown execution error.";
   }
 
   public getCommandNames(): string[] {

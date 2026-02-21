@@ -5,10 +5,10 @@ export function buildHelpText(): string {
     "- `/connect-repo repo:<owner/name>` Link a public GitHub repo to this server and create its channel.",
     "- `/sync-repo [repo:<owner/name>]` Sync an existing connected repo checkout to `master`.",
     "- `/repos` List connected repos and their channels.",
-    "- `/ask prompt:<text>` Create a new thread for this request in the current repo channel.",
+    "- `/ask prompt:<text>` Create a new request thread and run Claude in an isolated worktree.",
     "",
     "v1 notes:",
     "- Repo support is public GitHub repos only.",
-    "- LLM CLIs are installed and health-checked, but not executed from Discord requests yet."
+    "- `/ask` uses queued Claude execution with per-guild concurrency limits."
   ].join("\n");
 }

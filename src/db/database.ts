@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import type { RepoRow, RequestRow } from "./types.js";
+import type { RepoRow, RequestRow, RequestStatus } from "./types.js";
 
 function toNumber(value: number | bigint): number {
   return typeof value === "bigint" ? Number(value) : value;
@@ -154,7 +154,7 @@ export class AppDatabase {
     threadId: string;
     userId: string;
     prompt: string;
-    status: string;
+    status: RequestStatus;
   }): RequestRow {
     const row = this.db
       .prepare(
@@ -177,6 +177,10 @@ export class AppDatabase {
       id: toNumber(row.id),
       repo_id: toNumber(row.repo_id)
     };
+  }
+
+  public updateRequestStatus(requestId: number, status: RequestStatus): void {
+    this.db.prepare("UPDATE requests SET status = ? WHERE id = ?").run(status, requestId);
   }
 
   public close(): void {
