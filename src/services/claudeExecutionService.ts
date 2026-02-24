@@ -98,15 +98,20 @@ export async function runClaudeRequest(input: ClaudeExecutionInput): Promise<Cla
     }
 
     const message = error instanceof Error ? error.message : "Claude execution failed.";
-    if (message.includes("ENOENT")) {
+    const nodeError = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string | null };
+
+    if (nodeError.code === "ENOENT") {
       throw new ClaudeExecutionError("CLAUDE_UNAVAILABLE", "Claude CLI is not installed or not available in PATH.");
     }
 
-    if (message.includes("ETIMEDOUT") || message.toLowerCase().includes("timed out")) {
+    if (
+      nodeError.code === "ETIMEDOUT" ||
+      (nodeError.killed === true && nodeError.signal === "SIGTERM") ||
+      message.toLowerCase().includes("timed out")
+    ) {
       throw new ClaudeExecutionError("TIMEOUT", `Claude execution timed out after ${input.timeoutMs}ms.`);
     }
 
     throw new ClaudeExecutionError("FAILED", message);
   }
 }
-

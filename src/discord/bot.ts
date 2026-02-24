@@ -43,7 +43,15 @@ export class ActuariusBot {
     this.config = config;
     this.logger = logger;
     this.db = db;
-    this.requestQueue = new RequestExecutionQueue(this.config.askConcurrencyPerGuild);
+    this.requestQueue = new RequestExecutionQueue(
+      this.config.askConcurrencyPerGuild,
+      ({ guildId, error }) => {
+        this.logger.error({ guildId, error }, "Queued request task failed with uncaught error");
+      },
+      ({ guildId, event, running, pending }) => {
+        this.logger.debug({ guildId, event, running, pending }, "Request queue state changed");
+      }
+    );
     this.client = new Client({
       intents: [GatewayIntentBits.Guilds]
     });
@@ -90,31 +98,39 @@ export class ActuariusBot {
         await this.handleCommand(interaction);
       } catch (error) {
         this.logger.error({ error }, "Command handler failed");
-        if (interaction.deferred || interaction.replied) {
-          await interaction.followUp({ content: "Unexpected error. Please try again.", ephemeral: true });
-        } else {
-          await interaction.reply({ content: "Unexpected error. Please try again.", ephemeral: true });
+        try {
+          if (interaction.deferred || interaction.replied) {
+            await interaction.followUp({ content: "Unexpected error. Please try again.", ephemeral: true });
+          } else {
+            await interaction.reply({ content: "Unexpected error. Please try again.", ephemeral: true });
+          }
+        } catch (responseError) {
+          this.logger.error({ error: responseError }, "Failed to send command error response");
         }
       }
     });
   }
 
   private async sendGuildWelcome(guild: Guild): Promise<void> {
-    const me = guild.members.me ?? (await guild.members.fetchMe());
-    const firstTextChannel = guild.channels.cache
-      .filter((channel): channel is GuildBasedChannel => channel.type === ChannelType.GuildText)
-      .find((channel) => channel.permissionsFor(me).has(PermissionFlagsBits.SendMessages));
+    try {
+      const me = guild.members.me ?? (await guild.members.fetchMe());
+      const firstTextChannel = guild.channels.cache
+        .filter((channel): channel is GuildBasedChannel => channel.type === ChannelType.GuildText)
+        .find((channel) => channel.permissionsFor(me).has(PermissionFlagsBits.SendMessages));
 
-    const targetChannel = guild.systemChannel && guild.systemChannel.permissionsFor(me).has(PermissionFlagsBits.SendMessages)
-      ? guild.systemChannel
-      : firstTextChannel;
+      const targetChannel = guild.systemChannel && guild.systemChannel.permissionsFor(me).has(PermissionFlagsBits.SendMessages)
+        ? guild.systemChannel
+        : firstTextChannel;
 
-    if (!targetChannel || targetChannel.type !== ChannelType.GuildText) {
-      this.logger.warn({ guildId: guild.id }, "No writable text channel found for welcome message");
-      return;
+      if (!targetChannel || targetChannel.type !== ChannelType.GuildText) {
+        this.logger.warn({ guildId: guild.id }, "No writable text channel found for welcome message");
+        return;
+      }
+
+      await targetChannel.send(buildHelpText());
+    } catch (error) {
+      this.logger.warn({ guildId: guild.id, error }, "Failed to send guild welcome message");
     }
-
-    await targetChannel.send(buildHelpText());
   }
 
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -436,19 +452,32 @@ export class ActuariusBot {
     };
     prompt: string;
   }): Promise<void> {
+    const startedAt = Date.now();
     let worktreePath: string | null = null;
-    this.db.updateRequestStatus(input.requestId, "running");
+    let statusFinalized = false;
+    let threadChannel: Awaited<ReturnType<Client["channels"]["fetch"]>> | null = null;
 
-    const channel = await this.client.channels.fetch(input.threadId);
-    if (!channel || !channel.isThread()) {
+    const markFailed = (): void => {
+      if (statusFinalized) {
+        return;
+      }
       this.db.updateRequestStatus(input.requestId, "failed");
-      this.logger.error({ requestId: input.requestId, threadId: input.threadId }, "Request thread no longer available");
-      return;
-    }
-
-    await channel.send("Claude execution started.");
+      statusFinalized = true;
+    };
 
     try {
+      this.db.updateRequestStatus(input.requestId, "running");
+
+      const channel = await this.client.channels.fetch(input.threadId);
+      if (!channel || !channel.isThread()) {
+        markFailed();
+        this.logger.error({ requestId: input.requestId, threadId: input.threadId }, "Request thread no longer available");
+        return;
+      }
+
+      threadChannel = channel;
+      await threadChannel.send("Claude execution started.");
+
       await ensureRepoCheckedOutToMaster(this.config.reposRootPath, {
         owner: input.repo.owner,
         repo: input.repo.repo,
@@ -486,11 +515,15 @@ export class ActuariusBot {
           : response
       );
       this.db.updateRequestStatus(input.requestId, "succeeded");
+      statusFinalized = true;
+      this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Queued Claude request succeeded");
     } catch (error) {
-      this.db.updateRequestStatus(input.requestId, "failed");
+      markFailed();
       const message = this.describeExecutionError(error);
-      await channel.send(`**Claude execution failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
-      this.logger.error({ error, requestId: input.requestId }, "Queued Claude request failed");
+      if (threadChannel && threadChannel.isThread()) {
+        await threadChannel.send(`**Claude execution failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
+      }
+      this.logger.error({ error, requestId: input.requestId, durationMs: Date.now() - startedAt }, "Queued Claude request failed");
     } finally {
       if (worktreePath) {
         try {
@@ -504,6 +537,15 @@ export class ActuariusBot {
             worktreePath
           );
         } catch (cleanupError) {
+          try {
+            if (threadChannel && threadChannel.isThread()) {
+              await threadChannel.send(
+                "**Warning**\n\nRequest completed but worktree cleanup failed. Manual cleanup may be required by an operator."
+              );
+            }
+          } catch (warningError) {
+            this.logger.warn({ error: warningError, requestId: input.requestId }, "Failed to send cleanup warning to thread");
+          }
           this.logger.error({ error: cleanupError, requestId: input.requestId, worktreePath }, "Worktree cleanup failed");
         }
       }

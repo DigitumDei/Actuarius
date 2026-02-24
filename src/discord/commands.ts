@@ -32,12 +32,17 @@ export async function registerSlashCommands(config: AppConfig, logger: pino.Logg
   const rest = new REST({ version: "10" }).setToken(config.discordToken);
   const body = commandBuilders.map((builder) => builder.toJSON());
 
-  if (config.discordGuildId) {
-    await rest.put(Routes.applicationGuildCommands(config.discordClientId, config.discordGuildId), { body });
-    logger.info({ guildId: config.discordGuildId }, "Registered guild slash commands");
-    return;
-  }
+  try {
+    if (config.discordGuildId) {
+      await rest.put(Routes.applicationGuildCommands(config.discordClientId, config.discordGuildId), { body });
+      logger.info({ guildId: config.discordGuildId }, "Registered guild slash commands");
+      return;
+    }
 
-  await rest.put(Routes.applicationCommands(config.discordClientId), { body });
-  logger.info("Registered global slash commands");
+    await rest.put(Routes.applicationCommands(config.discordClientId), { body });
+    logger.info("Registered global slash commands");
+  } catch (error) {
+    logger.error({ error }, "Failed to register slash commands");
+    throw error;
+  }
 }

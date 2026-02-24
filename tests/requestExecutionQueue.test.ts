@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { RequestExecutionQueue } from "../src/services/requestExecutionQueue.js";
 
 function delay(ms: number): Promise<void> {
@@ -50,5 +50,22 @@ describe("RequestExecutionQueue", () => {
     await Promise.all([a, b]);
     expect(new Set(started)).toEqual(new Set(["a", "b"]));
   });
-});
 
+  it("reports uncaught task errors via callback", async () => {
+    const error = new Error("boom");
+    const onTaskError = vi.fn();
+    const queue = new RequestExecutionQueue(1, onTaskError);
+
+    queue.enqueue("guild-1", async () => {
+      throw error;
+    });
+
+    await delay(10);
+
+    expect(onTaskError).toHaveBeenCalledTimes(1);
+    expect(onTaskError).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      error
+    });
+  });
+});

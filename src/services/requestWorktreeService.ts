@@ -70,6 +70,7 @@ export async function createRequestWorktree(
   mkdirSync(join(worktreePath, ".."), { recursive: true });
 
   try {
+    await runGit(["-C", baseCheckoutPath, "worktree", "prune"]);
     await runGit(["-C", baseCheckoutPath, "worktree", "add", "-B", branchName, worktreePath, "master"]);
     return {
       branchName,
@@ -91,17 +92,33 @@ export async function cleanupRequestWorktree(
   worktreePath: string
 ): Promise<void> {
   const baseCheckoutPath = buildRepoCheckoutPath(reposRootPath, repoIdentity.owner, repoIdentity.repo);
+  let removeFailure: unknown = null;
+  let pruneFailure: unknown = null;
 
   try {
     await runGit(["-C", baseCheckoutPath, "worktree", "remove", "--force", worktreePath]);
+  } catch (error) {
+    removeFailure = error;
+  }
+
+  try {
     await runGit(["-C", baseCheckoutPath, "worktree", "prune"]);
   } catch (error) {
-    if (error instanceof RequestWorktreeError) {
-      throw error;
-    }
-
-    const message = error instanceof Error ? error.message : "Failed to cleanup request worktree.";
-    throw new RequestWorktreeError("CLEANUP_FAILED", message);
+    pruneFailure = error;
   }
-}
 
+  if (!removeFailure && !pruneFailure) {
+    return;
+  }
+
+  const parts: string[] = [];
+  if (removeFailure) {
+    const message = removeFailure instanceof Error ? removeFailure.message : "Failed to remove request worktree.";
+    parts.push(`remove: ${message}`);
+  }
+  if (pruneFailure) {
+    const message = pruneFailure instanceof Error ? pruneFailure.message : "Failed to prune request worktrees.";
+    parts.push(`prune: ${message}`);
+  }
+  throw new RequestWorktreeError("CLEANUP_FAILED", parts.join(" | "));
+}

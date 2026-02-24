@@ -2,7 +2,24 @@ import { DatabaseSync } from "node:sqlite";
 import type { RepoRow, RequestRow, RequestStatus } from "./types.js";
 
 function toNumber(value: number | bigint): number {
-  return typeof value === "bigint" ? Number(value) : value;
+  if (typeof value === "bigint") {
+    const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
+    const minSafe = BigInt(Number.MIN_SAFE_INTEGER);
+    if (value > maxSafe || value < minSafe) {
+      throw new RangeError(`SQLite integer ${value.toString()} exceeds JS safe integer range.`);
+    }
+    return Number(value);
+  }
+
+  if (!Number.isSafeInteger(value)) {
+    throw new RangeError(`SQLite integer ${value} exceeds JS safe integer range.`);
+  }
+
+  return value;
+}
+
+function normalizeRepoFullName(fullName: string): string {
+  return fullName.trim().toLowerCase();
 }
 
 export class AppDatabase {
@@ -76,9 +93,10 @@ export class AppDatabase {
   }
 
   public getRepoByFullName(guildId: string, fullName: string): RepoRow | undefined {
+    const normalizedFullName = normalizeRepoFullName(fullName);
     const row = this.db
       .prepare("SELECT * FROM repos WHERE guild_id = ? AND lower(full_name) = lower(?)")
-      .get(guildId, fullName) as (RepoRow & { id: number | bigint }) | undefined;
+      .get(guildId, normalizedFullName) as (RepoRow & { id: number | bigint }) | undefined;
 
     if (!row) {
       return undefined;
@@ -135,7 +153,7 @@ export class AppDatabase {
         input.guildId,
         input.owner,
         input.repo,
-        input.fullName,
+        normalizeRepoFullName(input.fullName),
         input.visibility,
         input.channelId,
         input.linkedByUserId

@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const repoLocks = new Map<string, Promise<void>>();
 
 export interface RepoIdentity {
   owner: string;
@@ -75,66 +76,83 @@ export async function ensureRepoCheckedOutToMaster(
   const ownerDirectory = join(reposRootPath, sanitizePathPart(repoIdentity.owner));
   const remoteUrl = `https://github.com/${repoIdentity.owner}/${repoIdentity.repo}.git`;
 
-  mkdirSync(ownerDirectory, { recursive: true });
+  const previousLock = repoLocks.get(localPath) ?? Promise.resolve();
+  let releaseLock: () => void = () => undefined;
+  const currentLock = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+  const lockTail = previousLock.then(() => currentLock);
+  repoLocks.set(localPath, lockTail);
 
-  const hasExistingCheckout = await pathExists(localGitDirectory);
-  if (!hasExistingCheckout) {
+  await previousLock;
+
+  try {
+    mkdirSync(ownerDirectory, { recursive: true });
+
+    const hasExistingCheckout = await pathExists(localGitDirectory);
+    if (!hasExistingCheckout) {
+      try {
+        await runGit(["clone", remoteUrl, localPath]);
+      } catch (error) {
+        if (error instanceof GitWorkspaceError) {
+          throw error;
+        }
+        const message = error instanceof Error ? error.message : "Repository clone failed.";
+        throw new GitWorkspaceError("CLONE_FAILED", message);
+      }
+    }
+
+    let checkoutSourceRef = "origin/master";
     try {
-      await runGit(["clone", remoteUrl, localPath]);
+      await runGit(["-C", localPath, "remote", "set-url", "origin", remoteUrl]);
+      await runGit(["-C", localPath, "fetch", "origin", "master", "--prune"]);
     } catch (error) {
       if (error instanceof GitWorkspaceError) {
         throw error;
       }
-      const message = error instanceof Error ? error.message : "Repository clone failed.";
-      throw new GitWorkspaceError("CLONE_FAILED", message);
-    }
-  }
 
-  let checkoutSourceRef = "origin/master";
-  try {
-    await runGit(["-C", localPath, "remote", "set-url", "origin", remoteUrl]);
-    await runGit(["-C", localPath, "fetch", "origin", "master", "--prune"]);
-  } catch (error) {
-    if (error instanceof GitWorkspaceError) {
-      throw error;
-    }
+      const masterFetchMessage = error instanceof Error ? error.message : "Could not fetch origin/master.";
+      if (!isMissingRemoteRefError(masterFetchMessage)) {
+        throw new GitWorkspaceError("CHECKOUT_FAILED", masterFetchMessage);
+      }
 
-    const masterFetchMessage = error instanceof Error ? error.message : "Could not fetch origin/master.";
-    if (!isMissingRemoteRefError(masterFetchMessage)) {
-      throw new GitWorkspaceError("CHECKOUT_FAILED", masterFetchMessage);
+      try {
+        await runGit(["-C", localPath, "fetch", "origin", "main", "--prune"]);
+        checkoutSourceRef = "origin/main";
+      } catch (mainError) {
+        if (mainError instanceof GitWorkspaceError) {
+          throw mainError;
+        }
+
+        const mainFetchMessage = mainError instanceof Error ? mainError.message : "Could not fetch origin/main.";
+        if (isMissingRemoteRefError(mainFetchMessage)) {
+          throw new GitWorkspaceError(
+            "MASTER_BRANCH_MISSING",
+            `Could not fetch origin/master or origin/main for ${repoIdentity.fullName}.`
+          );
+        }
+
+        throw new GitWorkspaceError("CHECKOUT_FAILED", mainFetchMessage);
+      }
     }
 
     try {
-      await runGit(["-C", localPath, "fetch", "origin", "main", "--prune"]);
-      checkoutSourceRef = "origin/main";
-    } catch (mainError) {
-      if (mainError instanceof GitWorkspaceError) {
-        throw mainError;
+      await runGit(["-C", localPath, "checkout", "-B", "master", checkoutSourceRef]);
+    } catch (error) {
+      if (error instanceof GitWorkspaceError) {
+        throw error;
       }
+      const message = error instanceof Error ? error.message : "Could not checkout master branch.";
+      throw new GitWorkspaceError("CHECKOUT_FAILED", message);
+    }
 
-      const mainFetchMessage = mainError instanceof Error ? mainError.message : "Could not fetch origin/main.";
-      if (isMissingRemoteRefError(mainFetchMessage)) {
-        throw new GitWorkspaceError(
-          "MASTER_BRANCH_MISSING",
-          `Could not fetch origin/master or origin/main for ${repoIdentity.fullName}.`
-        );
-      }
-
-      throw new GitWorkspaceError("CHECKOUT_FAILED", mainFetchMessage);
+    return {
+      localPath
+    };
+  } finally {
+    releaseLock();
+    if (repoLocks.get(localPath) === lockTail) {
+      repoLocks.delete(localPath);
     }
   }
-
-  try {
-    await runGit(["-C", localPath, "checkout", "-B", "master", checkoutSourceRef]);
-  } catch (error) {
-    if (error instanceof GitWorkspaceError) {
-      throw error;
-    }
-    const message = error instanceof Error ? error.message : "Could not checkout master branch.";
-    throw new GitWorkspaceError("CHECKOUT_FAILED", message);
-  }
-
-  return {
-    localPath
-  };
 }
