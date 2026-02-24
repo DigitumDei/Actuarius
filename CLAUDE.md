@@ -34,7 +34,7 @@ docker-compose up --build
   → sync repo to master (gitWorkspaceService)
   → create isolated worktree (requestWorktreeService)
   → run claude CLI (claudeExecutionService)
-  → post result to thread → cleanup worktree → update DB
+  → post result to thread → update DB
 ```
 
 ### Key Files
