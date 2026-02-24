@@ -3,10 +3,12 @@ import {
   Client,
   GatewayIntentBits,
   PermissionFlagsBits,
+  type AnyThreadChannel,
   type ChatInputCommandInteraction,
   type Guild,
   type GuildBasedChannel,
-  type GuildTextBasedChannel
+  type GuildTextBasedChannel,
+  type Message
 } from "discord.js";
 import type pino from "pino";
 import type { AppConfig } from "../config.js";
@@ -18,7 +20,7 @@ import { GitHubRepoLookupError, lookupRepo, parseRepoReference } from "../servic
 import { GitWorkspaceError, ensureRepoCheckedOutToMaster } from "../services/gitWorkspaceService.js";
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
 import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
-import { cleanupRequestWorktree, createRequestWorktree, RequestWorktreeError } from "../services/requestWorktreeService.js";
+import { createRequestWorktree, RequestWorktreeError } from "../services/requestWorktreeService.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
 const CLAUDE_RESULT_LIMIT = 1_500;
@@ -30,6 +32,33 @@ function clipForDiscord(input: string, maxLength: number): string {
   }
 
   return `${text.slice(0, maxLength - 15).trimEnd()}\n...(truncated)`;
+}
+
+function parseThreadEntry(
+  content: string,
+  isBot: boolean
+): { role: "user" | "assistant"; text: string } | null {
+  if (isBot) {
+    // Initial request summary: "Request by @...\n\n**Prompt**\n<text>"
+    const promptMatch = /^Request by .+\n\n\*\*Prompt\*\*\n([\s\S]+)/u.exec(content);
+    if (promptMatch?.[1]) {
+      return { role: "user", text: promptMatch[1].trim() };
+    }
+    // Claude response in code block: "**Claude execution completed**\n\n```text\n<text>\n```"
+    const codeBlockMatch = /^\*\*Claude execution completed\*\*\n\n```text\n([\s\S]*?)\n```/u.exec(content);
+    if (codeBlockMatch?.[1]) {
+      return { role: "assistant", text: codeBlockMatch[1].trim() };
+    }
+    // Claude response without code block (long response, stripped wrapper)
+    const altMatch = /^\*\*Claude execution completed\*\*\n\n([\s\S]+)/u.exec(content);
+    if (altMatch?.[1]) {
+      return { role: "assistant", text: altMatch[1].trim() };
+    }
+    // Other bot messages are noise ("Claude execution started.", warnings, etc.)
+    return null;
+  }
+  const text = content.trim();
+  return text ? { role: "user", text } : null;
 }
 
 export class ActuariusBot {
@@ -53,7 +82,8 @@ export class ActuariusBot {
       }
     );
     this.client = new Client({
-      intents: [GatewayIntentBits.Guilds]
+      // MessageContent is a privileged intent — must be enabled in the Discord Developer Portal
+      intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
     });
   }
 
@@ -87,6 +117,14 @@ export class ActuariusBot {
     this.client.on("guildDelete", (guild) => {
       this.db.removeGuild(guild.id);
       this.logger.info({ guildId: guild.id }, "Removed guild from local state");
+    });
+
+    this.client.on("messageCreate", async (message) => {
+      try {
+        await this.handleThreadMessage(message);
+      } catch (error) {
+        this.logger.error({ error }, "Thread message handler failed");
+      }
     });
 
     this.client.on("interactionCreate", async (interaction) => {
@@ -131,6 +169,44 @@ export class ActuariusBot {
     } catch (error) {
       this.logger.warn({ guildId: guild.id, error }, "Failed to send guild welcome message");
     }
+  }
+
+  private async handleThreadMessage(message: Message): Promise<void> {
+    if (message.author.bot) return;
+    if (!message.guildId || !message.guild) return;
+    if (!message.channel.isThread()) return;
+
+    const parentId = message.channel.parentId;
+    if (!parentId) return;
+
+    const worktreePath = this.db.getWorktreeForThread(message.channelId);
+    if (!worktreePath) return;
+
+    const repo = this.db.getRepoByChannelId(message.guildId, parentId);
+    if (!repo) return;
+
+    const prompt = message.content.trim();
+    if (!prompt) return;
+
+    const request = this.db.createRequest({
+      guildId: message.guildId,
+      repoId: repo.id,
+      channelId: repo.channel_id,
+      threadId: message.channelId,
+      userId: message.author.id,
+      prompt,
+      status: "queued"
+    });
+
+    this.requestQueue.enqueue(message.guildId, async () => {
+      await this.runQueuedRequest({
+        requestId: request.id,
+        threadId: message.channelId,
+        repo: { owner: repo.owner, repo: repo.repo, fullName: repo.full_name },
+        prompt,
+        existingWorktreePath: worktreePath
+      });
+    });
   }
 
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -451,10 +527,12 @@ export class ActuariusBot {
       fullName: string;
     };
     prompt: string;
+    existingWorktreePath?: string;
   }): Promise<void> {
     const startedAt = Date.now();
     let worktreePath: string | null = null;
     let statusFinalized = false;
+    let stage = "init";
     let threadChannel: Awaited<ReturnType<Client["channels"]["fetch"]>> | null = null;
 
     const markFailed = (): void => {
@@ -467,7 +545,9 @@ export class ActuariusBot {
 
     try {
       this.db.updateRequestStatus(input.requestId, "running");
+      this.logger.info({ requestId: input.requestId, threadId: input.threadId, repo: input.repo.fullName }, "Queued request started");
 
+      stage = "fetch-thread";
       const channel = await this.client.channels.fetch(input.threadId);
       if (!channel || !channel.isThread()) {
         markFailed();
@@ -478,28 +558,60 @@ export class ActuariusBot {
       threadChannel = channel;
       await threadChannel.send("Claude execution started.");
 
-      await ensureRepoCheckedOutToMaster(this.config.reposRootPath, {
-        owner: input.repo.owner,
-        repo: input.repo.repo,
-        fullName: input.repo.fullName
-      });
-
-      const worktree = await createRequestWorktree(
-        this.config.reposRootPath,
-        {
+      if (input.existingWorktreePath) {
+        worktreePath = input.existingWorktreePath;
+        this.logger.info({ requestId: input.requestId, worktreePath }, "Reusing existing worktree for follow-up");
+      } else {
+        stage = "sync-repo";
+        this.logger.info({ requestId: input.requestId, repo: input.repo.fullName }, "Syncing repository before Claude execution");
+        await ensureRepoCheckedOutToMaster(this.config.reposRootPath, {
           owner: input.repo.owner,
           repo: input.repo.repo,
           fullName: input.repo.fullName
-        },
-        input.requestId
-      );
-      worktreePath = worktree.path;
+        });
+        this.logger.info({ requestId: input.requestId, repo: input.repo.fullName }, "Repository sync complete");
 
-      const result = await runClaudeRequest({
-        prompt: input.prompt,
-        cwd: worktree.path,
-        timeoutMs: this.config.askExecutionTimeoutMs
-      });
+        stage = "create-worktree";
+        this.logger.info({ requestId: input.requestId, repo: input.repo.fullName }, "Creating request worktree");
+        const worktree = await createRequestWorktree(
+          this.config.reposRootPath,
+          {
+            owner: input.repo.owner,
+            repo: input.repo.repo,
+            fullName: input.repo.fullName
+          },
+          input.requestId
+        );
+        worktreePath = worktree.path;
+        this.logger.info(
+          { requestId: input.requestId, branchName: worktree.branchName, worktreePath: worktree.path },
+          "Request worktree created"
+        );
+      }
+
+      this.db.updateRequestWorktreePath(input.requestId, worktreePath);
+
+      stage = "run-claude";
+      const effectivePrompt = input.existingWorktreePath
+        ? await this.buildThreadPromptWithHistory(channel, input.prompt)
+        : input.prompt;
+      this.logger.info(
+        {
+          requestId: input.requestId,
+          worktreePath,
+          timeoutMs: this.config.askExecutionTimeoutMs,
+          promptLength: effectivePrompt.length
+        },
+        "Starting Claude execution"
+      );
+      const result = await runClaudeRequest(
+        { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs },
+        this.logger
+      );
+      this.logger.info(
+        { requestId: input.requestId, outputLength: result.text.length, durationMs: Date.now() - startedAt },
+        "Claude execution finished"
+      );
 
       const response = [
         "**Claude execution completed**",
@@ -523,32 +635,10 @@ export class ActuariusBot {
       if (threadChannel && threadChannel.isThread()) {
         await threadChannel.send(`**Claude execution failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
       }
-      this.logger.error({ error, requestId: input.requestId, durationMs: Date.now() - startedAt }, "Queued Claude request failed");
-    } finally {
-      if (worktreePath) {
-        try {
-          await cleanupRequestWorktree(
-            this.config.reposRootPath,
-            {
-              owner: input.repo.owner,
-              repo: input.repo.repo,
-              fullName: input.repo.fullName
-            },
-            worktreePath
-          );
-        } catch (cleanupError) {
-          try {
-            if (threadChannel && threadChannel.isThread()) {
-              await threadChannel.send(
-                "**Warning**\n\nRequest completed but worktree cleanup failed. Manual cleanup may be required by an operator."
-              );
-            }
-          } catch (warningError) {
-            this.logger.warn({ error: warningError, requestId: input.requestId }, "Failed to send cleanup warning to thread");
-          }
-          this.logger.error({ error: cleanupError, requestId: input.requestId, worktreePath }, "Worktree cleanup failed");
-        }
-      }
+      this.logger.error(
+        { error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage },
+        "Queued Claude request failed"
+      );
     }
   }
 
@@ -570,6 +660,33 @@ export class ActuariusBot {
     }
 
     return "Unknown execution error.";
+  }
+
+  private async buildThreadPromptWithHistory(channel: AnyThreadChannel, newMessageContent: string): Promise<string> {
+    const fetched = await channel.messages.fetch({ limit: 50 });
+    const sorted = [...fetched.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+    const history: Array<{ role: "user" | "assistant"; text: string }> = [];
+    for (const msg of sorted) {
+      const isBot = msg.author.id === this.client.user?.id;
+      const entry = parseThreadEntry(msg.content, isBot);
+      if (entry) history.push(entry);
+    }
+
+    if (history.length === 0) {
+      return newMessageContent;
+    }
+
+    const lines = [
+      "This is an ongoing code assistance session. The conversation history is below.",
+      "Respond to the final [User] message.",
+      ""
+    ];
+    for (const entry of history) {
+      lines.push(`[${entry.role === "user" ? "User" : "Assistant"}]: ${entry.text}`);
+      lines.push("");
+    }
+    return lines.join("\n").trim();
   }
 
   public getCommandNames(): string[] {

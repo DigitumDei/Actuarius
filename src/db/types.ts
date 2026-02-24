@@ -28,5 +28,6 @@ export interface RequestRow {
   user_id: string;
   prompt: string;
   status: RequestStatus;
+  worktree_path: string | null;
   created_at: string;
 }

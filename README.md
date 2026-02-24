@@ -58,6 +58,8 @@ Copy `.env.example` to `.env` and set:
 - `THREAD_AUTO_ARCHIVE_MINUTES` (`60`, `1440`, `4320`, or `10080`)
 - `ASK_CONCURRENCY_PER_GUILD` (default `3`)
 - `ASK_EXECUTION_TIMEOUT_MS` (default `1200000`)
+- `CLAUDE_CREDENTIALS_FILE` (optional, path to mounted Claude `.credentials.json`)
+- `CLAUDE_CREDENTIALS_B64` (optional, base64 payload of Claude `.credentials.json`)
 
 ## Local development
 
@@ -74,6 +76,39 @@ docker run --rm \
   --name actuarius \
   --env-file .env \
   -v actuarius_data:/data \
+  actuarius:latest
+```
+
+### Local one-command startup (PowerShell)
+
+Use the helper script to build, run, persist state, and bootstrap Claude credentials:
+
+```powershell
+.\scripts\start-local.ps1
+```
+
+Useful flags:
+
+- `-SkipBuild` to skip `docker build`
+- `-Logs` to stream container logs after startup
+- `-CredentialsPath .\.claude.credentials.json` to override credential file path
+
+### Claude login persistence in Docker
+
+Avoid baking Claude credentials into the image at build time. Use runtime injection:
+
+- Mount a credentials file and set `CLAUDE_CREDENTIALS_FILE`.
+- Or pass `CLAUDE_CREDENTIALS_B64` from a secret manager.
+
+Example (mounted file):
+
+```bash
+docker run --rm \
+  --name actuarius \
+  --env-file .env \
+  -e CLAUDE_CREDENTIALS_FILE=/run/secrets/claude_credentials \
+  -v actuarius_data:/data \
+  -v /path/to/.credentials.json:/run/secrets/claude_credentials:ro \
   actuarius:latest
 ```
 

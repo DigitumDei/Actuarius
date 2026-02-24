@@ -74,6 +74,13 @@ export class AppDatabase {
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
     `);
+
+    // Incremental migrations
+    try {
+      this.db.exec("ALTER TABLE requests ADD COLUMN worktree_path TEXT");
+    } catch {
+      // Column already exists
+    }
   }
 
   public upsertGuild(id: string, name: string): void {
@@ -199,6 +206,17 @@ export class AppDatabase {
 
   public updateRequestStatus(requestId: number, status: RequestStatus): void {
     this.db.prepare("UPDATE requests SET status = ? WHERE id = ?").run(status, requestId);
+  }
+
+  public updateRequestWorktreePath(requestId: number, worktreePath: string): void {
+    this.db.prepare("UPDATE requests SET worktree_path = ? WHERE id = ?").run(worktreePath, requestId);
+  }
+
+  public getWorktreeForThread(threadId: string): string | null {
+    const row = this.db
+      .prepare("SELECT worktree_path FROM requests WHERE thread_id = ? AND worktree_path IS NOT NULL ORDER BY id DESC LIMIT 1")
+      .get(threadId) as { worktree_path: string } | undefined;
+    return row?.worktree_path ?? null;
   }
 
   public close(): void {

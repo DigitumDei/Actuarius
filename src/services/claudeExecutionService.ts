@@ -1,7 +1,55 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
+import type { Logger } from "pino";
 
-const execFileAsync = promisify(execFile);
+interface SpawnResult {
+  stdout: string;
+  stderr: string;
+}
+
+function spawnCollect(
+  file: string,
+  args: string[],
+  options: { cwd: string; timeoutMs: number; maxBuffer: number }
+): Promise<SpawnResult> {
+  return new Promise((resolve, reject) => {
+    // stdin: "ignore" prevents Claude from waiting on interactive input
+    const child = spawn(file, args, { cwd: options.cwd, stdio: ["ignore", "pipe", "pipe"] });
+
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, options.timeoutMs);
+
+    child.stdout!.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(Object.assign(new Error(`Process timed out after ${options.timeoutMs}ms`), {
+          code: "ETIMEDOUT", killed: true, signal, stdout, stderr,
+        }));
+        return;
+      }
+      if (code !== 0) {
+        reject(Object.assign(new Error(`Process exited with code ${String(code)}`), {
+          killed: false, signal, stdout, stderr,
+        }));
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
 
 export interface ClaudeExecutionInput {
   prompt: string;
@@ -60,24 +108,23 @@ export function extractTextFromClaudeJson(payload: unknown): string | null {
   return null;
 }
 
-export async function runClaudeRequest(input: ClaudeExecutionInput): Promise<ClaudeExecutionResult> {
-  const args = [
-    "-p",
-    input.prompt,
-    "--output-format",
-    "json",
-    "--permission-mode",
-    "bypassPermissions",
-    "--add-dir",
-    input.cwd
-  ];
+export async function runClaudeRequest(input: ClaudeExecutionInput, logger: Logger): Promise<ClaudeExecutionResult> {
+  // --add-dir omitted: cwd is already set to the worktree root
+  const args = ["-p", input.prompt, "--output-format", "json", "--permission-mode", "bypassPermissions"];
+
+  logger.debug({ args, cwd: input.cwd, timeoutMs: input.timeoutMs }, "Claude subprocess args");
 
   try {
-    const { stdout } = await execFileAsync("claude", args, {
+    const { stdout, stderr } = await spawnCollect("claude", args, {
       cwd: input.cwd,
-      timeout: input.timeoutMs,
-      maxBuffer: 4 * 1024 * 1024
+      timeoutMs: input.timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
     });
+
+    if (stderr) {
+      logger.debug({ stderr }, "Claude subprocess stderr");
+    }
+    logger.debug({ stdoutLength: stdout.length }, "Claude subprocess exited cleanly");
 
     let text: string | null = null;
     try {
@@ -98,7 +145,21 @@ export async function runClaudeRequest(input: ClaudeExecutionInput): Promise<Cla
     }
 
     const message = error instanceof Error ? error.message : "Claude execution failed.";
-    const nodeError = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string | null };
+    const nodeError = error as NodeJS.ErrnoException & {
+      killed?: boolean;
+      signal?: string | null;
+      stdout?: string;
+      stderr?: string;
+    };
+
+    logger.error({
+      errorCode: nodeError.code,
+      signal: nodeError.signal,
+      killed: nodeError.killed,
+      stderr: nodeError.stderr,
+      stdoutPartial: nodeError.stdout?.slice(0, 500),
+      message,
+    }, "Claude subprocess failed");
 
     if (nodeError.code === "ENOENT") {
       throw new ClaudeExecutionError("CLAUDE_UNAVAILABLE", "Claude CLI is not installed or not available in PATH.");

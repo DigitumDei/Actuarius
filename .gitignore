@@ -8,3 +8,5 @@ data/
 *.db-shm
 *.db-wal
 
+.claude.credentials.json
+.claude/
