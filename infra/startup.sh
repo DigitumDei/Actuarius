@@ -45,8 +45,8 @@ DOCKER_IMAGE=$(get_meta "env-docker-image")
 ASK_CONCURRENCY=$(get_meta "env-ask-concurrency")
 
 # --- Install redeploy helper script ---
-get_meta "env-redeploy-script" > /usr/local/bin/redeploy.sh
-chmod +x /usr/local/bin/redeploy.sh
+get_meta "env-redeploy-script" > /var/redeploy.sh
+chmod +x /var/redeploy.sh
 
 # --- Pull latest image (public ghcr.io, no auth needed) ---
 docker pull "$DOCKER_IMAGE"
