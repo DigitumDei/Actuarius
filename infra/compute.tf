@@ -40,6 +40,7 @@ resource "google_compute_instance" "actuarius" {
     env-claude-oauth-token  = var.claude_oauth_token
     env-docker-image        = var.docker_image
     env-ask-concurrency     = var.ask_concurrency
+    env-redeploy-script     = file("${path.module}/../scripts/redeploy.sh")
   }
 
   metadata_startup_script = replace(file("${path.module}/startup.sh"), "\r\n", "\n")

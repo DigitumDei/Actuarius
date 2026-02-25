@@ -116,12 +116,6 @@ Find a SHA to roll back to:
 - **GitHub UI**: repo → Commits → copy the short SHA next to any commit
 - **CLI**: `git log --oneline`
 
-#### One-time setup: copy the script onto the VM
-
-```bash
-gcloud compute scp scripts/redeploy.sh actuarius-bot:~/redeploy.sh --zone=us-east1-b
-gcloud compute ssh actuarius-bot --zone=us-east1-b --command="chmod +x ~/redeploy.sh"
-```
 
 ### Watch startup logs
 
