@@ -120,7 +120,7 @@ Find a SHA to roll back to:
 ### Watch startup logs
 
 ```bash
-gcloud compute ssh actuarius-bot --zone us-east1-b --project actuarius-488510 --tunnel-through-iap
+gcloud compute ssh actuarius-bot --zone us-east1-b --project <YOUR_PROJECT_ID> --tunnel-through-iap
 sudo journalctl -u google-startup-scripts -f
 ```
 
