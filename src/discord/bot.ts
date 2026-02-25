@@ -470,8 +470,11 @@ export class ActuariusBot {
     const rawProvider = interaction.options.getString("provider", true);
     const model = interaction.options.getString("model", true).trim();
 
-    if (rawProvider !== "claude" && rawProvider !== "codex" && rawProvider !== "gemini") {
-      await interaction.reply({ content: "Invalid provider. Choose `claude`, `codex`, or `gemini`.", ephemeral: true });
+    if (!Object.keys(AI_PROVIDER_LABELS).includes(rawProvider)) {
+      await interaction.reply({
+        content: `Invalid provider. Choose from: \`${Object.keys(AI_PROVIDER_LABELS).join("`, `")}\`.`,
+        ephemeral: true
+      });
       return;
     }
 
