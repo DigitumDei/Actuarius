@@ -1,3 +1,10 @@
+resource "google_compute_disk" "data" {
+  name = "actuarius-data"
+  type = "pd-standard"
+  zone = var.gcp_zone
+  size = 10 # GB — separate persistent disk so /data survives VM deletion
+}
+
 resource "google_compute_instance" "actuarius" {
   name         = "actuarius-bot"
   machine_type = "e2-micro"
@@ -10,6 +17,11 @@ resource "google_compute_instance" "actuarius" {
       size  = 10          # GB — stays within 10 GB remaining free tier quota
       type  = "pd-standard"
     }
+  }
+
+  attached_disk {
+    source      = google_compute_disk.data.self_link
+    device_name = "actuarius-data"
   }
 
   network_interface {

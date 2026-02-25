@@ -2,18 +2,31 @@
 # Actuarius bot startup script — runs on every VM boot (must be idempotent)
 set -euo pipefail
 
-# --- Swap file (safety margin for Claude CLI subprocesses on 1 GB RAM) ---
-# /var is writable on Container-Optimized OS
-SWAP=/var/actuarius.swap
+# --- Mount persistent data disk ---
+DATA_DEV="/dev/disk/by-id/google-actuarius-data"
+DATA_MNT="/mnt/disks/data"
+
+if ! blkid "$DATA_DEV" &>/dev/null; then
+  mkfs.ext4 -m 0 -F -E lazy_itable_init=0,lazy_journal_init=0 "$DATA_DEV"
+fi
+
+mkdir -p "$DATA_MNT"
+mount -o defaults "$DATA_DEV" "$DATA_MNT"
+
+if ! grep -q "google-actuarius-data" /etc/fstab; then
+  echo "$DATA_DEV $DATA_MNT ext4 defaults,nofail 0 2" >> /etc/fstab
+fi
+
+mkdir -p "$DATA_MNT/repos"
+
+# --- Swap file on data disk (safety margin for Claude CLI subprocesses) ---
+SWAP="$DATA_MNT/.swapfile"
 if [ ! -f "$SWAP" ]; then
   fallocate -l 1G "$SWAP"
   chmod 600 "$SWAP"
   mkswap "$SWAP"
 fi
 swapon "$SWAP" 2>/dev/null || true
-
-# --- Data directory ---
-mkdir -p /var/actuarius/data/repos
 
 # --- Read secrets from instance metadata service ---
 META="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
@@ -41,7 +54,7 @@ fi
 docker run -d \
   --name actuarius \
   --restart unless-stopped \
-  -v /var/actuarius/data:/data \
+  -v "$DATA_MNT:/data" \
   -e DISCORD_TOKEN="$DISCORD_TOKEN" \
   -e DISCORD_CLIENT_ID="$DISCORD_CLIENT_ID" \
   $GUILD_ARG \
