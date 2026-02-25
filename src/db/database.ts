@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import type { RepoRow, RequestRow, RequestStatus } from "./types.js";
+import type { AiProvider, GuildModelConfigRow, RepoRow, RequestRow, RequestStatus } from "./types.js";
 
 function toNumber(value: number | bigint): number {
   if (typeof value === "bigint") {
@@ -81,6 +81,17 @@ export class AppDatabase {
     } catch {
       // Column already exists
     }
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS guild_model_config (
+        guild_id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        updated_by_user_id TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE
+      );
+    `);
   }
 
   public upsertGuild(id: string, name: string): void {
@@ -217,6 +228,27 @@ export class AppDatabase {
       .prepare("SELECT worktree_path FROM requests WHERE thread_id = ? AND worktree_path IS NOT NULL ORDER BY id DESC LIMIT 1")
       .get(threadId) as { worktree_path: string } | undefined;
     return row?.worktree_path ?? null;
+  }
+
+  public getGuildModelConfig(guildId: string): GuildModelConfigRow | undefined {
+    return this.db
+      .prepare("SELECT * FROM guild_model_config WHERE guild_id = ?")
+      .get(guildId) as GuildModelConfigRow | undefined;
+  }
+
+  public setGuildModelConfig(guildId: string, provider: AiProvider, model: string, updatedByUserId: string): GuildModelConfigRow {
+    return this.db
+      .prepare(
+        `INSERT INTO guild_model_config (guild_id, provider, model, updated_by_user_id)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(guild_id) DO UPDATE
+         SET provider = excluded.provider,
+             model = excluded.model,
+             updated_by_user_id = excluded.updated_by_user_id,
+             updated_at = CURRENT_TIMESTAMP
+         RETURNING *`
+      )
+      .get(guildId, provider, model, updatedByUserId) as unknown as GuildModelConfigRow;
   }
 
   public close(): void {

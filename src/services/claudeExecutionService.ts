@@ -55,6 +55,7 @@ export interface ClaudeExecutionInput {
   prompt: string;
   cwd: string;
   timeoutMs: number;
+  model?: string;
 }
 
 export interface ClaudeExecutionResult {
@@ -111,6 +112,9 @@ export function extractTextFromClaudeJson(payload: unknown): string | null {
 export async function runClaudeRequest(input: ClaudeExecutionInput, logger: Logger): Promise<ClaudeExecutionResult> {
   // --add-dir omitted: cwd is already set to the worktree root
   const args = ["-p", input.prompt, "--output-format", "json", "--permission-mode", "bypassPermissions"];
+  if (input.model) {
+    args.push("--model", input.model);
+  }
 
   logger.debug({ args, cwd: input.cwd, timeoutMs: input.timeoutMs }, "Claude subprocess args");
 
