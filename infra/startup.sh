@@ -20,8 +20,7 @@ fi
 mkdir -p "$DATA_MNT/repos"
 
 # --- Ensure data dir is owned by appuser (UID 1001) inside the container ---
-chown -R 1001:1001 "$DATA_MNT/repos"
-chown 1001:1001 "$DATA_MNT"
+chown -R 1001:1001 "$DATA_MNT"
 
 # --- Swap file on data disk (safety margin for Claude CLI subprocesses) ---
 SWAP="$DATA_MNT/.swapfile"
