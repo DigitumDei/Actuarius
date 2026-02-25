@@ -37,5 +37,5 @@ docker run -d \
   -e ASK_CONCURRENCY_PER_GUILD="$(get_meta env-ask-concurrency)" \
   -e LOG_LEVEL=info \
   "$IMAGE"
-
+docker image prune -f
 echo "Done. Logs: docker logs -f actuarius"
