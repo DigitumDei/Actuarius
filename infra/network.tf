@@ -19,7 +19,10 @@ resource "google_compute_firewall" "allow_iap_ssh" {
     ports    = ["22"]
   }
 
-  # Google's IAP tunnel source range — required for gcloud compute ssh --tunnel-through-iap
+  # 35.235.240.0/20 is Google's reserved IAP tunnel range.
+  # Port 22 is NOT exposed to the public internet — traffic is proxied
+  # through Google's Identity-Aware Proxy and requires valid GCP credentials
+  # (gcloud compute ssh --tunnel-through-iap). No SSH keys or open ports needed.
   source_ranges = ["35.235.240.0/20"]
   target_tags   = ["actuarius-bot"]
 }
