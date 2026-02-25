@@ -1,0 +1,8 @@
+* text=auto
+
+# Shell scripts must always use LF — CRLF breaks shebangs on Linux
+*.sh text eol=lf
+
+# Terraform files use LF
+*.tf text eol=lf
+*.tfvars text eol=lf
