@@ -31,18 +31,21 @@ if [ ! -f "$SWAP" ]; then
 fi
 swapon "$SWAP" 2>/dev/null || true
 
-# --- Read secrets from instance metadata service ---
+# --- Read config from instance metadata service ---
 META="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
 HDR="Metadata-Flavor: Google"
+get_meta() { curl -sf -H "$HDR" "$META/$1"; }
 
-DISCORD_TOKEN=$(curl -sf -H "$HDR" "$META/env-discord-token")
-DISCORD_CLIENT_ID=$(curl -sf -H "$HDR" "$META/env-discord-client-id")
-DISCORD_GUILD_ID=$(curl -sf -H "$HDR" "$META/env-discord-guild-id" || true)
-GH_TOKEN=$(curl -sf -H "$HDR" "$META/env-gh-token")
-CLAUDE_OAUTH_TOKEN=$(curl -sf -H "$HDR" "$META/env-claude-oauth-token")
+DISCORD_TOKEN=$(get_meta "env-discord-token")
+DISCORD_CLIENT_ID=$(get_meta "env-discord-client-id")
+DISCORD_GUILD_ID=$(get_meta "env-discord-guild-id" || true)
+GH_TOKEN=$(get_meta "env-gh-token")
+CLAUDE_OAUTH_TOKEN=$(get_meta "env-claude-oauth-token")
+DOCKER_IMAGE=$(get_meta "env-docker-image")
+ASK_CONCURRENCY=$(get_meta "env-ask-concurrency")
 
 # --- Pull latest image (public ghcr.io, no auth needed) ---
-docker pull ${docker_image}
+docker pull "$DOCKER_IMAGE"
 
 # --- Remove existing container if present (idempotent) ---
 docker stop actuarius 2>/dev/null || true
@@ -65,9 +68,9 @@ docker run -d \
   -e CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_OAUTH_TOKEN" \
   -e DATABASE_PATH=/data/app.db \
   -e REPOS_ROOT_PATH=/data/repos \
-  -e ASK_CONCURRENCY_PER_GUILD=${ask_concurrency} \
+  -e ASK_CONCURRENCY_PER_GUILD="$ASK_CONCURRENCY" \
   -e LOG_LEVEL=info \
-  ${docker_image}
+  "$DOCKER_IMAGE"
 
 # --- Clean up old images to reclaim disk space ---
 docker image prune -f || true
