@@ -36,7 +36,7 @@ resource "google_compute_instance" "actuarius" {
     env-discord-client-id   = var.discord_client_id
     env-discord-guild-id    = var.discord_guild_id
     env-gh-token            = var.gh_token
-    env-claude-creds-b64    = var.claude_credentials_b64
+    env-claude-oauth-token  = var.claude_oauth_token
   }
 
   metadata_startup_script = replace(

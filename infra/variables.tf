@@ -49,8 +49,8 @@ variable "gh_token" {
   sensitive = true
 }
 
-variable "claude_credentials_b64" {
+variable "claude_oauth_token" {
   type        = string
   sensitive   = true
-  description = "Base64-encoded contents of ~/.claude/.credentials.json"
+  description = "Long-lived Claude OAuth token — generate with: claude setup-token"
 }

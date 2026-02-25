@@ -16,6 +16,6 @@ discord_client_id = "replace_me"
 # GitHub personal access token (repo scope)
 gh_token = "replace_me"
 
-# Base64-encoded Claude credentials
-# Generate with: base64 -w 0 ~/.claude/.credentials.json
-claude_credentials_b64 = "replace_me"
+# Long-lived Claude OAuth token
+# Generate with: claude setup-token
+claude_oauth_token = "replace_me"
