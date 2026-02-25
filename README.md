@@ -100,37 +100,27 @@ Every push to `main` builds and pushes two image tags to ghcr.io:
 
 The VM startup script reads the target image from instance metadata and pulls it on every boot.
 
-### Deploy latest image
+### Deploy latest image or roll back
 
-Stop and reset the VM — the startup script pulls `:latest` automatically:
+SSH into the VM and run the helper script:
 
 ```bash
-gcloud compute instances reset actuarius-bot --zone=us-east1-b
+# Pull and run latest
+~/redeploy.sh
+
+# Roll back to a specific git SHA
+~/redeploy.sh abc1234
 ```
 
-### Roll back to a previous version
+Find a SHA to roll back to:
+- **GitHub UI**: repo → Commits → copy the short SHA next to any commit
+- **CLI**: `git log --oneline`
 
-Find the git SHA of the version you want. Options:
-
-- **GitHub UI**: go to the repo → Commits → copy the short SHA from any commit
-- **CLI**: `git log --oneline` on main
-
-Then update the metadata and reset:
+#### One-time setup: copy the script onto the VM
 
 ```bash
-gcloud compute instances add-metadata actuarius-bot --zone=us-east1-b \
-  --metadata env-docker-image=ghcr.io/digitumdei/actuarius:<sha>
-
-gcloud compute instances reset actuarius-bot --zone=us-east1-b
-```
-
-### Restore to latest after a rollback
-
-```bash
-gcloud compute instances add-metadata actuarius-bot --zone=us-east1-b \
-  --metadata env-docker-image=ghcr.io/digitumdei/actuarius:latest
-
-gcloud compute instances reset actuarius-bot --zone=us-east1-b
+gcloud compute scp scripts/redeploy.sh actuarius-bot:~/redeploy.sh --zone=us-east1-b
+gcloud compute ssh actuarius-bot --zone=us-east1-b --command="chmod +x ~/redeploy.sh"
 ```
 
 ### Watch startup logs
