@@ -40,9 +40,11 @@ DISCORD_CLIENT_ID=$(curl -sf -H "$HDR" "$META/env-discord-client-id")
 DISCORD_GUILD_ID=$(curl -sf -H "$HDR" "$META/env-discord-guild-id" || true)
 GH_TOKEN=$(curl -sf -H "$HDR" "$META/env-gh-token")
 CLAUDE_OAUTH_TOKEN=$(curl -sf -H "$HDR" "$META/env-claude-oauth-token")
+DOCKER_IMAGE=$(curl -sf -H "$HDR" "$META/env-docker-image")
+ASK_CONCURRENCY=$(curl -sf -H "$HDR" "$META/env-ask-concurrency")
 
 # --- Pull latest image (public ghcr.io, no auth needed) ---
-docker pull ${docker_image}
+docker pull "$DOCKER_IMAGE"
 
 # --- Remove existing container if present (idempotent) ---
 docker stop actuarius 2>/dev/null || true
@@ -65,9 +67,9 @@ docker run -d \
   -e CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_OAUTH_TOKEN" \
   -e DATABASE_PATH=/data/app.db \
   -e REPOS_ROOT_PATH=/data/repos \
-  -e ASK_CONCURRENCY_PER_GUILD=${ask_concurrency} \
+  -e ASK_CONCURRENCY_PER_GUILD="$ASK_CONCURRENCY" \
   -e LOG_LEVEL=info \
-  ${docker_image}
+  "$DOCKER_IMAGE"
 
 # --- Clean up old images to reclaim disk space ---
 docker image prune -f || true

@@ -30,22 +30,19 @@ resource "google_compute_instance" "actuarius" {
     access_config {}    # Ephemeral public IP (free while VM is running)
   }
 
-  # Secrets passed via instance metadata — read by startup script
+  # All config passed via metadata — read by startup script at runtime.
+  # This keeps metadata_startup_script static so changes here don't force VM recreation.
   metadata = {
     env-discord-token       = var.discord_token
     env-discord-client-id   = var.discord_client_id
     env-discord-guild-id    = var.discord_guild_id
     env-gh-token            = var.gh_token
     env-claude-oauth-token  = var.claude_oauth_token
+    env-docker-image        = var.docker_image
+    env-ask-concurrency     = var.ask_concurrency
   }
 
-  metadata_startup_script = replace(
-    templatefile("${path.module}/startup.sh", {
-      docker_image    = var.docker_image
-      ask_concurrency = var.ask_concurrency
-    }),
-    "\r\n", "\n"
-  )
+  metadata_startup_script = replace(file("${path.module}/startup.sh"), "\r\n", "\n")
 
   service_account {
     email  = google_service_account.actuarius_bot.email
