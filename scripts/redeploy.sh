@@ -9,7 +9,9 @@ HDR="Metadata-Flavor: Google"
 get_meta() { curl -sf -H "$HDR" "$META/$1"; }
 
 IMAGE_TAG="${1:-latest}"
-IMAGE="ghcr.io/digitumdei/actuarius:$IMAGE_TAG"
+BASE_IMAGE=$(get_meta "env-docker-image")
+BASE_IMAGE="${BASE_IMAGE%:*}"  # strip existing tag
+IMAGE="$BASE_IMAGE:$IMAGE_TAG"
 
 echo "Deploying $IMAGE ..."
 
