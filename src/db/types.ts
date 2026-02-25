@@ -17,6 +17,8 @@ export interface RepoRow {
   created_at: string;
 }
 
+export type RequestStatus = "queued" | "running" | "succeeded" | "failed";
+
 export interface RequestRow {
   id: number;
   guild_id: string;
@@ -25,7 +27,7 @@ export interface RequestRow {
   thread_id: string;
   user_id: string;
   prompt: string;
-  status: string;
+  status: RequestStatus;
+  worktree_path: string | null;
   created_at: string;
 }
-

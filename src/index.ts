@@ -21,7 +21,7 @@ async function main(): Promise<void> {
       await bot.stop();
     } finally {
       db.close();
-      process.exit(0);
+      process.exitCode = 0;
     }
   };
 
@@ -38,4 +38,3 @@ async function main(): Promise<void> {
 }
 
 void main();
-

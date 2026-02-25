@@ -1,8 +1,25 @@
 import { DatabaseSync } from "node:sqlite";
-import type { RepoRow, RequestRow } from "./types.js";
+import type { RepoRow, RequestRow, RequestStatus } from "./types.js";
 
 function toNumber(value: number | bigint): number {
-  return typeof value === "bigint" ? Number(value) : value;
+  if (typeof value === "bigint") {
+    const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
+    const minSafe = BigInt(Number.MIN_SAFE_INTEGER);
+    if (value > maxSafe || value < minSafe) {
+      throw new RangeError(`SQLite integer ${value.toString()} exceeds JS safe integer range.`);
+    }
+    return Number(value);
+  }
+
+  if (!Number.isSafeInteger(value)) {
+    throw new RangeError(`SQLite integer ${value} exceeds JS safe integer range.`);
+  }
+
+  return value;
+}
+
+function normalizeRepoFullName(fullName: string): string {
+  return fullName.trim().toLowerCase();
 }
 
 export class AppDatabase {
@@ -57,6 +74,13 @@ export class AppDatabase {
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
     `);
+
+    // Incremental migrations
+    try {
+      this.db.exec("ALTER TABLE requests ADD COLUMN worktree_path TEXT");
+    } catch {
+      // Column already exists
+    }
   }
 
   public upsertGuild(id: string, name: string): void {
@@ -76,9 +100,10 @@ export class AppDatabase {
   }
 
   public getRepoByFullName(guildId: string, fullName: string): RepoRow | undefined {
+    const normalizedFullName = normalizeRepoFullName(fullName);
     const row = this.db
       .prepare("SELECT * FROM repos WHERE guild_id = ? AND lower(full_name) = lower(?)")
-      .get(guildId, fullName) as (RepoRow & { id: number | bigint }) | undefined;
+      .get(guildId, normalizedFullName) as (RepoRow & { id: number | bigint }) | undefined;
 
     if (!row) {
       return undefined;
@@ -135,7 +160,7 @@ export class AppDatabase {
         input.guildId,
         input.owner,
         input.repo,
-        input.fullName,
+        normalizeRepoFullName(input.fullName),
         input.visibility,
         input.channelId,
         input.linkedByUserId
@@ -154,7 +179,7 @@ export class AppDatabase {
     threadId: string;
     userId: string;
     prompt: string;
-    status: string;
+    status: RequestStatus;
   }): RequestRow {
     const row = this.db
       .prepare(
@@ -177,6 +202,21 @@ export class AppDatabase {
       id: toNumber(row.id),
       repo_id: toNumber(row.repo_id)
     };
+  }
+
+  public updateRequestStatus(requestId: number, status: RequestStatus): void {
+    this.db.prepare("UPDATE requests SET status = ? WHERE id = ?").run(status, requestId);
+  }
+
+  public updateRequestWorktreePath(requestId: number, worktreePath: string): void {
+    this.db.prepare("UPDATE requests SET worktree_path = ? WHERE id = ?").run(worktreePath, requestId);
+  }
+
+  public getWorktreeForThread(threadId: string): string | null {
+    const row = this.db
+      .prepare("SELECT worktree_path FROM requests WHERE thread_id = ? AND worktree_path IS NOT NULL ORDER BY id DESC LIMIT 1")
+      .get(threadId) as { worktree_path: string } | undefined;
+    return row?.worktree_path ?? null;
   }
 
   public close(): void {

@@ -34,9 +34,11 @@ ENV DATABASE_PATH=/data/app.db
 COPY --from=deps /app/package.json ./package.json
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY docker/entrypoint.sh /app/entrypoint.sh
 
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \
   && mkdir -p /data \
+  && chmod +x /app/entrypoint.sh \
   && chown -R appuser:appuser /app /data
 
 USER appuser
@@ -45,5 +47,5 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "process.exit(0)"
 
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["node", "dist/index.js"]
-

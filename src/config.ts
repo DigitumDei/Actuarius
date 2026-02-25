@@ -27,7 +27,17 @@ const envSchema = z.object({
     .string()
     .default("1440")
     .transform((value) => Number.parseInt(value, 10))
-    .refine((value) => Number.isFinite(value), "THREAD_AUTO_ARCHIVE_MINUTES must be a number")
+    .refine((value) => Number.isFinite(value), "THREAD_AUTO_ARCHIVE_MINUTES must be a number"),
+  ASK_CONCURRENCY_PER_GUILD: z
+    .string()
+    .default("3")
+    .transform((value) => Number.parseInt(value, 10))
+    .refine((value) => Number.isFinite(value) && value > 0, "ASK_CONCURRENCY_PER_GUILD must be a positive number"),
+  ASK_EXECUTION_TIMEOUT_MS: z
+    .string()
+    .default("1200000")
+    .transform((value) => Number.parseInt(value, 10))
+    .refine((value) => Number.isFinite(value) && value > 0, "ASK_EXECUTION_TIMEOUT_MS must be a positive number")
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -49,7 +59,9 @@ export const appConfig = {
   databasePath: rawConfig.DATABASE_PATH,
   reposRootPath: rawConfig.REPOS_ROOT_PATH,
   logLevel: rawConfig.LOG_LEVEL,
-  threadAutoArchiveMinutes: normalizeArchiveDuration(rawConfig.THREAD_AUTO_ARCHIVE_MINUTES)
+  threadAutoArchiveMinutes: normalizeArchiveDuration(rawConfig.THREAD_AUTO_ARCHIVE_MINUTES),
+  askConcurrencyPerGuild: rawConfig.ASK_CONCURRENCY_PER_GUILD,
+  askExecutionTimeoutMs: rawConfig.ASK_EXECUTION_TIMEOUT_MS
 };
 
 export type AppConfig = typeof appConfig;
