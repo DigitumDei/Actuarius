@@ -37,7 +37,15 @@ const envSchema = z.object({
     .string()
     .default("1200000")
     .transform((value) => Number.parseInt(value, 10))
-    .refine((value) => Number.isFinite(value) && value > 0, "ASK_EXECUTION_TIMEOUT_MS must be a positive number")
+    .refine((value) => Number.isFinite(value) && value > 0, "ASK_EXECUTION_TIMEOUT_MS must be a positive number"),
+  ENABLE_CODEX_EXECUTION: z
+    .string()
+    .default("false")
+    .transform((value) => value === "true"),
+  ENABLE_GEMINI_EXECUTION: z
+    .string()
+    .default("false")
+    .transform((value) => value === "true")
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -61,7 +69,9 @@ export const appConfig = {
   logLevel: rawConfig.LOG_LEVEL,
   threadAutoArchiveMinutes: normalizeArchiveDuration(rawConfig.THREAD_AUTO_ARCHIVE_MINUTES),
   askConcurrencyPerGuild: rawConfig.ASK_CONCURRENCY_PER_GUILD,
-  askExecutionTimeoutMs: rawConfig.ASK_EXECUTION_TIMEOUT_MS
+  askExecutionTimeoutMs: rawConfig.ASK_EXECUTION_TIMEOUT_MS,
+  enableCodexExecution: rawConfig.ENABLE_CODEX_EXECUTION,
+  enableGeminiExecution: rawConfig.ENABLE_GEMINI_EXECUTION
 };
 
 export type AppConfig = typeof appConfig;

@@ -5,6 +5,16 @@ export interface GuildRow {
   updated_at: string;
 }
 
+export type AiProvider = "claude" | "codex" | "gemini";
+
+export interface GuildModelConfigRow {
+  guild_id: string;
+  provider: AiProvider;
+  model: string;
+  updated_by_user_id: string;
+  updated_at: string;
+}
+
 export interface RepoRow {
   id: number;
   guild_id: string;
