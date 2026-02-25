@@ -10,5 +10,5 @@ output "ssh_command" {
 
 output "logs_command" {
   description = "Command to tail bot logs via IAP"
-  value       = "gcloud compute ssh actuarius-bot --zone ${var.gcp_zone} --project ${var.gcp_project_id} --tunnel-through-iap -- docker logs actuarius --tail 100 -f"
+  value       = "gcloud compute ssh actuarius-bot --zone ${var.gcp_zone} --project ${var.gcp_project_id} --tunnel-through-iap --command=\"docker logs actuarius --tail 100 -f\""
 }
