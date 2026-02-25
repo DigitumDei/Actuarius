@@ -14,8 +14,7 @@ IMAGE="ghcr.io/digitumdei/actuarius:$IMAGE_TAG"
 echo "Deploying $IMAGE ..."
 
 docker pull "$IMAGE"
-docker stop actuarius 2>/dev/null || true
-docker rm   actuarius 2>/dev/null || true
+docker rm -f actuarius 2>/dev/null || true
 
 GUILD_ID=$(get_meta "env-discord-guild-id" || true)
 GUILD_ARG=""
