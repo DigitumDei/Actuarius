@@ -39,7 +39,7 @@ DISCORD_TOKEN=$(curl -sf -H "$HDR" "$META/env-discord-token")
 DISCORD_CLIENT_ID=$(curl -sf -H "$HDR" "$META/env-discord-client-id")
 DISCORD_GUILD_ID=$(curl -sf -H "$HDR" "$META/env-discord-guild-id" || true)
 GH_TOKEN=$(curl -sf -H "$HDR" "$META/env-gh-token")
-CLAUDE_CREDS_B64=$(curl -sf -H "$HDR" "$META/env-claude-creds-b64")
+CLAUDE_OAUTH_TOKEN=$(curl -sf -H "$HDR" "$META/env-claude-oauth-token")
 
 # --- Pull latest image (public ghcr.io, no auth needed) ---
 docker pull ${docker_image}
@@ -62,7 +62,7 @@ docker run -d \
   -e DISCORD_CLIENT_ID="$DISCORD_CLIENT_ID" \
   $GUILD_ARG \
   -e GH_TOKEN="$GH_TOKEN" \
-  -e CLAUDE_CREDENTIALS_B64="$CLAUDE_CREDS_B64" \
+  -e CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_OAUTH_TOKEN" \
   -e DATABASE_PATH=/data/app.db \
   -e REPOS_ROOT_PATH=/data/repos \
   -e ASK_CONCURRENCY_PER_GUILD=${ask_concurrency} \
