@@ -39,10 +39,13 @@ resource "google_compute_instance" "actuarius" {
     env-claude-creds-b64    = var.claude_credentials_b64
   }
 
-  metadata_startup_script = templatefile("${path.module}/startup.sh", {
-    docker_image    = var.docker_image
-    ask_concurrency = var.ask_concurrency
-  })
+  metadata_startup_script = replace(
+    templatefile("${path.module}/startup.sh", {
+      docker_image    = var.docker_image
+      ask_concurrency = var.ask_concurrency
+    }),
+    "\r\n", "\n"
+  )
 
   service_account {
     email  = google_service_account.actuarius_bot.email
