@@ -58,8 +58,7 @@ Copy `.env.example` to `.env` and set:
 - `THREAD_AUTO_ARCHIVE_MINUTES` (`60`, `1440`, `4320`, or `10080`)
 - `ASK_CONCURRENCY_PER_GUILD` (default `3`)
 - `ASK_EXECUTION_TIMEOUT_MS` (default `1200000`)
-- `CLAUDE_CREDENTIALS_FILE` (optional, path to mounted Claude `.credentials.json`)
-- `CLAUDE_CREDENTIALS_B64` (optional, base64 payload of Claude `.credentials.json`)
+- `CLAUDE_CODE_OAUTH_TOKEN` (required for production — generate once with `claude setup-token`, valid 1 year)
 
 ## Local development
 
@@ -93,23 +92,52 @@ Useful flags:
 - `-Logs` to stream container logs after startup
 - `-CredentialsPath .\.claude.credentials.json` to override credential file path
 
-### Claude login persistence in Docker
+## Production operations (GCP VM)
 
-Avoid baking Claude credentials into the image at build time. Use runtime injection:
+Every push to `main` builds and pushes two image tags to ghcr.io:
+- `ghcr.io/digitumdei/actuarius:latest`
+- `ghcr.io/digitumdei/actuarius:<git-sha>`
 
-- Mount a credentials file and set `CLAUDE_CREDENTIALS_FILE`.
-- Or pass `CLAUDE_CREDENTIALS_B64` from a secret manager.
+The VM startup script reads the target image from instance metadata and pulls it on every boot.
 
-Example (mounted file):
+### Deploy latest image
+
+Stop and reset the VM — the startup script pulls `:latest` automatically:
 
 ```bash
-docker run --rm \
-  --name actuarius \
-  --env-file .env \
-  -e CLAUDE_CREDENTIALS_FILE=/run/secrets/claude_credentials \
-  -v actuarius_data:/data \
-  -v /path/to/.credentials.json:/run/secrets/claude_credentials:ro \
-  actuarius:latest
+gcloud compute instances reset actuarius-bot --zone=us-east1-b
+```
+
+### Roll back to a previous version
+
+Find the git SHA of the version you want. Options:
+
+- **GitHub UI**: go to the repo → Commits → copy the short SHA from any commit
+- **CLI**: `git log --oneline` on main
+
+Then update the metadata and reset:
+
+```bash
+gcloud compute instances add-metadata actuarius-bot --zone=us-east1-b \
+  --metadata env-docker-image=ghcr.io/digitumdei/actuarius:<sha>
+
+gcloud compute instances reset actuarius-bot --zone=us-east1-b
+```
+
+### Restore to latest after a rollback
+
+```bash
+gcloud compute instances add-metadata actuarius-bot --zone=us-east1-b \
+  --metadata env-docker-image=ghcr.io/digitumdei/actuarius:latest
+
+gcloud compute instances reset actuarius-bot --zone=us-east1-b
+```
+
+### Watch startup logs
+
+```bash
+gcloud compute ssh actuarius-bot --zone=us-east1-b
+sudo journalctl -u google-startup-scripts -f
 ```
 
 ## Command behavior
