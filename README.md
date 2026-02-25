@@ -106,10 +106,10 @@ SSH into the VM and run the helper script:
 
 ```bash
 # Pull and run latest
-~/redeploy.sh
+sudo /var/redeploy.sh
 
 # Roll back to a specific git SHA
-~/redeploy.sh abc1234
+sudo /var/redeploy.sh abc1234
 ```
 
 Find a SHA to roll back to:
@@ -120,7 +120,7 @@ Find a SHA to roll back to:
 ### Watch startup logs
 
 ```bash
-gcloud compute ssh actuarius-bot --zone=us-east1-b
+gcloud compute ssh actuarius-bot --zone us-east1-b --project actuarius-488510 --tunnel-through-iap
 sudo journalctl -u google-startup-scripts -f
 ```
 
