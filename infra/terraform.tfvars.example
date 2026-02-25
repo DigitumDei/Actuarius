@@ -1,0 +1,21 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored — never commit real secrets.
+
+gcp_project_id = "your-gcp-project-id"
+gcp_region     = "us-east1"
+gcp_zone       = "us-east1-b"
+
+docker_image      = "ghcr.io/digitumdei/actuarius:latest"
+ask_concurrency   = 1
+
+# Discord application credentials
+discord_token     = "replace_me"
+discord_client_id = "replace_me"
+# discord_guild_id = "replace_me"   # Optional: omit for global command registration
+
+# GitHub personal access token (repo scope)
+gh_token = "replace_me"
+
+# Base64-encoded Claude credentials
+# Generate with: base64 -w 0 ~/.claude/.credentials.json
+claude_credentials_b64 = "replace_me"

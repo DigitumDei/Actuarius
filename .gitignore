@@ -10,3 +10,9 @@ data/
 
 .claude.credentials.json
 .claude/
+
+# Terraform
+infra/*.tfvars
+infra/.terraform/
+infra/terraform.tfstate
+infra/terraform.tfstate.backup

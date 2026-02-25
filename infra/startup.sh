@@ -1,0 +1,57 @@
+#!/bin/bash
+# Actuarius bot startup script — runs on every VM boot (must be idempotent)
+set -euo pipefail
+
+# --- Swap file (safety margin for Claude CLI subprocesses on 1 GB RAM) ---
+# /var is writable on Container-Optimized OS
+SWAP=/var/actuarius.swap
+if [ ! -f "$SWAP" ]; then
+  fallocate -l 1G "$SWAP"
+  chmod 600 "$SWAP"
+  mkswap "$SWAP"
+fi
+swapon "$SWAP" 2>/dev/null || true
+
+# --- Data directory ---
+mkdir -p /var/actuarius/data/repos
+
+# --- Read secrets from instance metadata service ---
+META="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
+HDR="Metadata-Flavor: Google"
+
+DISCORD_TOKEN=$(curl -sf -H "$HDR" "$META/env-discord-token")
+DISCORD_CLIENT_ID=$(curl -sf -H "$HDR" "$META/env-discord-client-id")
+DISCORD_GUILD_ID=$(curl -sf -H "$HDR" "$META/env-discord-guild-id" || true)
+GH_TOKEN=$(curl -sf -H "$HDR" "$META/env-gh-token")
+CLAUDE_CREDS_B64=$(curl -sf -H "$HDR" "$META/env-claude-creds-b64")
+
+# --- Pull latest image (public ghcr.io, no auth needed) ---
+docker pull ${docker_image}
+
+# --- Remove existing container if present (idempotent) ---
+docker stop actuarius 2>/dev/null || true
+docker rm   actuarius 2>/dev/null || true
+
+# --- Run the bot ---
+GUILD_ARG=""
+if [ -n "$DISCORD_GUILD_ID" ]; then
+  GUILD_ARG="-e DISCORD_GUILD_ID=$DISCORD_GUILD_ID"
+fi
+
+docker run -d \
+  --name actuarius \
+  --restart unless-stopped \
+  -v /var/actuarius/data:/data \
+  -e DISCORD_TOKEN="$DISCORD_TOKEN" \
+  -e DISCORD_CLIENT_ID="$DISCORD_CLIENT_ID" \
+  $GUILD_ARG \
+  -e GH_TOKEN="$GH_TOKEN" \
+  -e CLAUDE_CREDENTIALS_B64="$CLAUDE_CREDS_B64" \
+  -e DATABASE_PATH=/data/app.db \
+  -e REPOS_ROOT_PATH=/data/repos \
+  -e ASK_CONCURRENCY_PER_GUILD=${ask_concurrency} \
+  -e LOG_LEVEL=info \
+  ${docker_image}
+
+# --- Clean up old images to reclaim disk space ---
+docker image prune -f || true
