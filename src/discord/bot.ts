@@ -13,17 +13,26 @@ import {
 import type pino from "pino";
 import type { AppConfig } from "../config.js";
 import { AppDatabase } from "../db/database.js";
+import type { AiProvider } from "../db/types.js";
 import { commandBuilders } from "./commands.js";
 import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
 import { GitHubRepoLookupError, lookupRepo, parseRepoReference } from "../services/githubService.js";
 import { GitWorkspaceError, ensureRepoCheckedOutToMaster } from "../services/gitWorkspaceService.js";
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
+import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
+import { GeminiExecutionError, runGeminiRequest } from "../services/geminiExecutionService.js";
 import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
 import { createRequestWorktree, RequestWorktreeError } from "../services/requestWorktreeService.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
-const CLAUDE_RESULT_LIMIT = 1_500;
+const AI_RESULT_LIMIT = 1_500;
+
+const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  gemini: "Gemini"
+};
 
 function clipForDiscord(input: string, maxLength: number): string {
   const text = input.trim();
@@ -44,17 +53,17 @@ function parseThreadEntry(
     if (promptMatch?.[1]) {
       return { role: "user", text: promptMatch[1].trim() };
     }
-    // Claude response in code block: "**Claude execution completed**\n\n```text\n<text>\n```"
-    const codeBlockMatch = /^\*\*Claude execution completed\*\*\n\n```text\n([\s\S]*?)\n```/u.exec(content);
+    // AI response in code block: "**{Provider} execution completed**\n\n```text\n<text>\n```"
+    const codeBlockMatch = /^\*\*[A-Za-z]+ execution completed\*\*\n\n```text\n([\s\S]*?)\n```/u.exec(content);
     if (codeBlockMatch?.[1]) {
       return { role: "assistant", text: codeBlockMatch[1].trim() };
     }
-    // Claude response without code block (long response, stripped wrapper)
-    const altMatch = /^\*\*Claude execution completed\*\*\n\n([\s\S]+)/u.exec(content);
+    // AI response without code block (long response, stripped wrapper)
+    const altMatch = /^\*\*[A-Za-z]+ execution completed\*\*\n\n([\s\S]+)/u.exec(content);
     if (altMatch?.[1]) {
       return { role: "assistant", text: altMatch[1].trim() };
     }
-    // Other bot messages are noise ("Claude execution started.", warnings, etc.)
+    // Other bot messages are noise ("... execution started.", warnings, etc.)
     return null;
   }
   const text = content.trim();
@@ -188,6 +197,10 @@ export class ActuariusBot {
     const prompt = message.content.trim();
     if (!prompt) return;
 
+    const modelConfig = this.db.getGuildModelConfig(message.guildId);
+    const provider: AiProvider = modelConfig?.provider ?? "claude";
+    const model = modelConfig?.model;
+
     const request = this.db.createRequest({
       guildId: message.guildId,
       repoId: repo.id,
@@ -204,6 +217,8 @@ export class ActuariusBot {
         threadId: message.channelId,
         repo: { owner: repo.owner, repo: repo.repo, fullName: repo.full_name },
         prompt,
+        provider,
+        ...(model !== undefined ? { model } : {}),
         existingWorktreePath: worktreePath
       });
     });
@@ -225,6 +240,12 @@ export class ActuariusBot {
         return;
       case "ask":
         await this.handleAsk(interaction);
+        return;
+      case "model-select":
+        await this.handleModelSelect(interaction);
+        return;
+      case "model-current":
+        await this.handleModelCurrent(interaction);
         return;
       default:
         await interaction.reply({ content: "Unknown command.", ephemeral: true });
@@ -432,6 +453,84 @@ export class ActuariusBot {
     }
   }
 
+  private async handleModelSelect(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to change the AI provider or model.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const rawProvider = interaction.options.getString("provider", true);
+    const model = interaction.options.getString("model", true).trim();
+
+    if (!Object.keys(AI_PROVIDER_LABELS).includes(rawProvider)) {
+      await interaction.reply({
+        content: `Invalid provider. Choose from: \`${Object.keys(AI_PROVIDER_LABELS).join("`, `")}\`.`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    const provider = rawProvider as AiProvider;
+
+    if (provider === "codex" && !this.config.enableCodexExecution) {
+      await interaction.reply({
+        content: "Codex execution is not enabled on this instance. Set `ENABLE_CODEX_EXECUTION=true` to enable it.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (provider === "gemini" && !this.config.enableGeminiExecution) {
+      await interaction.reply({
+        content: "Gemini execution is not enabled on this instance. Set `ENABLE_GEMINI_EXECUTION=true` to enable it.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!model) {
+      await interaction.reply({ content: "Model name cannot be empty.", ephemeral: true });
+      return;
+    }
+
+    this.db.upsertGuild(interaction.guild.id, interaction.guild.name);
+    this.db.setGuildModelConfig(interaction.guildId, provider, model, interaction.user.id);
+
+    await interaction.reply({
+      content: `AI provider set to **${AI_PROVIDER_LABELS[provider]}** with model \`${model}\`. All future \`/ask\` requests will use this configuration.`,
+      ephemeral: true
+    });
+  }
+
+  private async handleModelCurrent(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    const config = this.db.getGuildModelConfig(interaction.guildId);
+    if (!config) {
+      await interaction.reply({
+        content: "No AI provider configured. Defaulting to **Claude** (no model override). Use `/model-select` to configure.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    await interaction.reply({
+      content: `Current AI provider: **${AI_PROVIDER_LABELS[config.provider]}**, model: \`${config.model}\` (set <t:${Math.floor(new Date(config.updated_at).getTime() / 1000)}:R>).`,
+      ephemeral: true
+    });
+  }
+
   private async handleAsk(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guild || !interaction.guildId) {
       await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
@@ -464,6 +563,10 @@ export class ActuariusBot {
       });
       return;
     }
+
+    const modelConfig = this.db.getGuildModelConfig(interaction.guildId);
+    const provider: AiProvider = modelConfig?.provider ?? "claude";
+    const model = modelConfig?.model;
 
     const channel = (await interaction.guild.channels.fetch(repo.channel_id)) as GuildTextBasedChannel | null;
     if (!channel || channel.type !== ChannelType.GuildText) {
@@ -511,11 +614,15 @@ export class ActuariusBot {
           repo: repo.repo,
           fullName: repo.full_name
         },
-        prompt
+        prompt,
+        provider,
+        ...(model !== undefined ? { model } : {})
       });
     });
 
-    await interaction.editReply(`Created request thread <#${thread.id}>. Request queued for Claude execution.`);
+    await interaction.editReply(
+      `Created request thread <#${thread.id}>. Request queued for ${AI_PROVIDER_LABELS[provider]} execution.`
+    );
   }
 
   private async runQueuedRequest(input: {
@@ -527,9 +634,12 @@ export class ActuariusBot {
       fullName: string;
     };
     prompt: string;
+    provider: AiProvider;
+    model?: string;
     existingWorktreePath?: string;
   }): Promise<void> {
     const startedAt = Date.now();
+    const providerLabel = AI_PROVIDER_LABELS[input.provider];
     let worktreePath: string | null = null;
     let statusFinalized = false;
     let stage = "init";
@@ -545,7 +655,10 @@ export class ActuariusBot {
 
     try {
       this.db.updateRequestStatus(input.requestId, "running");
-      this.logger.info({ requestId: input.requestId, threadId: input.threadId, repo: input.repo.fullName }, "Queued request started");
+      this.logger.info(
+        { requestId: input.requestId, threadId: input.threadId, repo: input.repo.fullName, provider: input.provider, model: input.model },
+        "Queued request started"
+      );
 
       stage = "fetch-thread";
       const channel = await this.client.channels.fetch(input.threadId);
@@ -556,14 +669,14 @@ export class ActuariusBot {
       }
 
       threadChannel = channel;
-      await threadChannel.send("Claude execution started.");
+      await threadChannel.send(`${providerLabel} execution started.`);
 
       if (input.existingWorktreePath) {
         worktreePath = input.existingWorktreePath;
         this.logger.info({ requestId: input.requestId, worktreePath }, "Reusing existing worktree for follow-up");
       } else {
         stage = "sync-repo";
-        this.logger.info({ requestId: input.requestId, repo: input.repo.fullName }, "Syncing repository before Claude execution");
+        this.logger.info({ requestId: input.requestId, repo: input.repo.fullName }, "Syncing repository before AI execution");
         await ensureRepoCheckedOutToMaster(this.config.reposRootPath, {
           owner: input.repo.owner,
           repo: input.repo.repo,
@@ -591,7 +704,7 @@ export class ActuariusBot {
 
       this.db.updateRequestWorktreePath(input.requestId, worktreePath);
 
-      stage = "run-claude";
+      stage = "run-ai";
       const effectivePrompt = input.existingWorktreePath
         ? await this.buildThreadPromptWithHistory(channel, input.prompt)
         : input.prompt;
@@ -600,50 +713,88 @@ export class ActuariusBot {
           requestId: input.requestId,
           worktreePath,
           timeoutMs: this.config.askExecutionTimeoutMs,
-          promptLength: effectivePrompt.length
+          promptLength: effectivePrompt.length,
+          provider: input.provider,
+          model: input.model
         },
-        "Starting Claude execution"
+        "Starting AI execution"
       );
-      const result = await runClaudeRequest(
-        { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs },
-        this.logger
-      );
+
+      let resultText: string;
+
+      if (input.provider === "codex") {
+        if (!this.config.enableCodexExecution) {
+          throw new CodexExecutionError("CODEX_DISABLED", "Codex execution is disabled on this instance.");
+        }
+        const result = await runCodexRequest(
+          { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs, ...(input.model !== undefined ? { model: input.model } : {}) },
+          this.logger
+        );
+        resultText = result.text;
+      } else if (input.provider === "gemini") {
+        if (!this.config.enableGeminiExecution) {
+          throw new GeminiExecutionError("GEMINI_DISABLED", "Gemini execution is disabled on this instance.");
+        }
+        const result = await runGeminiRequest(
+          { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs, ...(input.model !== undefined ? { model: input.model } : {}) },
+          this.logger
+        );
+        resultText = result.text;
+      } else {
+        const result = await runClaudeRequest(
+          { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs, ...(input.model !== undefined ? { model: input.model } : {}) },
+          this.logger
+        );
+        resultText = result.text;
+      }
+
       this.logger.info(
-        { requestId: input.requestId, outputLength: result.text.length, durationMs: Date.now() - startedAt },
-        "Claude execution finished"
+        { requestId: input.requestId, outputLength: resultText.length, durationMs: Date.now() - startedAt, provider: input.provider },
+        "AI execution finished"
       );
 
       const response = [
-        "**Claude execution completed**",
+        `**${providerLabel} execution completed**`,
         "",
         "```text",
-        clipForDiscord(result.text, CLAUDE_RESULT_LIMIT),
+        clipForDiscord(resultText, AI_RESULT_LIMIT),
         "```"
       ].join("\n");
 
       await channel.send(
         response.length > DISCORD_MESSAGE_LIMIT
-          ? `**Claude execution completed**\n\n${clipForDiscord(result.text, DISCORD_MESSAGE_LIMIT - 40)}`
+          ? `**${providerLabel} execution completed**\n\n${clipForDiscord(resultText, DISCORD_MESSAGE_LIMIT - 40)}`
           : response
       );
       this.db.updateRequestStatus(input.requestId, "succeeded");
       statusFinalized = true;
-      this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Queued Claude request succeeded");
+      this.logger.info(
+        { requestId: input.requestId, durationMs: Date.now() - startedAt, provider: input.provider },
+        "Queued AI request succeeded"
+      );
     } catch (error) {
       markFailed();
       const message = this.describeExecutionError(error);
       if (threadChannel && threadChannel.isThread()) {
-        await threadChannel.send(`**Claude execution failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
+        await threadChannel.send(`**${providerLabel} execution failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
       }
       this.logger.error(
-        { error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage },
-        "Queued Claude request failed"
+        { error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage, provider: input.provider },
+        "Queued AI request failed"
       );
     }
   }
 
   private describeExecutionError(error: unknown): string {
     if (error instanceof ClaudeExecutionError) {
+      return error.message;
+    }
+
+    if (error instanceof CodexExecutionError) {
+      return error.message;
+    }
+
+    if (error instanceof GeminiExecutionError) {
       return error.message;
     }
 

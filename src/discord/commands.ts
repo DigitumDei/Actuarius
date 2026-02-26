@@ -23,10 +23,33 @@ export const commandBuilders = [
   new SlashCommandBuilder()
     .setName("ask")
     .setDescription("Create a request thread in the connected repo channel.")
-    .addStringOption((option) => option.setName("prompt").setDescription("Request text for this thread.").setRequired(true))
+    .addStringOption((option) => option.setName("prompt").setDescription("Request text for this thread.").setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("model-select")
+    .setDescription("Set the AI provider and model for /ask in this server. Requires Manage Server permission.")
+    .addStringOption((option) =>
+      option
+        .setName("provider")
+        .setDescription("AI provider to use")
+        .setRequired(true)
+        .addChoices(
+          { name: "Claude", value: "claude" },
+          { name: "Codex", value: "codex" },
+          { name: "Gemini", value: "gemini" }
+        )
+    )
+    .addStringOption((option) =>
+      option
+        .setName("model")
+        .setDescription("Model name (e.g. claude-opus-4-5, o4-mini, gemini-2.0-flash)")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("model-current")
+    .setDescription("Show the active AI provider and model for /ask in this server.")
 ];
 
-export type CommandName = "help" | "connect-repo" | "sync-repo" | "repos" | "ask";
+export type CommandName = "help" | "connect-repo" | "sync-repo" | "repos" | "ask" | "model-select" | "model-current";
 
 export async function registerSlashCommands(config: AppConfig, logger: pino.Logger): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(config.discordToken);
