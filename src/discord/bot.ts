@@ -23,7 +23,6 @@ import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
 import { createRequestWorktree, RequestWorktreeError } from "../services/requestWorktreeService.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
-const CLAUDE_RESULT_LIMIT = 1_500;
 
 function clipForDiscord(input: string, maxLength: number): string {
   const text = input.trim();
@@ -32,6 +31,46 @@ function clipForDiscord(input: string, maxLength: number): string {
   }
 
   return `${text.slice(0, maxLength - 15).trimEnd()}\n...(truncated)`;
+}
+
+function splitIntoDiscordMessages(text: string): string[] {
+  const HEADER = "**Claude execution completed**\n\n";
+  const CODE_OPEN = "```text\n";
+  const CODE_CLOSE = "\n```";
+  const CODE_OVERHEAD = CODE_OPEN.length + CODE_CLOSE.length;
+
+  const firstContentMax = DISCORD_MESSAGE_LIMIT - HEADER.length - CODE_OVERHEAD;
+  const contentMax = DISCORD_MESSAGE_LIMIT - CODE_OVERHEAD;
+
+  const trimmed = text.trim();
+  const chunks: string[] = [];
+  let remaining = trimmed;
+  let isFirst = true;
+
+  while (remaining.length > 0) {
+    const max = isFirst ? firstContentMax : contentMax;
+    let chunk: string;
+
+    if (remaining.length <= max) {
+      chunk = remaining;
+      remaining = "";
+    } else {
+      const splitAt = remaining.lastIndexOf("\n", max);
+      if (splitAt > 0) {
+        chunk = remaining.slice(0, splitAt);
+        remaining = remaining.slice(splitAt + 1);
+      } else {
+        chunk = remaining.slice(0, max);
+        remaining = remaining.slice(max);
+      }
+    }
+
+    const prefix = isFirst ? HEADER : "";
+    chunks.push(`${prefix}${CODE_OPEN}${chunk}${CODE_CLOSE}`);
+    isFirst = false;
+  }
+
+  return chunks.length > 0 ? chunks : [`${HEADER}${CODE_OPEN}(no output)${CODE_CLOSE}`];
 }
 
 function parseThreadEntry(
@@ -613,19 +652,9 @@ export class ActuariusBot {
         "Claude execution finished"
       );
 
-      const response = [
-        "**Claude execution completed**",
-        "",
-        "```text",
-        clipForDiscord(result.text, CLAUDE_RESULT_LIMIT),
-        "```"
-      ].join("\n");
-
-      await channel.send(
-        response.length > DISCORD_MESSAGE_LIMIT
-          ? `**Claude execution completed**\n\n${clipForDiscord(result.text, DISCORD_MESSAGE_LIMIT - 40)}`
-          : response
-      );
+      for (const chunk of splitIntoDiscordMessages(result.text)) {
+        await channel.send(chunk);
+      }
       this.db.updateRequestStatus(input.requestId, "succeeded");
       statusFinalized = true;
       this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Queued Claude request succeeded");
