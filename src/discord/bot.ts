@@ -468,8 +468,11 @@ export class ActuariusBot {
     }
 
     const rawProvider = interaction.options.getString("provider", true);
-    const model = interaction.options.getString("model", true).trim();
+    const rawModel = interaction.options.getString("model");
+    const model = rawModel?.trim() ?? "";
 
+    // Defense-in-depth: Discord already constrains the value via addChoices, but we
+    // validate here in case of direct API calls that bypass the UI constraint.
     if (!Object.keys(AI_PROVIDER_LABELS).includes(rawProvider)) {
       await interaction.reply({
         content: `Invalid provider. Choose from: \`${Object.keys(AI_PROVIDER_LABELS).join("`, `")}\`.`,
@@ -482,7 +485,7 @@ export class ActuariusBot {
 
     if (provider === "codex" && !this.config.enableCodexExecution) {
       await interaction.reply({
-        content: "Codex execution is not enabled on this instance. Set `ENABLE_CODEX_EXECUTION=true` to enable it.",
+        content: "Codex execution is not enabled on this instance (`ENABLE_CODEX_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
         ephemeral: true
       });
       return;
@@ -490,7 +493,7 @@ export class ActuariusBot {
 
     if (provider === "gemini" && !this.config.enableGeminiExecution) {
       await interaction.reply({
-        content: "Gemini execution is not enabled on this instance. Set `ENABLE_GEMINI_EXECUTION=true` to enable it.",
+        content: "Gemini execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
         ephemeral: true
       });
       return;
@@ -525,8 +528,11 @@ export class ActuariusBot {
       return;
     }
 
+    const ts = new Date(config.updated_at).getTime();
+    const timeStr = Number.isNaN(ts) ? config.updated_at : `<t:${Math.floor(ts / 1000)}:R>`;
+    const modelStr = config.model || "none (CLI default)";
     await interaction.reply({
-      content: `Current AI provider: **${AI_PROVIDER_LABELS[config.provider]}**, model: \`${config.model}\` (set <t:${Math.floor(new Date(config.updated_at).getTime() / 1000)}:R>).`,
+      content: `Current AI provider: **${AI_PROVIDER_LABELS[config.provider]}**, model: \`${modelStr}\` (set ${timeStr}).`,
       ephemeral: true
     });
   }
@@ -724,25 +730,33 @@ export class ActuariusBot {
 
       if (input.provider === "codex") {
         if (!this.config.enableCodexExecution) {
-          throw new CodexExecutionError("CODEX_DISABLED", "Codex execution is disabled on this instance.");
+          throw new CodexExecutionError(
+            "CODEX_DISABLED",
+            "The server's configured AI provider (Codex) is currently disabled. An admin can switch providers with `/model-select`."
+          );
         }
+        // exactOptionalPropertyTypes: model must be absent (not undefined) when not set,
+        // so we use a conditional spread rather than model: input.model.
         const result = await runCodexRequest(
-          { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs, ...(input.model !== undefined ? { model: input.model } : {}) },
+          { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs, ...(input.model ? { model: input.model } : {}) },
           this.logger
         );
         resultText = result.text;
       } else if (input.provider === "gemini") {
         if (!this.config.enableGeminiExecution) {
-          throw new GeminiExecutionError("GEMINI_DISABLED", "Gemini execution is disabled on this instance.");
+          throw new GeminiExecutionError(
+            "GEMINI_DISABLED",
+            "The server's configured AI provider (Gemini) is currently disabled. An admin can switch providers with `/model-select`."
+          );
         }
         const result = await runGeminiRequest(
-          { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs, ...(input.model !== undefined ? { model: input.model } : {}) },
+          { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs, ...(input.model ? { model: input.model } : {}) },
           this.logger
         );
         resultText = result.text;
       } else {
         const result = await runClaudeRequest(
-          { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs, ...(input.model !== undefined ? { model: input.model } : {}) },
+          { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs, ...(input.model ? { model: input.model } : {}) },
           this.logger
         );
         resultText = result.text;

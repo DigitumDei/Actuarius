@@ -41,8 +41,8 @@ export const commandBuilders = [
     .addStringOption((option) =>
       option
         .setName("model")
-        .setDescription("Model name (e.g. claude-opus-4-5, o4-mini, gemini-2.0-flash)")
-        .setRequired(true)
+        .setDescription("Model name (e.g. claude-opus-4-5, o4-mini, gemini-2.0-flash). Omit to use the CLI default.")
+        .setRequired(false)
     ),
   new SlashCommandBuilder()
     .setName("model-current")

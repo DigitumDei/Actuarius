@@ -20,14 +20,27 @@ export function spawnCollect(
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let bufferOverflow = false;
 
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
     }, options.timeoutMs);
 
-    child.stdout!.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.stdout!.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+      if (stdout.length + stderr.length > options.maxBuffer) {
+        bufferOverflow = true;
+        child.kill("SIGTERM");
+      }
+    });
+    child.stderr!.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+      if (stdout.length + stderr.length > options.maxBuffer) {
+        bufferOverflow = true;
+        child.kill("SIGTERM");
+      }
+    });
 
     child.on("error", (err) => {
       clearTimeout(timer);
@@ -36,6 +49,12 @@ export function spawnCollect(
 
     child.on("close", (code, signal) => {
       clearTimeout(timer);
+      if (bufferOverflow) {
+        reject(Object.assign(new Error(`Process output exceeded maxBuffer (${options.maxBuffer} bytes)`), {
+          code: "EMSGSIZE", killed: true, signal, stdout, stderr,
+        }));
+        return;
+      }
       if (timedOut) {
         reject(Object.assign(new Error(`Process timed out after ${options.timeoutMs}ms`), {
           code: "ETIMEDOUT", killed: true, signal, stdout, stderr,
