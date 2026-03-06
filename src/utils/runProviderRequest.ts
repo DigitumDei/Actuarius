@@ -11,8 +11,10 @@ export interface ProviderRequestInput {
 export interface ProviderRunnerConfig {
   /** CLI binary name, e.g. "codex" or "gemini". */
   binary: string;
-  /** Extra CLI flags inserted after `-p <prompt>`, e.g. ["--approval-mode", "full-auto"]. */
+  /** Extra CLI flags inserted after the prompt args. */
   extraArgs: string[];
+  /** If true, pass the prompt as a positional arg instead of `-p <prompt>`. */
+  positionalPrompt?: boolean;
   /** Human-readable label used in log messages, e.g. "Codex". */
   logLabel: string;
   makeError: (code: string, message: string) => Error;
@@ -32,7 +34,9 @@ export async function runProviderRequest(
   config: ProviderRunnerConfig,
   logger: Logger
 ): Promise<string> {
-  const args = ["-p", input.prompt, ...config.extraArgs];
+  const args = config.positionalPrompt
+    ? [input.prompt, ...config.extraArgs]
+    : ["-p", input.prompt, ...config.extraArgs];
   if (input.model) {
     args.push("--model", input.model);
   }

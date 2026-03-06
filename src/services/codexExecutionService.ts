@@ -27,7 +27,8 @@ export async function runCodexRequest(input: CodexExecutionInput, logger: Logger
     input,
     {
       binary: "codex",
-      extraArgs: ["--approval-mode", "full-auto"],
+      positionalPrompt: true,
+      extraArgs: [],
       logLabel: "Codex",
       makeError: (code, message) => new CodexExecutionError(code as CodexExecutionError["code"], message),
       unavailableCode: "CODEX_UNAVAILABLE",

@@ -46,10 +46,22 @@ export const commandBuilders = [
     ),
   new SlashCommandBuilder()
     .setName("model-current")
-    .setDescription("Show the active AI provider and model for /ask in this server.")
+    .setDescription("Show the active AI provider and model for /ask in this server."),
+  new SlashCommandBuilder()
+    .setName("gemini-auth")
+    .setDescription("Start Google OAuth flow to authenticate the Gemini CLI. Requires Manage Server permission."),
+  new SlashCommandBuilder()
+    .setName("gemini-auth-complete")
+    .setDescription("Complete Gemini OAuth by entering the authorization code from Google.")
+    .addStringOption((option) =>
+      option
+        .setName("code")
+        .setDescription("Authorization code from the Google OAuth page")
+        .setRequired(true)
+    )
 ];
 
-export type CommandName = "help" | "connect-repo" | "sync-repo" | "repos" | "ask" | "model-select" | "model-current";
+export type CommandName = "help" | "connect-repo" | "sync-repo" | "repos" | "ask" | "model-select" | "model-current" | "gemini-auth" | "gemini-auth-complete";
 
 export async function registerSlashCommands(config: AppConfig, logger: pino.Logger): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(config.discordToken);

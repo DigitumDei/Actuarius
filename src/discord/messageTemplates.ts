@@ -8,6 +8,8 @@ export function buildHelpText(): string {
     "- `/ask prompt:<text>` Create a new request thread and run AI in an isolated worktree.",
     "- `/model-select provider:<claude|codex|gemini> model:<name>` Set the AI provider and model for `/ask` (admin only).",
     "- `/model-current` Show the active AI provider and model for this server.",
+    "- `/gemini-auth` Start Google OAuth flow to authenticate the Gemini CLI (admin only).",
+    "- `/gemini-auth-complete code:<code>` Complete Gemini OAuth with the code from Google (admin only).",
     "",
     "v1 notes:",
     "- Repo support is public GitHub repos only.",
