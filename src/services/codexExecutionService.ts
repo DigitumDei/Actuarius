@@ -27,6 +27,7 @@ export async function runCodexRequest(input: CodexExecutionInput, logger: Logger
     input,
     {
       binary: "codex",
+      prefixArgs: ["exec"],
       positionalPrompt: true,
       extraArgs: [],
       logLabel: "Codex",

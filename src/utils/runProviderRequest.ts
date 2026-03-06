@@ -11,6 +11,8 @@ export interface ProviderRequestInput {
 export interface ProviderRunnerConfig {
   /** CLI binary name, e.g. "codex" or "gemini". */
   binary: string;
+  /** Args inserted before the prompt (e.g. ["exec"] for `codex exec <prompt>`). */
+  prefixArgs?: string[];
   /** Extra CLI flags inserted after the prompt args. */
   extraArgs: string[];
   /** If true, pass the prompt as a positional arg instead of `-p <prompt>`. */
@@ -34,9 +36,10 @@ export async function runProviderRequest(
   config: ProviderRunnerConfig,
   logger: Logger
 ): Promise<string> {
+  const prefix = config.prefixArgs ?? [];
   const args = config.positionalPrompt
-    ? [input.prompt, ...config.extraArgs]
-    : ["-p", input.prompt, ...config.extraArgs];
+    ? [...prefix, input.prompt, ...config.extraArgs]
+    : [...prefix, "-p", input.prompt, ...config.extraArgs];
   if (input.model) {
     args.push("--model", input.model);
   }
