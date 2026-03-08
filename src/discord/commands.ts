@@ -23,10 +23,54 @@ export const commandBuilders = [
   new SlashCommandBuilder()
     .setName("ask")
     .setDescription("Create a request thread in the connected repo channel.")
-    .addStringOption((option) => option.setName("prompt").setDescription("Request text for this thread.").setRequired(true))
+    .addStringOption((option) => option.setName("prompt").setDescription("Request text for this thread.").setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("model-select")
+    .setDescription("Set the AI provider and model for /ask in this server. Requires Manage Server permission.")
+    .addStringOption((option) =>
+      option
+        .setName("provider")
+        .setDescription("AI provider to use")
+        .setRequired(true)
+        .addChoices(
+          { name: "Claude", value: "claude" },
+          { name: "Codex", value: "codex" },
+          { name: "Gemini", value: "gemini" }
+        )
+    )
+    .addStringOption((option) =>
+      option
+        .setName("model")
+        .setDescription("Model name (e.g. claude-opus-4-5, o4-mini, gemini-2.0-flash). Omit to use the CLI default.")
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName("model-current")
+    .setDescription("Show the active AI provider and model for /ask in this server."),
+  new SlashCommandBuilder()
+    .setName("gemini-auth")
+    .setDescription("Start Google OAuth flow to authenticate the Gemini CLI. Requires Manage Server permission."),
+  new SlashCommandBuilder()
+    .setName("gemini-auth-complete")
+    .setDescription("Complete Gemini OAuth by entering the authorization code from Google.")
+    .addStringOption((option) =>
+      option
+        .setName("code")
+        .setDescription("Authorization code from the Google OAuth page")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("codex-auth")
+    .setDescription("Upload Codex credentials file (~/.codex/auth.json). Requires Manage Server permission.")
+    .addAttachmentOption((option) =>
+      option
+        .setName("credentials")
+        .setDescription("The auth.json file from ~/.codex/ (or %USERPROFILE%\\.codex\\)")
+        .setRequired(true)
+    )
 ];
 
-export type CommandName = "help" | "connect-repo" | "sync-repo" | "repos" | "ask";
+export type CommandName = "help" | "connect-repo" | "sync-repo" | "repos" | "ask" | "model-select" | "model-current" | "gemini-auth" | "gemini-auth-complete" | "codex-auth";
 
 export async function registerSlashCommands(config: AppConfig, logger: pino.Logger): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(config.discordToken);
