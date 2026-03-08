@@ -29,7 +29,7 @@ export async function runCodexRequest(input: CodexExecutionInput, logger: Logger
       binary: "codex",
       prefixArgs: ["exec"],
       positionalPrompt: true,
-      extraArgs: [],
+      extraArgs: ["--dangerously-bypass-approvals-and-sandbox"],
       logLabel: "Codex",
       makeError: (code, message) => new CodexExecutionError(code as CodexExecutionError["code"], message),
       unavailableCode: "CODEX_UNAVAILABLE",

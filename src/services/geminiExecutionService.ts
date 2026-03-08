@@ -27,7 +27,7 @@ export async function runGeminiRequest(input: GeminiExecutionInput, logger: Logg
     input,
     {
       binary: "gemini",
-      extraArgs: [],
+      extraArgs: ["--yolo"],
       logLabel: "Gemini",
       makeError: (code, message) => new GeminiExecutionError(code as GeminiExecutionError["code"], message),
       unavailableCode: "GEMINI_UNAVAILABLE",
