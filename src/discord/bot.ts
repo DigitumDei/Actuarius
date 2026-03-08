@@ -228,7 +228,7 @@ export class ActuariusBot {
         repo: { owner: repo.owner, repo: repo.repo, fullName: repo.full_name },
         prompt,
         provider,
-        ...(model !== undefined ? { model } : {}),
+        ...(model ? { model } : {}),
         existingWorktreePath: worktreePath
       });
     });
@@ -488,7 +488,7 @@ export class ActuariusBot {
 
     const rawProvider = interaction.options.getString("provider", true);
     const rawModel = interaction.options.getString("model");
-    const model = rawModel?.trim() ?? "";
+    const model = rawModel?.trim() || null;
 
     // Defense-in-depth: Discord already constrains the value via addChoices, but we
     // validate here in case of direct API calls that bypass the UI constraint.
@@ -518,16 +518,12 @@ export class ActuariusBot {
       return;
     }
 
-    if (!model) {
-      await interaction.reply({ content: "Model name cannot be empty.", ephemeral: true });
-      return;
-    }
-
     this.db.upsertGuild(interaction.guild.id, interaction.guild.name);
     this.db.setGuildModelConfig(interaction.guildId, provider, model, interaction.user.id);
 
+    const modelDisplay = model ? `model \`${model}\`` : "CLI default model";
     await interaction.reply({
-      content: `AI provider set to **${AI_PROVIDER_LABELS[provider]}** with model \`${model}\`. All future \`/ask\` requests will use this configuration.`,
+      content: `AI provider set to **${AI_PROVIDER_LABELS[provider]}** with ${modelDisplay}. All future \`/ask\` requests will use this configuration.`,
       ephemeral: true
     });
   }
@@ -873,7 +869,7 @@ export class ActuariusBot {
         },
         prompt,
         provider,
-        ...(model !== undefined ? { model } : {})
+        ...(model ? { model } : {})
       });
     });
 

@@ -80,6 +80,10 @@ export async function runProviderRequest(
       throw config.makeError(config.unavailableCode, `${config.logLabel} CLI is not installed or not available in PATH.`);
     }
 
+    if (nodeError.code === "EMSGSIZE") {
+      throw config.makeError(config.failedCode, `${config.logLabel} output exceeded the buffer limit.`);
+    }
+
     if (
       nodeError.code === "ETIMEDOUT" ||
       (nodeError.killed === true && nodeError.signal === "SIGTERM") ||

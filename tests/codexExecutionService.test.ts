@@ -52,12 +52,12 @@ describe("runCodexRequest", () => {
     expect(result.text).toBe("codex output");
   });
 
-  it("passes --approval-mode full-auto and prompt args", async () => {
+  it("passes exec subcommand, positional prompt, and --dangerously-bypass-approvals-and-sandbox", async () => {
     mockSpawnCollect.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
     await runCodexRequest({ prompt: "my prompt", cwd: "/tmp", timeoutMs: 5000 }, logger);
     expect(mockSpawnCollect).toHaveBeenCalledWith(
       "codex",
-      ["-p", "my prompt", "--approval-mode", "full-auto"],
+      ["exec", "my prompt", "--dangerously-bypass-approvals-and-sandbox"],
       expect.any(Object)
     );
   });
@@ -67,7 +67,7 @@ describe("runCodexRequest", () => {
     await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, model: "o4-mini" }, logger);
     expect(mockSpawnCollect).toHaveBeenCalledWith(
       "codex",
-      ["-p", "hello", "--approval-mode", "full-auto", "--model", "o4-mini"],
+      ["exec", "hello", "--dangerously-bypass-approvals-and-sandbox", "--model", "o4-mini"],
       expect.any(Object)
     );
   });

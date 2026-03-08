@@ -86,7 +86,7 @@ export class AppDatabase {
       CREATE TABLE IF NOT EXISTS guild_model_config (
         guild_id TEXT PRIMARY KEY,
         provider TEXT NOT NULL,
-        model TEXT NOT NULL,
+        model TEXT,
         updated_by_user_id TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE
@@ -236,7 +236,7 @@ export class AppDatabase {
       .get(guildId) as GuildModelConfigRow | undefined;
   }
 
-  public setGuildModelConfig(guildId: string, provider: AiProvider, model: string, updatedByUserId: string): GuildModelConfigRow {
+  public setGuildModelConfig(guildId: string, provider: AiProvider, model: string | null, updatedByUserId: string): GuildModelConfigRow {
     return this.db
       .prepare(
         `INSERT INTO guild_model_config (guild_id, provider, model, updated_by_user_id)

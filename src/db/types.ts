@@ -10,7 +10,7 @@ export type AiProvider = "claude" | "codex" | "gemini";
 export interface GuildModelConfigRow {
   guild_id: string;
   provider: AiProvider;
-  model: string;
+  model: string | null;
   updated_by_user_id: string;
   updated_at: string;
 }
