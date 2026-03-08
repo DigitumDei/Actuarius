@@ -21,6 +21,11 @@ export interface ProviderRunnerConfig {
   logLabel: string;
   makeError: (code: string, message: string) => Error;
   unavailableCode: string;
+  notAuthenticatedCode?: string;
+  /** Regex tested against stderr to detect authentication failures. */
+  authFailurePattern?: RegExp;
+  /** User-facing hint appended to the auth failure message (e.g. "Use `/codex-auth` to upload credentials."). */
+  authHint?: string;
   timeoutCode: string;
   failedCode: string;
   emptyOutputCode: string;
@@ -80,6 +85,14 @@ export async function runProviderRequest(
       throw config.makeError(config.unavailableCode, `${config.logLabel} CLI is not installed or not available in PATH.`);
     }
 
+    if (config.authFailurePattern && config.notAuthenticatedCode) {
+      const combined = [nodeError.stderr, nodeError.stdout, message].filter(Boolean).join("\n");
+      if (config.authFailurePattern.test(combined)) {
+        const hint = config.authHint ? ` ${config.authHint}` : "";
+        throw config.makeError(config.notAuthenticatedCode, `${config.logLabel} is not authenticated.${hint}`);
+      }
+    }
+
     if (nodeError.code === "EMSGSIZE") {
       throw config.makeError(config.failedCode, `${config.logLabel} output exceeded the buffer limit.`);
     }
@@ -99,6 +112,15 @@ export async function runProviderRequest(
     logger.debug({ stderr }, `${config.logLabel} subprocess stderr`);
   }
   logger.debug({ stdoutLength: stdout.length }, `${config.logLabel} subprocess exited cleanly`);
+
+  // Detect auth prompts that the CLI printed to stdout instead of producing real output
+  if (config.authFailurePattern && config.notAuthenticatedCode) {
+    const combined = [stdout, stderr].join("\n");
+    if (config.authFailurePattern.test(combined)) {
+      const hint = config.authHint ? ` ${config.authHint}` : "";
+      throw config.makeError(config.notAuthenticatedCode, `${config.logLabel} is not authenticated.${hint}`);
+    }
+  }
 
   const text = stdout.trim();
   if (!text) {

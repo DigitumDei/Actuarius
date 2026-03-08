@@ -13,9 +13,9 @@ export interface GeminiExecutionResult {
 }
 
 export class GeminiExecutionError extends Error {
-  public readonly code: "GEMINI_UNAVAILABLE" | "GEMINI_DISABLED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT";
+  public readonly code: "GEMINI_UNAVAILABLE" | "GEMINI_DISABLED" | "NOT_AUTHENTICATED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT";
 
-  public constructor(code: "GEMINI_UNAVAILABLE" | "GEMINI_DISABLED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT", message: string) {
+  public constructor(code: "GEMINI_UNAVAILABLE" | "GEMINI_DISABLED" | "NOT_AUTHENTICATED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT", message: string) {
     super(message);
     this.name = "GeminiExecutionError";
     this.code = code;
@@ -31,6 +31,9 @@ export async function runGeminiRequest(input: GeminiExecutionInput, logger: Logg
       logLabel: "Gemini",
       makeError: (code, message) => new GeminiExecutionError(code as GeminiExecutionError["code"], message),
       unavailableCode: "GEMINI_UNAVAILABLE",
+      notAuthenticatedCode: "NOT_AUTHENTICATED",
+      authFailurePattern: /set an Auth method|authentication required|not authenticated|Enter the authorization code:/i,
+      authHint: "Use `/gemini-auth` to authenticate.",
       timeoutCode: "TIMEOUT",
       failedCode: "FAILED",
       emptyOutputCode: "EMPTY_OUTPUT",
