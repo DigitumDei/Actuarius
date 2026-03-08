@@ -1,4 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import {
   ChannelType,
   Client,
@@ -259,6 +262,9 @@ export class ActuariusBot {
         return;
       case "gemini-auth-complete":
         await this.handleGeminiAuthComplete(interaction);
+        return;
+      case "codex-auth":
+        await this.handleCodexAuth(interaction);
         return;
       default:
         await interaction.reply({ content: "Unknown command.", ephemeral: true });
@@ -719,6 +725,66 @@ export class ActuariusBot {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error({ error, guildId: interaction.guildId }, "gemini-auth-complete failed");
       await interaction.editReply(`Auth failed: ${message}`);
+    }
+  }
+
+  private async handleCodexAuth(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to configure Codex auth.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!this.config.enableCodexExecution) {
+      await interaction.reply({
+        content: "Codex execution is not enabled on this instance. Set `ENABLE_CODEX_EXECUTION=true` to enable it.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const attachment = interaction.options.getAttachment("credentials", true);
+
+    if (!attachment.name.endsWith(".json")) {
+      await interaction.reply({ content: "Credentials file must be a `.json` file.", ephemeral: true });
+      return;
+    }
+
+    if (attachment.size > 10_000) {
+      await interaction.reply({ content: "Credentials file is too large. Expected a small JSON file.", ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const response = await fetch(attachment.url);
+      if (!response.ok) {
+        await interaction.editReply("Failed to download the attached file from Discord.");
+        return;
+      }
+
+      const content = await response.text();
+
+      // Basic validation that it's JSON
+      JSON.parse(content);
+
+      const credPath = join(homedir(), ".codex", "auth.json");
+      mkdirSync(dirname(credPath), { recursive: true });
+      writeFileSync(credPath, content, { mode: 0o600 });
+
+      this.logger.info({ guildId: interaction.guildId, credPath }, "Codex credentials written");
+      await interaction.editReply("Codex credentials saved. `/ask` requests with the Codex provider should now work.");
+    } catch (error) {
+      this.logger.error({ error, guildId: interaction.guildId }, "codex-auth failed");
+      await interaction.editReply(`Failed to save Codex credentials: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   }
 

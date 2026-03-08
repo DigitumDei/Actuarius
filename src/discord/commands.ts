@@ -58,10 +58,19 @@ export const commandBuilders = [
         .setName("code")
         .setDescription("Authorization code from the Google OAuth page")
         .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("codex-auth")
+    .setDescription("Upload Codex credentials file (~/.codex/auth.json). Requires Manage Server permission.")
+    .addAttachmentOption((option) =>
+      option
+        .setName("credentials")
+        .setDescription("The auth.json file from ~/.codex/ (or %USERPROFILE%\\.codex\\)")
+        .setRequired(true)
     )
 ];
 
-export type CommandName = "help" | "connect-repo" | "sync-repo" | "repos" | "ask" | "model-select" | "model-current" | "gemini-auth" | "gemini-auth-complete";
+export type CommandName = "help" | "connect-repo" | "sync-repo" | "repos" | "ask" | "model-select" | "model-current" | "gemini-auth" | "gemini-auth-complete" | "codex-auth";
 
 export async function registerSlashCommands(config: AppConfig, logger: pino.Logger): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(config.discordToken);

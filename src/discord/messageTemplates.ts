@@ -10,6 +10,7 @@ export function buildHelpText(): string {
     "- `/model-current` Show the active AI provider and model for this server.",
     "- `/gemini-auth` Start Google OAuth flow to authenticate the Gemini CLI (admin only).",
     "- `/gemini-auth-complete code:<code>` Complete Gemini OAuth with the code from Google (admin only).",
+    "- `/codex-auth credentials:<file>` Upload Codex credentials file from `~/.codex/auth.json` (admin only).",
     "",
     "v1 notes:",
     "- Repo support is public GitHub repos only.",
