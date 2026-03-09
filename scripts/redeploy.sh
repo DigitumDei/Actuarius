@@ -28,9 +28,22 @@ if [ -z "$GH_TOKEN" ];               then echo "FATAL: env-gh-token is not set" 
 if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ];then echo "FATAL: env-claude-oauth-token is not set" >&2; exit 1; fi
 if [ -z "$ASK_CONCURRENCY" ];        then echo "FATAL: env-ask-concurrency is not set"     >&2; exit 1; fi
 
+ENABLE_CODEX=$(get_meta "env-enable-codex-execution" || true)
+ENABLE_GEMINI=$(get_meta "env-enable-gemini-execution" || true)
+GOOGLE_GENAI_USE_GCA=$(get_meta "env-google-genai-use-gca" || true)
+
 EXTRA_ARGS=()
 if [ -n "$GUILD_ID" ]; then
   EXTRA_ARGS+=(-e "DISCORD_GUILD_ID=$GUILD_ID")
+fi
+if [ "$ENABLE_CODEX" = "true" ]; then
+  EXTRA_ARGS+=(-e "ENABLE_CODEX_EXECUTION=true")
+fi
+if [ "$ENABLE_GEMINI" = "true" ]; then
+  EXTRA_ARGS+=(-e "ENABLE_GEMINI_EXECUTION=true")
+fi
+if [ "$GOOGLE_GENAI_USE_GCA" = "true" ]; then
+  EXTRA_ARGS+=(-e "GOOGLE_GENAI_USE_GCA=true")
 fi
 
 docker pull "$IMAGE"

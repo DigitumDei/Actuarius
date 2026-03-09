@@ -43,6 +43,9 @@ GH_TOKEN=$(get_meta "env-gh-token")
 CLAUDE_OAUTH_TOKEN=$(get_meta "env-claude-oauth-token")
 DOCKER_IMAGE=$(get_meta "env-docker-image")
 ASK_CONCURRENCY=$(get_meta "env-ask-concurrency")
+ENABLE_CODEX=$(get_meta "env-enable-codex-execution")
+ENABLE_GEMINI=$(get_meta "env-enable-gemini-execution")
+GOOGLE_GENAI_USE_GCA=$(get_meta "env-google-genai-use-gca")
 
 # --- Install redeploy helper script ---
 get_meta "env-redeploy-script" > /var/redeploy.sh
@@ -61,6 +64,17 @@ if [ -n "$DISCORD_GUILD_ID" ]; then
   GUILD_ARG="-e DISCORD_GUILD_ID=$DISCORD_GUILD_ID"
 fi
 
+OPTIONAL_ARGS=""
+if [ "$ENABLE_CODEX" = "true" ]; then
+  OPTIONAL_ARGS="$OPTIONAL_ARGS -e ENABLE_CODEX_EXECUTION=true"
+fi
+if [ "$ENABLE_GEMINI" = "true" ]; then
+  OPTIONAL_ARGS="$OPTIONAL_ARGS -e ENABLE_GEMINI_EXECUTION=true"
+fi
+if [ "$GOOGLE_GENAI_USE_GCA" = "true" ]; then
+  OPTIONAL_ARGS="$OPTIONAL_ARGS -e GOOGLE_GENAI_USE_GCA=true"
+fi
+
 docker run -d \
   --name actuarius \
   --restart unless-stopped \
@@ -74,6 +88,7 @@ docker run -d \
   -e REPOS_ROOT_PATH=/data/repos \
   -e ASK_CONCURRENCY_PER_GUILD="$ASK_CONCURRENCY" \
   -e LOG_LEVEL=info \
+  $OPTIONAL_ARGS \
   "$DOCKER_IMAGE"
 
 # --- Clean up old images to reclaim disk space ---

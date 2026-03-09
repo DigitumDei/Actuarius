@@ -54,3 +54,21 @@ variable "claude_oauth_token" {
   sensitive   = true
   description = "Long-lived Claude OAuth token — generate with: claude setup-token"
 }
+
+variable "enable_codex_execution" {
+  type        = bool
+  default     = false
+  description = "Enable Codex CLI execution for /ask requests"
+}
+
+variable "enable_gemini_execution" {
+  type        = bool
+  default     = false
+  description = "Enable Gemini CLI execution for /ask requests"
+}
+
+variable "google_genai_use_gca" {
+  type        = bool
+  default     = false
+  description = "Set GOOGLE_GENAI_USE_GCA=true for Gemini CLI authentication via GCA"
+}
