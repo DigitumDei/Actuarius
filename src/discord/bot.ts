@@ -30,7 +30,6 @@ import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
 import { createRequestWorktree, RequestWorktreeError } from "../services/requestWorktreeService.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
-const AI_RESULT_LIMIT = 1_500;
 
 const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
   claude: "Claude",
@@ -45,6 +44,46 @@ function clipForDiscord(input: string, maxLength: number): string {
   }
 
   return `${text.slice(0, maxLength - 15).trimEnd()}\n...(truncated)`;
+}
+
+function splitIntoDiscordMessages(text: string, providerLabel: string = "Claude"): string[] {
+  const HEADER = `**${providerLabel} execution completed**\n\n`;
+  const CODE_OPEN = "```text\n";
+  const CODE_CLOSE = "\n```";
+  const CODE_OVERHEAD = CODE_OPEN.length + CODE_CLOSE.length;
+
+  const firstContentMax = DISCORD_MESSAGE_LIMIT - HEADER.length - CODE_OVERHEAD;
+  const contentMax = DISCORD_MESSAGE_LIMIT - CODE_OVERHEAD;
+
+  const trimmed = text.trim();
+  const chunks: string[] = [];
+  let remaining = trimmed;
+  let isFirst = true;
+
+  while (remaining.length > 0) {
+    const max = isFirst ? firstContentMax : contentMax;
+    let chunk: string;
+
+    if (remaining.length <= max) {
+      chunk = remaining;
+      remaining = "";
+    } else {
+      const splitAt = remaining.lastIndexOf("\n", max);
+      if (splitAt > 0) {
+        chunk = remaining.slice(0, splitAt);
+        remaining = remaining.slice(splitAt + 1);
+      } else {
+        chunk = remaining.slice(0, max);
+        remaining = remaining.slice(max);
+      }
+    }
+
+    const prefix = isFirst ? HEADER : "";
+    chunks.push(`${prefix}${CODE_OPEN}${chunk}${CODE_CLOSE}`);
+    isFirst = false;
+  }
+
+  return chunks.length > 0 ? chunks : [`${HEADER}${CODE_OPEN}(no output)${CODE_CLOSE}`];
 }
 
 function parseThreadEntry(
@@ -66,6 +105,11 @@ function parseThreadEntry(
     const altMatch = /^\*\*[A-Za-z]+ execution completed\*\*\n\n([\s\S]+)/u.exec(content);
     if (altMatch?.[1]) {
       return { role: "assistant", text: altMatch[1].trim() };
+    }
+    // Continuation chunk from a split response: just a ```text...``` block
+    const continuationMatch = /^```text\n([\s\S]*?)\n```$/u.exec(content);
+    if (continuationMatch?.[1]) {
+      return { role: "assistant", text: continuationMatch[1].trim() };
     }
     // Other bot messages are noise ("... execution started.", warnings, etc.)
     return null;
@@ -1014,19 +1058,9 @@ export class ActuariusBot {
         "AI execution finished"
       );
 
-      const response = [
-        `**${providerLabel} execution completed**`,
-        "",
-        "```text",
-        clipForDiscord(resultText, AI_RESULT_LIMIT),
-        "```"
-      ].join("\n");
-
-      await channel.send(
-        response.length > DISCORD_MESSAGE_LIMIT
-          ? `**${providerLabel} execution completed**\n\n${clipForDiscord(resultText, DISCORD_MESSAGE_LIMIT - 40)}`
-          : response
-      );
+      for (const chunk of splitIntoDiscordMessages(resultText, providerLabel)) {
+        await channel.send(chunk);
+      }
       this.db.updateRequestStatus(input.requestId, "succeeded");
       statusFinalized = true;
       this.logger.info(
@@ -1082,7 +1116,13 @@ export class ActuariusBot {
     for (const msg of sorted) {
       const isBot = msg.author.id === this.client.user?.id;
       const entry = parseThreadEntry(msg.content, isBot);
-      if (entry) history.push(entry);
+      if (!entry) continue;
+      const prev = history[history.length - 1];
+      if (prev && prev.role === "assistant" && entry.role === "assistant") {
+        prev.text += "\n" + entry.text;
+      } else {
+        history.push(entry);
+      }
     }
 
     if (history.length === 0) {
