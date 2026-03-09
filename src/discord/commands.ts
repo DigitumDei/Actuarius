@@ -25,6 +25,14 @@ export const commandBuilders = [
     .setDescription("Create a request thread in the connected repo channel.")
     .addStringOption((option) => option.setName("prompt").setDescription("Request text for this thread.").setRequired(true)),
   new SlashCommandBuilder()
+    .setName("bug")
+    .setDescription("Create a bug report issue on GitHub by analyzing the codebase.")
+    .addStringOption((option) => option.setName("prompt").setDescription("Bug details or description.").setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("issue")
+    .setDescription("Create an issue on GitHub by analyzing the codebase.")
+    .addStringOption((option) => option.setName("prompt").setDescription("Issue details or description.").setRequired(true)),
+  new SlashCommandBuilder()
     .setName("model-select")
     .setDescription("Set the AI provider and model for /ask in this server. Requires Manage Server permission.")
     .addStringOption((option) =>
@@ -70,7 +78,7 @@ export const commandBuilders = [
     )
 ];
 
-export type CommandName = "help" | "connect-repo" | "sync-repo" | "repos" | "ask" | "model-select" | "model-current" | "gemini-auth" | "gemini-auth-complete" | "codex-auth";
+export type CommandName = "help" | "connect-repo" | "sync-repo" | "repos" | "ask" | "bug" | "issue" | "model-select" | "model-current" | "gemini-auth" | "gemini-auth-complete" | "codex-auth";
 
 export async function registerSlashCommands(config: AppConfig, logger: pino.Logger): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(config.discordToken);

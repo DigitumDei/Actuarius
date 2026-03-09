@@ -295,6 +295,12 @@ export class ActuariusBot {
       case "ask":
         await this.handleAsk(interaction);
         return;
+      case "bug":
+        await this.handleIssueCreate(interaction, "bug");
+        return;
+      case "issue":
+        await this.handleIssueCreate(interaction, "issue");
+        return;
       case "model-select":
         await this.handleModelSelect(interaction);
         return;
@@ -567,7 +573,7 @@ export class ActuariusBot {
 
     const modelDisplay = model ? `model \`${model}\`` : "CLI default model";
     await interaction.reply({
-      content: `AI provider set to **${AI_PROVIDER_LABELS[provider]}** with ${modelDisplay}. All future \`/ask\` requests will use this configuration.`,
+      content: `AI provider set to **${AI_PROVIDER_LABELS[provider]}** with ${modelDisplay}. All future \`/ask\`, \`/bug\`, and \`/issue\` requests will use this configuration.`,
       ephemeral: true
     });
   }
@@ -829,6 +835,17 @@ export class ActuariusBot {
   }
 
   private async handleAsk(interaction: ChatInputCommandInteraction): Promise<void> {
+    await this.handleRepoCommand(interaction, { label: "request" });
+  }
+
+  private async handleRepoCommand(
+    interaction: ChatInputCommandInteraction,
+    options: {
+      label: string;
+      promptTransformer?: (prompt: string) => string;
+      rawOutput?: boolean;
+    }
+  ): Promise<void> {
     if (!interaction.guild || !interaction.guildId) {
       await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
       return;
@@ -874,13 +891,13 @@ export class ActuariusBot {
     await interaction.deferReply({ ephemeral: true });
 
     const seedMessage = await channel.send({
-      content: `New request from <@${interaction.user.id}> for \`${repo.full_name}\``
+      content: `New ${options.label} from <@${interaction.user.id}> for \`${repo.full_name}\``
     });
 
     const thread = await seedMessage.startThread({
       name: buildThreadName(prompt),
       autoArchiveDuration: this.config.threadAutoArchiveMinutes,
-      reason: `Request thread for ${repo.full_name} by ${interaction.user.tag}`
+      reason: `${options.label} thread for ${repo.full_name} by ${interaction.user.tag}`
     });
 
     await thread.send(
@@ -913,13 +930,48 @@ export class ActuariusBot {
         },
         prompt,
         provider,
-        ...(model ? { model } : {})
+        ...(model ? { model } : {}),
+        ...(options.promptTransformer ? { promptTransformer: options.promptTransformer } : {}),
+        ...(options.rawOutput ? { rawOutput: true } : {})
       });
     });
 
     await interaction.editReply(
-      `Created request thread <#${thread.id}>. Request queued for ${AI_PROVIDER_LABELS[provider]} execution.`
+      `Created ${options.label} thread <#${thread.id}>. Request queued for ${AI_PROVIDER_LABELS[provider]} execution.`
     );
+  }
+
+  private async handleIssueCreate(interaction: ChatInputCommandInteraction, type: "bug" | "issue"): Promise<void> {
+    // Pre-check that gh CLI is authenticated before queuing work
+    try {
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      const execFileAsync = promisify(execFile);
+      await execFileAsync("gh", ["auth", "status"], { timeout: 10_000 });
+    } catch {
+      await interaction.reply({
+        content: "GitHub CLI is not authenticated. Run `gh auth login` on the host before using `/bug` or `/issue`.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const defaultLabel = type === "bug" ? "bug" : "enhancement";
+    const promptTransformer = (prompt: string): string =>
+      `Analyze the codebase against the master branch to produce a structured GitHub issue report for the following request.
+Request: ${prompt}
+
+Create the issue directly using the GitHub CLI (\`gh issue create\`).
+Make sure to include a clear title, a markdown formatted description (with reproduction steps if it's a bug), and the label "${defaultLabel}".
+If it is a bug, also ensure the "bug" label is applied.
+If the label does not exist on the repository, omit the --label flag rather than failing.
+Output the result of the command or the link to the created issue.`;
+
+    await this.handleRepoCommand(interaction, {
+      label: type,
+      promptTransformer,
+      rawOutput: true
+    });
   }
 
   private async runQueuedRequest(input: {
@@ -934,6 +986,8 @@ export class ActuariusBot {
     provider: AiProvider;
     model?: string;
     existingWorktreePath?: string;
+    promptTransformer?: (prompt: string) => string;
+    rawOutput?: boolean;
   }): Promise<void> {
     const startedAt = Date.now();
     const providerLabel = AI_PROVIDER_LABELS[input.provider];
@@ -974,7 +1028,7 @@ export class ActuariusBot {
       } else {
         stage = "sync-repo";
         this.logger.info({ requestId: input.requestId, repo: input.repo.fullName }, "Syncing repository before AI execution");
-        await ensureRepoCheckedOutToMaster(this.config.reposRootPath, {
+        const checkout = await ensureRepoCheckedOutToMaster(this.config.reposRootPath, {
           owner: input.repo.owner,
           repo: input.repo.repo,
           fullName: input.repo.fullName
@@ -1002,9 +1056,12 @@ export class ActuariusBot {
       this.db.updateRequestWorktreePath(input.requestId, worktreePath);
 
       stage = "run-ai";
-      const effectivePrompt = input.existingWorktreePath
+      let effectivePrompt = input.existingWorktreePath
         ? await this.buildThreadPromptWithHistory(channel, input.prompt)
         : input.prompt;
+      if (input.promptTransformer && !input.existingWorktreePath) {
+        effectivePrompt = input.promptTransformer(effectivePrompt);
+      }
       this.logger.info(
         {
           requestId: input.requestId,
@@ -1058,8 +1115,14 @@ export class ActuariusBot {
         "AI execution finished"
       );
 
-      for (const chunk of splitIntoDiscordMessages(resultText, providerLabel)) {
-        await channel.send(chunk);
+      if (input.rawOutput) {
+        const header = `**${providerLabel} execution completed**`;
+        const body = clipForDiscord(resultText, DISCORD_MESSAGE_LIMIT - header.length - 4);
+        await channel.send(`${header}\n\n${body}`);
+      } else {
+        for (const chunk of splitIntoDiscordMessages(resultText, providerLabel)) {
+          await channel.send(chunk);
+        }
       }
       this.db.updateRequestStatus(input.requestId, "succeeded");
       statusFinalized = true;
