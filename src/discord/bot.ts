@@ -949,7 +949,7 @@ export class ActuariusBot {
       const { execFile } = await import("node:child_process");
       const { promisify } = await import("node:util");
       const execFileAsync = promisify(execFile);
-      await execFileAsync("gh", ["auth", "status"], { timeout: 10_000 });
+      await execFileAsync("gh", ["auth", "token"], { timeout: 10_000 });
     } catch {
       await interaction.reply({
         content: "GitHub CLI is not authenticated. Run `gh auth login` on the host before using `/bug` or `/issue`.",
