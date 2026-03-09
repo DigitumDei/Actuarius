@@ -218,6 +218,21 @@ SQLite tables:
 - `requests`
 - `bot_state`
 
+## Security considerations
+
+Actuarius executes AI agents (Claude, Codex, Gemini) with full shell access inside the container. User-supplied prompts from `/ask`, `/bug`, and `/issue` are passed directly to these agents, which run with unrestricted permissions (e.g. `--dangerously-auto-approve`, `--yolo`). This is by design — the bot's purpose is to let AI agents work freely on code.
+
+**This means any Discord user who can run slash commands in your server can instruct the AI to execute arbitrary shell commands inside the container.** There is no prompt sanitization or sandboxing beyond the container boundary itself.
+
+Mitigations:
+
+- **Run on private servers only.** Do not add this bot to public Discord servers. Treat server membership as the trust boundary.
+- **Container isolation.** The Docker container limits blast radius — the AI cannot escape the container, but it has full access to everything inside it (repos, tokens, CLI tools).
+- **Scoped tokens.** Use fine-grained GitHub tokens with minimal permissions. Avoid giving `GH_TOKEN` write access beyond what you need.
+- **No secrets in the worktree.** Do not store sensitive files in repositories the bot has access to.
+
+If you choose to run this bot on a public or semi-public server, you accept the risk of prompt injection attacks that could abuse the AI's shell access within the container.
+
 ## Testing
 
 ```bash
