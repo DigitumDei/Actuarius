@@ -1,3 +1,7 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import {
   ChannelType,
   Client,
@@ -13,16 +17,25 @@ import {
 import type pino from "pino";
 import type { AppConfig } from "../config.js";
 import { AppDatabase } from "../db/database.js";
+import type { AiProvider } from "../db/types.js";
 import { commandBuilders } from "./commands.js";
 import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
 import { GitHubRepoLookupError, lookupRepo, parseRepoReference } from "../services/githubService.js";
 import { GitWorkspaceError, ensureRepoCheckedOutToMaster } from "../services/gitWorkspaceService.js";
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
+import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
+import { GeminiExecutionError, runGeminiRequest } from "../services/geminiExecutionService.js";
 import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
 import { createRequestWorktree, RequestWorktreeError } from "../services/requestWorktreeService.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
+
+const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  gemini: "Gemini"
+};
 
 function clipForDiscord(input: string, maxLength: number): string {
   const text = input.trim();
@@ -33,8 +46,8 @@ function clipForDiscord(input: string, maxLength: number): string {
   return `${text.slice(0, maxLength - 15).trimEnd()}\n...(truncated)`;
 }
 
-function splitIntoDiscordMessages(text: string): string[] {
-  const HEADER = "**Claude execution completed**\n\n";
+function splitIntoDiscordMessages(text: string, providerLabel: string = "Claude"): string[] {
+  const HEADER = `**${providerLabel} execution completed**\n\n`;
   const CODE_OPEN = "```text\n";
   const CODE_CLOSE = "\n```";
   const CODE_OVERHEAD = CODE_OPEN.length + CODE_CLOSE.length;
@@ -83,21 +96,31 @@ function parseThreadEntry(
     if (promptMatch?.[1]) {
       return { role: "user", text: promptMatch[1].trim() };
     }
-    // Claude response in code block: "**Claude execution completed**\n\n```text\n<text>\n```"
-    const codeBlockMatch = /^\*\*Claude execution completed\*\*\n\n```text\n([\s\S]*?)\n```/u.exec(content);
+    // AI response in code block: "**{Provider} execution completed**\n\n```text\n<text>\n```"
+    const codeBlockMatch = /^\*\*[A-Za-z]+ execution completed\*\*\n\n```text\n([\s\S]*?)\n```/u.exec(content);
     if (codeBlockMatch?.[1]) {
       return { role: "assistant", text: codeBlockMatch[1].trim() };
     }
-    // Claude response without code block (long response, stripped wrapper)
-    const altMatch = /^\*\*Claude execution completed\*\*\n\n([\s\S]+)/u.exec(content);
+    // AI response without code block (long response, stripped wrapper)
+    const altMatch = /^\*\*[A-Za-z]+ execution completed\*\*\n\n([\s\S]+)/u.exec(content);
     if (altMatch?.[1]) {
       return { role: "assistant", text: altMatch[1].trim() };
     }
-    // Other bot messages are noise ("Claude execution started.", warnings, etc.)
+    // Continuation chunk from a split response: just a ```text...``` block
+    const continuationMatch = /^```text\n([\s\S]*?)\n```$/u.exec(content);
+    if (continuationMatch?.[1]) {
+      return { role: "assistant", text: continuationMatch[1].trim() };
+    }
+    // Other bot messages are noise ("... execution started.", warnings, etc.)
     return null;
   }
   const text = content.trim();
   return text ? { role: "user", text } : null;
+}
+
+interface PendingGeminiAuth {
+  child: ChildProcess;
+  timeoutHandle: NodeJS.Timeout;
 }
 
 export class ActuariusBot {
@@ -106,6 +129,7 @@ export class ActuariusBot {
   private readonly logger: pino.Logger;
   private readonly db: AppDatabase;
   private readonly requestQueue: RequestExecutionQueue;
+  private readonly pendingGeminiAuth = new Map<string, PendingGeminiAuth>();
 
   public constructor(config: AppConfig, logger: pino.Logger, db: AppDatabase) {
     this.config = config;
@@ -227,6 +251,10 @@ export class ActuariusBot {
     const prompt = message.content.trim();
     if (!prompt) return;
 
+    const modelConfig = this.db.getGuildModelConfig(message.guildId);
+    const provider: AiProvider = modelConfig?.provider ?? "claude";
+    const model = modelConfig?.model;
+
     const request = this.db.createRequest({
       guildId: message.guildId,
       repoId: repo.id,
@@ -243,6 +271,8 @@ export class ActuariusBot {
         threadId: message.channelId,
         repo: { owner: repo.owner, repo: repo.repo, fullName: repo.full_name },
         prompt,
+        provider,
+        ...(model ? { model } : {}),
         existingWorktreePath: worktreePath
       });
     });
@@ -264,6 +294,21 @@ export class ActuariusBot {
         return;
       case "ask":
         await this.handleAsk(interaction);
+        return;
+      case "model-select":
+        await this.handleModelSelect(interaction);
+        return;
+      case "model-current":
+        await this.handleModelCurrent(interaction);
+        return;
+      case "gemini-auth":
+        await this.handleGeminiAuth(interaction);
+        return;
+      case "gemini-auth-complete":
+        await this.handleGeminiAuthComplete(interaction);
+        return;
+      case "codex-auth":
+        await this.handleCodexAuth(interaction);
         return;
       default:
         await interaction.reply({ content: "Unknown command.", ephemeral: true });
@@ -471,6 +516,318 @@ export class ActuariusBot {
     }
   }
 
+  private async handleModelSelect(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to change the AI provider or model.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const rawProvider = interaction.options.getString("provider", true);
+    const rawModel = interaction.options.getString("model");
+    const model = rawModel?.trim() || null;
+
+    // Defense-in-depth: Discord already constrains the value via addChoices, but we
+    // validate here in case of direct API calls that bypass the UI constraint.
+    if (!Object.keys(AI_PROVIDER_LABELS).includes(rawProvider)) {
+      await interaction.reply({
+        content: `Invalid provider. Choose from: \`${Object.keys(AI_PROVIDER_LABELS).join("`, `")}\`.`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    const provider = rawProvider as AiProvider;
+
+    if (provider === "codex" && !this.config.enableCodexExecution) {
+      await interaction.reply({
+        content: "Codex execution is not enabled on this instance (`ENABLE_CODEX_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (provider === "gemini" && !this.config.enableGeminiExecution) {
+      await interaction.reply({
+        content: "Gemini execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    this.db.upsertGuild(interaction.guild.id, interaction.guild.name);
+    this.db.setGuildModelConfig(interaction.guildId, provider, model, interaction.user.id);
+
+    const modelDisplay = model ? `model \`${model}\`` : "CLI default model";
+    await interaction.reply({
+      content: `AI provider set to **${AI_PROVIDER_LABELS[provider]}** with ${modelDisplay}. All future \`/ask\` requests will use this configuration.`,
+      ephemeral: true
+    });
+  }
+
+  private async handleModelCurrent(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    const config = this.db.getGuildModelConfig(interaction.guildId);
+    if (!config) {
+      await interaction.reply({
+        content: "No AI provider configured. Defaulting to **Claude** (no model override). Use `/model-select` to configure.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const ts = new Date(config.updated_at).getTime();
+    const timeStr = Number.isNaN(ts) ? config.updated_at : `<t:${Math.floor(ts / 1000)}:R>`;
+    const modelStr = config.model || "none (CLI default)";
+    await interaction.reply({
+      content: `Current AI provider: **${AI_PROVIDER_LABELS[config.provider]}**, model: \`${modelStr}\` (set ${timeStr}).`,
+      ephemeral: true
+    });
+  }
+
+  private async handleGeminiAuth(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to configure Gemini auth.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!this.config.enableGeminiExecution) {
+      await interaction.reply({
+        content: "Gemini execution is not enabled on this instance. Set `ENABLE_GEMINI_EXECUTION=true` to enable it.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (this.pendingGeminiAuth.has(interaction.guildId)) {
+      await interaction.reply({
+        content: "A Gemini auth flow is already in progress. Use `/gemini-auth-complete` or wait 5 minutes for it to expire.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    const guildId = interaction.guildId;
+
+    try {
+      const url = await new Promise<string>((resolve, reject) => {
+        const child = spawn("gemini", [], {
+          stdio: ["pipe", "pipe", "pipe"]
+        });
+
+        let output = "";
+        const urlRegex = /https:\/\/accounts\.google\.com\/[^\s\r\n\x1b]*/;
+
+        const onData = (chunk: Buffer) => {
+          const text = chunk.toString();
+          this.logger.debug({ text, source: "gemini-auth" }, "Gemini auth output chunk");
+          output += text;
+          const match = urlRegex.exec(output);
+          if (match && !this.pendingGeminiAuth.has(guildId)) {
+            const timeoutHandle = setTimeout(() => {
+              const pending = this.pendingGeminiAuth.get(guildId);
+              if (pending) {
+                pending.child.kill();
+                this.pendingGeminiAuth.delete(guildId);
+                this.logger.info({ guildId }, "Gemini auth flow timed out");
+              }
+            }, 5 * 60 * 1000);
+
+            this.pendingGeminiAuth.set(guildId, { child, timeoutHandle });
+            resolve(match[0]);
+          }
+        };
+
+        child.stdout!.on("data", onData);
+        child.stderr!.on("data", onData);
+
+        child.on("error", reject);
+
+        child.on("close", (code) => {
+          if (!this.pendingGeminiAuth.has(guildId)) {
+            reject(new Error(`gemini auth login exited with code ${String(code)} before URL was found`));
+          }
+        });
+
+        setTimeout(() => {
+          if (!this.pendingGeminiAuth.has(guildId)) {
+            child.kill();
+            reject(new Error("Timed out waiting for Gemini auth URL"));
+          }
+        }, 30_000);
+      });
+
+      await interaction.editReply(
+        `Visit this URL to authorize Gemini:\n\n${url}\n\nThen run \`/gemini-auth-complete code:<paste code here>\`.`
+      );
+    } catch (error) {
+      this.logger.error({ error, guildId }, "gemini-auth failed");
+      await interaction.editReply(`Failed to start Gemini auth: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  }
+
+  private async handleGeminiAuthComplete(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to configure Gemini auth.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const pending = this.pendingGeminiAuth.get(interaction.guildId);
+    if (!pending) {
+      await interaction.reply({
+        content: "No pending Gemini auth flow. Run `/gemini-auth` first.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const code = interaction.options.getString("code", true).trim();
+    await interaction.deferReply({ ephemeral: true });
+
+    const { child, timeoutHandle } = pending;
+    this.pendingGeminiAuth.delete(interaction.guildId);
+    clearTimeout(timeoutHandle);
+
+    this.logger.info({
+      guildId: interaction.guildId,
+      exitCode: child.exitCode,
+      killed: child.killed,
+      pid: child.pid
+    }, "gemini-auth-complete: child process state");
+
+    if (child.exitCode !== null || child.killed) {
+      await interaction.editReply("The Gemini auth session expired. Run `/gemini-auth` to start again.");
+      return;
+    }
+
+    try {
+      const success = await new Promise<boolean>((resolve, reject) => {
+        let output = "";
+        const checkSuccess = (text: string) => {
+          output += text;
+          if (/loaded cached credentials|credentials saved|authenticated/i.test(output)) {
+            child.kill();
+            resolve(true);
+          }
+        };
+
+        child.stdout!.on("data", (chunk: Buffer) => checkSuccess(chunk.toString()));
+        child.stderr!.on("data", (chunk: Buffer) => checkSuccess(chunk.toString()));
+        child.on("close", () => {
+          resolve(/loaded cached credentials|credentials saved|authenticated/i.test(output));
+        });
+        child.on("error", reject);
+        child.stdin!.on("error", reject);
+        child.stdin!.write(code + "\n");
+        child.stdin!.end();
+        setTimeout(() => {
+          child.kill();
+          reject(new Error("Timed out waiting for Gemini auth to complete"));
+        }, 30_000);
+      });
+
+      if (success) {
+        await interaction.editReply("Gemini auth complete. `/ask` requests will now use your Google account.");
+      } else {
+        await interaction.editReply("Gemini auth may have failed — no confirmation received. Try `/gemini-auth` again or run an `/ask` to test.");
+      }
+    } catch (error) {
+      child.kill();
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error({ error, guildId: interaction.guildId }, "gemini-auth-complete failed");
+      await interaction.editReply(`Auth failed: ${message}`);
+    }
+  }
+
+  private async handleCodexAuth(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to configure Codex auth.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!this.config.enableCodexExecution) {
+      await interaction.reply({
+        content: "Codex execution is not enabled on this instance. Set `ENABLE_CODEX_EXECUTION=true` to enable it.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const attachment = interaction.options.getAttachment("credentials", true);
+
+    if (!attachment.name.endsWith(".json")) {
+      await interaction.reply({ content: "Credentials file must be a `.json` file.", ephemeral: true });
+      return;
+    }
+
+    if (attachment.size > 10_000) {
+      await interaction.reply({ content: "Credentials file is too large. Expected a small JSON file.", ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const response = await fetch(attachment.url);
+      if (!response.ok) {
+        await interaction.editReply("Failed to download the attached file from Discord.");
+        return;
+      }
+
+      const content = await response.text();
+
+      // Basic validation that it's JSON
+      JSON.parse(content);
+
+      const credPath = join(homedir(), ".codex", "auth.json");
+      mkdirSync(dirname(credPath), { recursive: true });
+      writeFileSync(credPath, content, { mode: 0o600 });
+
+      this.logger.info({ guildId: interaction.guildId, credPath }, "Codex credentials written");
+      await interaction.editReply("Codex credentials saved. `/ask` requests with the Codex provider should now work.");
+    } catch (error) {
+      this.logger.error({ error, guildId: interaction.guildId }, "codex-auth failed");
+      await interaction.editReply(`Failed to save Codex credentials: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  }
+
   private async handleAsk(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guild || !interaction.guildId) {
       await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
@@ -503,6 +860,10 @@ export class ActuariusBot {
       });
       return;
     }
+
+    const modelConfig = this.db.getGuildModelConfig(interaction.guildId);
+    const provider: AiProvider = modelConfig?.provider ?? "claude";
+    const model = modelConfig?.model;
 
     const channel = (await interaction.guild.channels.fetch(repo.channel_id)) as GuildTextBasedChannel | null;
     if (!channel || channel.type !== ChannelType.GuildText) {
@@ -550,11 +911,15 @@ export class ActuariusBot {
           repo: repo.repo,
           fullName: repo.full_name
         },
-        prompt
+        prompt,
+        provider,
+        ...(model ? { model } : {})
       });
     });
 
-    await interaction.editReply(`Created request thread <#${thread.id}>. Request queued for Claude execution.`);
+    await interaction.editReply(
+      `Created request thread <#${thread.id}>. Request queued for ${AI_PROVIDER_LABELS[provider]} execution.`
+    );
   }
 
   private async runQueuedRequest(input: {
@@ -566,9 +931,12 @@ export class ActuariusBot {
       fullName: string;
     };
     prompt: string;
+    provider: AiProvider;
+    model?: string;
     existingWorktreePath?: string;
   }): Promise<void> {
     const startedAt = Date.now();
+    const providerLabel = AI_PROVIDER_LABELS[input.provider];
     let worktreePath: string | null = null;
     let statusFinalized = false;
     let stage = "init";
@@ -584,7 +952,10 @@ export class ActuariusBot {
 
     try {
       this.db.updateRequestStatus(input.requestId, "running");
-      this.logger.info({ requestId: input.requestId, threadId: input.threadId, repo: input.repo.fullName }, "Queued request started");
+      this.logger.info(
+        { requestId: input.requestId, threadId: input.threadId, repo: input.repo.fullName, provider: input.provider, model: input.model },
+        "Queued request started"
+      );
 
       stage = "fetch-thread";
       const channel = await this.client.channels.fetch(input.threadId);
@@ -595,14 +966,14 @@ export class ActuariusBot {
       }
 
       threadChannel = channel;
-      await threadChannel.send("Claude execution started.");
+      await threadChannel.send(`${providerLabel} execution started.`);
 
       if (input.existingWorktreePath) {
         worktreePath = input.existingWorktreePath;
         this.logger.info({ requestId: input.requestId, worktreePath }, "Reusing existing worktree for follow-up");
       } else {
         stage = "sync-repo";
-        this.logger.info({ requestId: input.requestId, repo: input.repo.fullName }, "Syncing repository before Claude execution");
+        this.logger.info({ requestId: input.requestId, repo: input.repo.fullName }, "Syncing repository before AI execution");
         await ensureRepoCheckedOutToMaster(this.config.reposRootPath, {
           owner: input.repo.owner,
           repo: input.repo.repo,
@@ -630,7 +1001,7 @@ export class ActuariusBot {
 
       this.db.updateRequestWorktreePath(input.requestId, worktreePath);
 
-      stage = "run-claude";
+      stage = "run-ai";
       const effectivePrompt = input.existingWorktreePath
         ? await this.buildThreadPromptWithHistory(channel, input.prompt)
         : input.prompt;
@@ -639,40 +1010,86 @@ export class ActuariusBot {
           requestId: input.requestId,
           worktreePath,
           timeoutMs: this.config.askExecutionTimeoutMs,
-          promptLength: effectivePrompt.length
+          promptLength: effectivePrompt.length,
+          provider: input.provider,
+          model: input.model
         },
-        "Starting Claude execution"
-      );
-      const result = await runClaudeRequest(
-        { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs },
-        this.logger
-      );
-      this.logger.info(
-        { requestId: input.requestId, outputLength: result.text.length, durationMs: Date.now() - startedAt },
-        "Claude execution finished"
+        "Starting AI execution"
       );
 
-      for (const chunk of splitIntoDiscordMessages(result.text)) {
+      let resultText: string;
+
+      if (input.provider === "codex") {
+        if (!this.config.enableCodexExecution) {
+          throw new CodexExecutionError(
+            "CODEX_DISABLED",
+            "The server's configured AI provider (Codex) is currently disabled. An admin can switch providers with `/model-select`."
+          );
+        }
+        // exactOptionalPropertyTypes: model must be absent (not undefined) when not set,
+        // so we use a conditional spread rather than model: input.model.
+        const result = await runCodexRequest(
+          { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs, ...(input.model ? { model: input.model } : {}) },
+          this.logger
+        );
+        resultText = result.text;
+      } else if (input.provider === "gemini") {
+        if (!this.config.enableGeminiExecution) {
+          throw new GeminiExecutionError(
+            "GEMINI_DISABLED",
+            "The server's configured AI provider (Gemini) is currently disabled. An admin can switch providers with `/model-select`."
+          );
+        }
+        const result = await runGeminiRequest(
+          { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs, ...(input.model ? { model: input.model } : {}) },
+          this.logger
+        );
+        resultText = result.text;
+      } else {
+        const result = await runClaudeRequest(
+          { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs, ...(input.model ? { model: input.model } : {}) },
+          this.logger
+        );
+        resultText = result.text;
+      }
+
+      this.logger.info(
+        { requestId: input.requestId, outputLength: resultText.length, durationMs: Date.now() - startedAt, provider: input.provider },
+        "AI execution finished"
+      );
+
+      for (const chunk of splitIntoDiscordMessages(resultText, providerLabel)) {
         await channel.send(chunk);
       }
       this.db.updateRequestStatus(input.requestId, "succeeded");
       statusFinalized = true;
-      this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Queued Claude request succeeded");
+      this.logger.info(
+        { requestId: input.requestId, durationMs: Date.now() - startedAt, provider: input.provider },
+        "Queued AI request succeeded"
+      );
     } catch (error) {
       markFailed();
       const message = this.describeExecutionError(error);
       if (threadChannel && threadChannel.isThread()) {
-        await threadChannel.send(`**Claude execution failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
+        await threadChannel.send(`**${providerLabel} execution failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
       }
       this.logger.error(
-        { error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage },
-        "Queued Claude request failed"
+        { error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage, provider: input.provider },
+        "Queued AI request failed"
       );
     }
   }
 
   private describeExecutionError(error: unknown): string {
     if (error instanceof ClaudeExecutionError) {
+      return error.message;
+    }
+
+    if (error instanceof CodexExecutionError) {
+      return error.message;
+    }
+
+    if (error instanceof GeminiExecutionError) {
       return error.message;
     }
 
@@ -699,7 +1116,13 @@ export class ActuariusBot {
     for (const msg of sorted) {
       const isBot = msg.author.id === this.client.user?.id;
       const entry = parseThreadEntry(msg.content, isBot);
-      if (entry) history.push(entry);
+      if (!entry) continue;
+      const prev = history[history.length - 1];
+      if (prev && prev.role === "assistant" && entry.role === "assistant") {
+        prev.text += "\n" + entry.text;
+      } else {
+        history.push(entry);
+      }
     }
 
     if (history.length === 0) {

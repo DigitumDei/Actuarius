@@ -39,8 +39,11 @@ resource "google_compute_instance" "actuarius" {
     env-gh-token            = var.gh_token
     env-claude-oauth-token  = var.claude_oauth_token
     env-docker-image        = var.docker_image
-    env-ask-concurrency     = var.ask_concurrency
-    env-redeploy-script     = file("${path.module}/../scripts/redeploy.sh")
+    env-ask-concurrency         = var.ask_concurrency
+    env-enable-codex-execution  = var.enable_codex_execution
+    env-enable-gemini-execution = var.enable_gemini_execution
+    env-google-genai-use-gca    = var.google_genai_use_gca
+    env-redeploy-script         = file("${path.module}/../scripts/redeploy.sh")
   }
 
   metadata_startup_script = replace(file("${path.module}/startup.sh"), "\r\n", "\n")
