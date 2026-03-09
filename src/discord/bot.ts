@@ -844,6 +844,7 @@ export class ActuariusBot {
       label: string;
       promptTransformer?: (prompt: string) => string;
       rawOutput?: boolean;
+      detachWorktree?: boolean;
     }
   ): Promise<void> {
     if (!interaction.guild || !interaction.guildId) {
@@ -932,7 +933,8 @@ export class ActuariusBot {
         provider,
         ...(model ? { model } : {}),
         ...(options.promptTransformer ? { promptTransformer: options.promptTransformer } : {}),
-        ...(options.rawOutput ? { rawOutput: true } : {})
+        ...(options.rawOutput ? { rawOutput: true } : {}),
+        ...(options.detachWorktree ? { detachWorktree: true } : {})
       });
     });
 
@@ -970,7 +972,8 @@ Output the result of the command or the link to the created issue.`;
     await this.handleRepoCommand(interaction, {
       label: type,
       promptTransformer,
-      rawOutput: true
+      rawOutput: true,
+      detachWorktree: true
     });
   }
 
@@ -988,6 +991,7 @@ Output the result of the command or the link to the created issue.`;
     existingWorktreePath?: string;
     promptTransformer?: (prompt: string) => string;
     rawOutput?: boolean;
+    detachWorktree?: boolean;
   }): Promise<void> {
     const startedAt = Date.now();
     const providerLabel = AI_PROVIDER_LABELS[input.provider];
@@ -1044,7 +1048,8 @@ Output the result of the command or the link to the created issue.`;
             repo: input.repo.repo,
             fullName: input.repo.fullName
           },
-          input.requestId
+          input.requestId,
+          input.detachWorktree ? { detached: true } : undefined
         );
         worktreePath = worktree.path;
         this.logger.info(

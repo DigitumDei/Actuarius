@@ -7,7 +7,7 @@ import { buildRepoCheckoutPath, type RepoIdentity } from "./gitWorkspaceService.
 const execFileAsync = promisify(execFile);
 
 export interface RequestWorktreeHandle {
-  branchName: string;
+  branchName: string | null;
   path: string;
 }
 
@@ -61,17 +61,24 @@ async function runGit(args: string[]): Promise<void> {
 export async function createRequestWorktree(
   reposRootPath: string,
   repoIdentity: RepoIdentity,
-  requestId: number
+  requestId: number,
+  options?: { detached?: boolean }
 ): Promise<RequestWorktreeHandle> {
   const worktreePath = buildRequestWorktreePath(reposRootPath, repoIdentity, requestId);
-  const branchName = buildRequestWorktreeBranchName(requestId);
+  const branchName = options?.detached ? null : buildRequestWorktreeBranchName(requestId);
   const baseCheckoutPath = buildRepoCheckoutPath(reposRootPath, repoIdentity.owner, repoIdentity.repo);
 
   mkdirSync(join(worktreePath, ".."), { recursive: true });
 
   try {
     await runGit(["-C", baseCheckoutPath, "worktree", "prune"]);
-    await runGit(["-C", baseCheckoutPath, "worktree", "add", "-B", branchName, worktreePath, "master"]);
+    const addArgs = ["-C", baseCheckoutPath, "worktree", "add"];
+    if (branchName) {
+      addArgs.push("-B", branchName, worktreePath, "master");
+    } else {
+      addArgs.push("--detach", worktreePath, "master");
+    }
+    await runGit(addArgs);
     return {
       branchName,
       path: worktreePath
