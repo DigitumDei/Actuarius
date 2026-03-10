@@ -45,8 +45,28 @@ variable "discord_guild_id" {
 }
 
 variable "gh_token" {
-  type      = string
-  sensitive = true
+  type        = string
+  sensitive   = true
+  default     = ""
+  description = "Optional fallback: GitHub personal access token. Prefer GitHub App auth instead."
+}
+variable "github_app_id" {
+  type        = string
+  sensitive   = true
+  default     = ""
+  description = "GitHub App ID for bot authentication."
+}
+variable "github_app_installation_id" {
+  type        = string
+  sensitive   = true
+  default     = ""
+  description = "GitHub App installation ID."
+}
+variable "github_app_private_key_b64" {
+  type        = string
+  sensitive   = true
+  default     = ""
+  description = "Base64-encoded GitHub App private key (.pem)."
 }
 
 variable "claude_oauth_token" {

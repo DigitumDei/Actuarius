@@ -42,7 +42,10 @@ get_meta() { curl -sf -H "$HDR" "$META/$1"; }
 DISCORD_TOKEN=$(get_meta "env-discord-token")
 DISCORD_CLIENT_ID=$(get_meta "env-discord-client-id")
 DISCORD_GUILD_ID=$(get_meta "env-discord-guild-id" || true)
-GH_TOKEN=$(get_meta "env-gh-token")
+GH_TOKEN=$(get_meta "env-gh-token" || true)
+GITHUB_APP_ID=$(get_meta "env-github-app-id" || true)
+GITHUB_APP_INSTALLATION_ID=$(get_meta "env-github-app-installation-id" || true)
+GITHUB_APP_PRIVATE_KEY_B64=$(get_meta "env-github-app-private-key-b64" || true)
 CLAUDE_OAUTH_TOKEN=$(get_meta "env-claude-oauth-token")
 DOCKER_IMAGE=$(get_meta "env-docker-image")
 ASK_CONCURRENCY=$(get_meta "env-ask-concurrency")
@@ -94,6 +97,9 @@ docker run -d \
   -e DISCORD_CLIENT_ID="$DISCORD_CLIENT_ID" \
   $GUILD_ARG \
   -e GH_TOKEN="$GH_TOKEN" \
+  -e GITHUB_APP_ID="$GITHUB_APP_ID" \
+  -e GITHUB_APP_INSTALLATION_ID="$GITHUB_APP_INSTALLATION_ID" \
+  -e GITHUB_APP_PRIVATE_KEY_B64="$GITHUB_APP_PRIVATE_KEY_B64" \
   -e CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_OAUTH_TOKEN" \
   -e DATABASE_PATH=/data/app.db \
   -e REPOS_ROOT_PATH=/data/repos \

@@ -31,8 +31,6 @@ Discord bot container that links GitHub repos to Discord channels and creates re
 ## What v1 does not do
 
 - Execute Codex/Gemini tasks from Discord requests yet.
-- Support private repos.
-- Use GitHub App installation flow.
 
 ## Requirements
 
@@ -53,7 +51,9 @@ Copy `.env.example` to `.env` and set:
 - `DISCORD_TOKEN` (required)
 - `DISCORD_CLIENT_ID` (required)
 - `DISCORD_GUILD_ID` (optional, for fast guild-scoped command registration during development)
-- `GH_TOKEN` (recommended for GitHub CLI operations)
+- `GITHUB_APP_ID` + `GITHUB_APP_INSTALLATION_ID` + `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_B64` (preferred for GitHub bot identity)
+- `GH_TOKEN` (optional fallback for backward compatibility)
+- `GIT_USER_NAME` + `GIT_USER_EMAIL` (optional commit identity override)
 - `DATABASE_PATH` (default `/data/app.db`)
 - `REPOS_ROOT_PATH` (default `/data/repos`)
 - `LOG_LEVEL` (default `info`)
@@ -186,7 +186,7 @@ sudo journalctl -u google-startup-scripts -f
 
 - Requires `Manage Server` permission.
 - Verifies repo with `gh repo view`.
-- Public repos only in v1.
+- Public and private repos are supported if the configured GitHub identity can access them.
 - Checks out the repository locally and forces branch to `master`.
 - Creates channel `repo-<owner>-<repo>` (normalized).
 - Stores guild->repo->channel mapping in SQLite.
@@ -230,7 +230,7 @@ Mitigations:
 
 - **Run on private servers only.** Do not add this bot to public Discord servers. Treat server membership as the trust boundary.
 - **Container isolation.** The Docker container limits blast radius — the AI cannot escape the container, but it has full access to everything inside it (repos, tokens, CLI tools).
-- **Scoped tokens.** Use fine-grained GitHub tokens with minimal permissions. Avoid giving `GH_TOKEN` write access beyond what you need.
+- **Scoped GitHub access.** Prefer a GitHub App installation with only the repository permissions the bot needs. If you keep using `GH_TOKEN`, keep its scope minimal.
 - **No secrets in the worktree.** Do not store sensitive files in repositories the bot has access to.
 
 If you choose to run this bot on a public or semi-public server, you accept the risk of prompt injection attacks that could abuse the AI's shell access within the container.

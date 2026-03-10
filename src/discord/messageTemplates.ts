@@ -2,7 +2,7 @@ export function buildHelpText(): string {
   return [
     "**Actuarius Commands**",
     "- `/help` Show this command list.",
-    "- `/connect-repo repo:<owner/name>` Link a public GitHub repo to this server and create its channel.",
+    "- `/connect-repo repo:<owner/name>` Link a GitHub repo to this server and create its channel.",
     "- `/sync-repo [repo:<owner/name>]` Sync an existing connected repo checkout to `master`.",
     "- `/repos` List connected repos and their channels.",
     "- `/ask prompt:<text>` Create a new request thread and run AI in an isolated worktree.",
@@ -13,7 +13,7 @@ export function buildHelpText(): string {
     "- `/codex-auth credentials:<file>` Upload Codex credentials file from `~/.codex/auth.json` (admin only).",
     "",
     "v1 notes:",
-    "- Repo support is public GitHub repos only.",
+    "- Private repos work when the configured GitHub identity can access them.",
     "- `/ask` uses queued AI execution with per-guild concurrency limits.",
     "- Codex and Gemini require `ENABLE_CODEX_EXECUTION` / `ENABLE_GEMINI_EXECUTION` to be enabled."
   ].join("\n");

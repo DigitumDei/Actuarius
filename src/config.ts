@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { config as loadDotEnv } from "dotenv";
 import { z } from "zod";
 
@@ -20,6 +20,13 @@ const envSchema = z.object({
   DISCORD_TOKEN: z.string().min(1),
   DISCORD_CLIENT_ID: z.string().min(1),
   DISCORD_GUILD_ID: z.string().min(1).optional(),
+  GH_TOKEN: z.string().min(1).optional(),
+  GITHUB_APP_ID: z.string().min(1).optional(),
+  GITHUB_APP_PRIVATE_KEY: z.string().min(1).optional(),
+  GITHUB_APP_PRIVATE_KEY_B64: z.string().min(1).optional(),
+  GITHUB_APP_INSTALLATION_ID: z.string().min(1).optional(),
+  GIT_USER_NAME: z.string().min(1).optional(),
+  GIT_USER_EMAIL: z.string().min(1).optional(),
   DATABASE_PATH: z.string().default("/data/app.db"),
   REPOS_ROOT_PATH: z.string().default("/data/repos"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
@@ -56,16 +63,49 @@ if (!parsed.success) {
 }
 
 const rawConfig = parsed.data;
+if (rawConfig.GITHUB_APP_PRIVATE_KEY && rawConfig.GITHUB_APP_PRIVATE_KEY_B64) {
+  throw new Error("Invalid environment configuration: provide only one of GITHUB_APP_PRIVATE_KEY or GITHUB_APP_PRIVATE_KEY_B64.");
+}
+
+const hasAnyGitHubAppConfig = Boolean(
+  rawConfig.GITHUB_APP_ID || rawConfig.GITHUB_APP_INSTALLATION_ID || rawConfig.GITHUB_APP_PRIVATE_KEY || rawConfig.GITHUB_APP_PRIVATE_KEY_B64
+);
+
+if (
+  hasAnyGitHubAppConfig &&
+  (!rawConfig.GITHUB_APP_ID ||
+    !rawConfig.GITHUB_APP_INSTALLATION_ID ||
+    (!rawConfig.GITHUB_APP_PRIVATE_KEY && !rawConfig.GITHUB_APP_PRIVATE_KEY_B64))
+) {
+  throw new Error(
+    "Invalid environment configuration: GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and either GITHUB_APP_PRIVATE_KEY or GITHUB_APP_PRIVATE_KEY_B64 are required together."
+  );
+}
+
+if ((rawConfig.GIT_USER_NAME && !rawConfig.GIT_USER_EMAIL) || (!rawConfig.GIT_USER_NAME && rawConfig.GIT_USER_EMAIL)) {
+  throw new Error("Invalid environment configuration: GIT_USER_NAME and GIT_USER_EMAIL must be provided together.");
+}
+
 const databaseDirectory = dirname(rawConfig.DATABASE_PATH);
 mkdirSync(databaseDirectory, { recursive: true });
 mkdirSync(rawConfig.REPOS_ROOT_PATH, { recursive: true });
+const githubCliConfigPath = resolve(rawConfig.REPOS_ROOT_PATH, "..", ".gh");
+mkdirSync(githubCliConfigPath, { recursive: true });
 
 export const appConfig = {
   discordToken: rawConfig.DISCORD_TOKEN,
   discordClientId: rawConfig.DISCORD_CLIENT_ID,
   discordGuildId: rawConfig.DISCORD_GUILD_ID,
+  ghToken: rawConfig.GH_TOKEN,
+  githubAppId: rawConfig.GITHUB_APP_ID,
+  githubAppPrivateKey: rawConfig.GITHUB_APP_PRIVATE_KEY,
+  githubAppPrivateKeyB64: rawConfig.GITHUB_APP_PRIVATE_KEY_B64,
+  githubAppInstallationId: rawConfig.GITHUB_APP_INSTALLATION_ID,
+  gitUserName: rawConfig.GIT_USER_NAME,
+  gitUserEmail: rawConfig.GIT_USER_EMAIL,
   databasePath: rawConfig.DATABASE_PATH,
   reposRootPath: rawConfig.REPOS_ROOT_PATH,
+  githubCliConfigPath,
   logLevel: rawConfig.LOG_LEVEL,
   threadAutoArchiveMinutes: normalizeArchiveDuration(rawConfig.THREAD_AUTO_ARCHIVE_MINUTES),
   askConcurrencyPerGuild: rawConfig.ASK_CONCURRENCY_PER_GUILD,

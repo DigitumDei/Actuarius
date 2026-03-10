@@ -6,7 +6,7 @@ export const commandBuilders = [
   new SlashCommandBuilder().setName("help").setDescription("Show supported commands and usage."),
   new SlashCommandBuilder()
     .setName("connect-repo")
-    .setDescription("Connect a public GitHub repo to this Discord server.")
+    .setDescription("Connect a GitHub repo to this Discord server.")
     .addStringOption((option) =>
       option.setName("repo").setDescription("GitHub repo as owner/name or https://github.com/owner/name").setRequired(true)
     ),

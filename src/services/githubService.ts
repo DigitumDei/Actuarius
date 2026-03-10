@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { ensureGitHubCliAuthenticated, getGitHubCommandEnvironment } from "./githubAuthService.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -108,6 +109,7 @@ interface GhRepoResponse {
 
 export async function lookupRepo(reference: ParsedRepoReference): Promise<RepoLookupResult> {
   try {
+    await ensureGitHubCliAuthenticated();
     const { stdout } = await execFileAsync(
       "gh",
       [
@@ -118,6 +120,7 @@ export async function lookupRepo(reference: ParsedRepoReference): Promise<RepoLo
         "name,nameWithOwner,isPrivate,owner"
       ],
       {
+        env: getGitHubCommandEnvironment(),
         timeout: 15_000,
         maxBuffer: 2 * 1024 * 1024
       }

@@ -11,10 +11,15 @@ ask_concurrency   = 1
 # Discord application credentials
 discord_token     = "replace_me"
 discord_client_id = "replace_me"
-# discord_guild_id = "replace_me"   # Optional: omit for global command registration
+discord_guild_id = "replace_me"   # Optional: omit for global command registration
 
-# GitHub personal access token (repo scope)
-gh_token = "replace_me"
+# GitHub App auth (preferred)
+github_app_id              = "replace_me"
+github_app_installation_id = "replace_me"
+github_app_private_key_b64 = "replace_me"
+
+# GitHub personal access token (fallback — use GitHub App instead)
+# gh_token = "replace_me"
 
 # Long-lived Claude OAuth token
 # Generate with: claude setup-token
