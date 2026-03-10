@@ -22,7 +22,8 @@ mkdir -p "$DATA_MNT/repos"
 # --- Ensure app dirs are owned by appuser (UID 1001) inside the container ---
 # (Docker's data-root must stay root-owned, so we only chown app directories)
 chown -R 1001:1001 "$DATA_MNT/repos"
-[ -f "$DATA_MNT/app.db" ] && chown 1001:1001 "$DATA_MNT/app.db"
+touch "$DATA_MNT/app.db"
+chown 1001:1001 "$DATA_MNT/app.db"
 
 # --- Swap file on data disk (safety margin for Claude CLI subprocesses) ---
 SWAP="$DATA_MNT/.swapfile"
