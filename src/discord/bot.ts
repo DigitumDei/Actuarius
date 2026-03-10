@@ -21,6 +21,7 @@ import type { AiProvider } from "../db/types.js";
 import { commandBuilders } from "./commands.js";
 import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
+import { getGitHubCommandEnvironment } from "../services/githubAuthService.js";
 import { GitHubRepoLookupError, lookupRepo, parseRepoReference } from "../services/githubService.js";
 import { GitWorkspaceError, ensureRepoCheckedOutToMaster } from "../services/gitWorkspaceService.js";
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
@@ -360,11 +361,6 @@ export class ActuariusBot {
 
     try {
       const lookup = await lookupRepo(parsedReference);
-      if (!lookup.isPublic) {
-        await interaction.editReply("v1 supports public GitHub repos only.");
-        return;
-      }
-
       const checkout = await ensureRepoCheckedOutToMaster(this.config.reposRootPath, lookup);
 
       const channelName = buildRepoChannelName(
@@ -399,7 +395,7 @@ export class ActuariusBot {
     } catch (error) {
       if (error instanceof GitHubRepoLookupError) {
         if (error.code === "NOT_FOUND") {
-          await interaction.editReply("Repository not found. Check the owner/name and ensure it is public.");
+          await interaction.editReply("Repository not found. Check the owner/name and ensure the configured GitHub identity has access.");
           return;
         }
 
@@ -949,10 +945,14 @@ export class ActuariusBot {
       const { execFile } = await import("node:child_process");
       const { promisify } = await import("node:util");
       const execFileAsync = promisify(execFile);
-      await execFileAsync("gh", ["auth", "token"], { timeout: 10_000 });
+      await execFileAsync("gh", ["auth", "token"], {
+        env: getGitHubCommandEnvironment(),
+        timeout: 10_000
+      });
     } catch {
       await interaction.reply({
-        content: "GitHub CLI is not authenticated. Run `gh auth login` on the host before using `/bug` or `/issue`.",
+        content:
+          "GitHub CLI is not authenticated. Configure GitHub App credentials or `GH_TOKEN`, or run `gh auth login` on the host before using `/bug` or `/issue`.",
         ephemeral: true
       });
       return;

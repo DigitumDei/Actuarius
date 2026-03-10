@@ -4,11 +4,13 @@ import { registerSlashCommands } from "./discord/commands.js";
 import { ActuariusBot } from "./discord/bot.js";
 import { logger } from "./logger.js";
 import { runCapabilityChecks } from "./services/capabilityService.js";
+import { initializeGitHubAuth } from "./services/githubAuthService.js";
 
 async function main(): Promise<void> {
   const db = new AppDatabase(appConfig.databasePath);
   db.runMigrations();
 
+  await initializeGitHubAuth(appConfig, logger);
   runCapabilityChecks(logger);
   await registerSlashCommands(appConfig, logger);
 

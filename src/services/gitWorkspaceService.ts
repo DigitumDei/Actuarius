@@ -3,6 +3,12 @@ import { access, constants } from "node:fs/promises";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import {
+  configureRepositoryGitAuth,
+  ensureGitHubCliAuthenticated,
+  getGitCredentialConfigArgs,
+  getGitHubCommandEnvironment
+} from "./githubAuthService.js";
 
 const execFileAsync = promisify(execFile);
 const repoLocks = new Map<string, Promise<void>>();
@@ -49,7 +55,9 @@ async function pathExists(path: string): Promise<boolean> {
 
 async function runGit(args: string[]): Promise<void> {
   try {
-    await execFileAsync("git", args, {
+    await ensureGitHubCliAuthenticated();
+    await execFileAsync("git", [...getGitCredentialConfigArgs(), ...args], {
+      env: getGitHubCommandEnvironment(),
       timeout: 60_000,
       maxBuffer: 4 * 1024 * 1024
     });
@@ -100,6 +108,13 @@ export async function ensureRepoCheckedOutToMaster(
         const message = error instanceof Error ? error.message : "Repository clone failed.";
         throw new GitWorkspaceError("CLONE_FAILED", message);
       }
+    }
+
+    try {
+      await configureRepositoryGitAuth(localPath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not configure repository git authentication.";
+      throw new GitWorkspaceError("CHECKOUT_FAILED", message);
     }
 
     let checkoutSourceRef = "origin/master";
