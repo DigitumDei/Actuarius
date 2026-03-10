@@ -63,11 +63,17 @@ async function runGit(args: string[], options?: { useCredentialHelper?: boolean 
       maxBuffer: 4 * 1024 * 1024
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Git command failed.";
-    if (message.includes("ENOENT")) {
+    const spawnError = error as { message?: string; stderr?: string; code?: string };
+    const message = spawnError.message ?? "Git command failed.";
+    const stderr = spawnError.stderr ?? "";
+    if (message.includes("ENOENT") || spawnError.code === "ENOENT") {
       throw new GitWorkspaceError("GIT_UNAVAILABLE", "Git is not installed or not available in PATH.");
     }
-    throw error;
+    // Attach stderr to message so callers can inspect the full git error
+    const fullMessage = stderr ? `${message}\n${stderr}`.trim() : message;
+    const enriched = new Error(fullMessage);
+    Object.assign(enriched, { stderr, code: spawnError.code });
+    throw enriched;
   }
 }
 
