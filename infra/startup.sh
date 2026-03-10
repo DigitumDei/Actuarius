@@ -19,8 +19,10 @@ fi
 
 mkdir -p "$DATA_MNT/repos"
 
-# --- Ensure data dir is owned by appuser (UID 1001) inside the container ---
-chown -R 1001:1001 "$DATA_MNT"
+# --- Ensure app dirs are owned by appuser (UID 1001) inside the container ---
+# (Docker's data-root must stay root-owned, so we only chown app directories)
+chown -R 1001:1001 "$DATA_MNT/repos"
+[ -f "$DATA_MNT/app.db" ] && chown 1001:1001 "$DATA_MNT/app.db"
 
 # --- Swap file on data disk (safety margin for Claude CLI subprocesses) ---
 SWAP="$DATA_MNT/.swapfile"
@@ -50,6 +52,14 @@ GOOGLE_GENAI_USE_GCA=$(get_meta "env-google-genai-use-gca")
 # --- Install redeploy helper script ---
 get_meta "env-redeploy-script" > /var/redeploy.sh
 chmod +x /var/redeploy.sh
+
+# --- Move Docker data-root to the persistent data disk ---
+DOCKER_DATA="$DATA_MNT/docker"
+mkdir -p "$DOCKER_DATA"
+cat > /etc/docker/daemon.json <<DJSON
+{"data-root": "$DOCKER_DATA"}
+DJSON
+systemctl restart docker
 
 # --- Pull latest image (public ghcr.io, no auth needed) ---
 docker pull "$DOCKER_IMAGE"
