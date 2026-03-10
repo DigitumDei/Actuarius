@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { config as loadDotEnv } from "dotenv";
 import { z } from "zod";
 
@@ -89,7 +89,7 @@ if ((rawConfig.GIT_USER_NAME && !rawConfig.GIT_USER_EMAIL) || (!rawConfig.GIT_US
 const databaseDirectory = dirname(rawConfig.DATABASE_PATH);
 mkdirSync(databaseDirectory, { recursive: true });
 mkdirSync(rawConfig.REPOS_ROOT_PATH, { recursive: true });
-const githubCliConfigPath = join(rawConfig.REPOS_ROOT_PATH, ".gh");
+const githubCliConfigPath = resolve(rawConfig.REPOS_ROOT_PATH, "..", ".gh");
 mkdirSync(githubCliConfigPath, { recursive: true });
 
 export const appConfig = {

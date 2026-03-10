@@ -1,7 +1,8 @@
+import { createPublicKey, createVerify, generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  createGitHubAppJwt,
   deriveGitHubAppIdentity,
-  getGitCredentialConfigArgs,
   normalizeGitHubSecretValue,
   resolveGitHubAppPrivateKey
 } from "../src/services/githubAuthService.js";
@@ -29,12 +30,41 @@ describe("githubAuthService helpers", () => {
     });
   });
 
-  it("builds git credential helper args for gh auth", () => {
-    expect(getGitCredentialConfigArgs()).toEqual([
-      "-c",
-      "credential.helper=!gh auth git-credential",
-      "-c",
-      "credential.useHttpPath=true"
-    ]);
+  it("creates a signed GitHub App JWT with expected claims", () => {
+    const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const nowMs = Date.UTC(2026, 2, 10, 12, 0, 0);
+    const token = createGitHubAppJwt(
+      "123456",
+      privateKey.export({ type: "pkcs1", format: "pem" }).toString(),
+      nowMs
+    );
+
+    const [headerPart, payloadPart, signaturePart] = token.split(".");
+    expect(signaturePart).toBeTruthy();
+
+    const header = JSON.parse(Buffer.from(headerPart!, "base64url").toString("utf8")) as { alg: string; typ: string };
+    const payload = JSON.parse(Buffer.from(payloadPart!, "base64url").toString("utf8")) as {
+      iss: string;
+      iat: number;
+      exp: number;
+    };
+
+    expect(header).toEqual({ alg: "RS256", typ: "JWT" });
+    expect(payload).toEqual({
+      iss: "123456",
+      iat: Math.floor(nowMs / 1000) - 60,
+      exp: Math.floor(nowMs / 1000) - 60 + 9 * 60
+    });
+
+    const verifier = createVerify("RSA-SHA256");
+    verifier.update(`${headerPart}.${payloadPart}`);
+    verifier.end();
+
+    expect(
+      verifier.verify(
+        createPublicKey(publicKey.export({ type: "spki", format: "pem" })),
+        Buffer.from(signaturePart!, "base64url")
+      )
+    ).toBe(true);
   });
 });

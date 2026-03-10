@@ -1,16 +1,15 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createSign } from "node:crypto";
-import { promisify } from "node:util";
 import type { Logger } from "pino";
 import type { AppConfig } from "../config.js";
-
-const execFileAsync = promisify(execFile);
+import { spawnCollect } from "../utils/spawnCollect.js";
 
 const GITHUB_HOST = "github.com";
 const GITHUB_API_BASE_URL = "https://api.github.com";
 const APP_JWT_TTL_SECONDS = 9 * 60;
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 const TOKEN_REFRESH_RETRY_MS = 60 * 1000;
+const GITHUB_AUTH_COMMAND_TIMEOUT_MS = 30_000;
 
 export interface GitIdentity {
   userName: string;
@@ -74,15 +73,11 @@ export function deriveGitHubAppIdentity(appId: string, slug: string): GitIdentit
   };
 }
 
-export function getGitCredentialConfigArgs(): string[] {
-  return ["-c", "credential.helper=!gh auth git-credential", "-c", "credential.useHttpPath=true"];
-}
-
 function base64UrlEncode(input: string): string {
   return Buffer.from(input, "utf8").toString("base64url");
 }
 
-function createGitHubAppJwt(appId: string, privateKey: string, nowMs: number): string {
+export function createGitHubAppJwt(appId: string, privateKey: string, nowMs: number): string {
   const issuedAtSeconds = Math.floor(nowMs / 1000) - 60;
   const payload = {
     iat: issuedAtSeconds,
@@ -182,16 +177,8 @@ class GitHubAuthManager {
       return;
     }
 
-    await execFileAsync("git", ["-C", localPath, "config", "user.name", identity.userName], {
-      env,
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024
-    });
-    await execFileAsync("git", ["-C", localPath, "config", "user.email", identity.userEmail], {
-      env,
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024
-    });
+    await runGitConfigCommand(localPath, ["user.name", identity.userName], env);
+    await runGitConfigCommand(localPath, ["user.email", identity.userEmail], env);
   }
 
   private applySharedEnvironment(): void {
@@ -316,6 +303,7 @@ class GitHubAuthManager {
     const env = this.getCommandEnvironment();
 
     await new Promise<void>((resolve, reject) => {
+      let settled = false;
       const child = spawn(
         "gh",
         ["auth", "login", "--hostname", GITHUB_HOST, "--git-protocol", "https", "--with-token"],
@@ -327,6 +315,15 @@ class GitHubAuthManager {
 
       let stderr = "";
       let stdout = "";
+      const timer = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        child.kill("SIGTERM");
+        reject(new GitHubAuthError("AUTH_LOGIN_FAILED", "gh auth login timed out after 30000ms."));
+      }, GITHUB_AUTH_COMMAND_TIMEOUT_MS);
 
       child.stdout.on("data", (chunk: Buffer) => {
         stdout += chunk.toString();
@@ -336,10 +333,22 @@ class GitHubAuthManager {
       });
 
       child.on("error", (error) => {
+        clearTimeout(timer);
+        if (settled) {
+          return;
+        }
+
+        settled = true;
         reject(error);
       });
 
       child.on("close", (code) => {
+        clearTimeout(timer);
+        if (settled) {
+          return;
+        }
+
+        settled = true;
         if (code === 0) {
           resolve();
           return;
@@ -396,15 +405,16 @@ class GitHubAuthManager {
 let gitHubAuthManager: GitHubAuthManager | null = null;
 
 async function configureRepositoryCredentialHelper(localPath: string, env: NodeJS.ProcessEnv): Promise<void> {
-  await execFileAsync("git", ["-C", localPath, "config", "credential.helper", "!gh auth git-credential"], {
-    env,
-    timeout: 30_000,
-    maxBuffer: 1024 * 1024
-  });
-  await execFileAsync("git", ["-C", localPath, "config", "credential.useHttpPath", "true"], {
-    env,
-    timeout: 30_000,
-    maxBuffer: 1024 * 1024
+  await runGitConfigCommand(localPath, ["credential.helper", "!gh auth git-credential"], env);
+  await runGitConfigCommand(localPath, ["credential.useHttpPath", "true"], env);
+}
+
+async function runGitConfigCommand(localPath: string, args: string[], env: NodeJS.ProcessEnv): Promise<void> {
+  await spawnCollect("git", ["-C", localPath, "config", ...args], {
+    cwd: localPath,
+    timeoutMs: GITHUB_AUTH_COMMAND_TIMEOUT_MS,
+    maxBuffer: 1024 * 1024,
+    env
   });
 }
 

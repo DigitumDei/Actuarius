@@ -1,16 +1,13 @@
 import { mkdirSync } from "node:fs";
 import { access, constants } from "node:fs/promises";
 import { join } from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import {
   configureRepositoryGitAuth,
   ensureGitHubCliAuthenticated,
-  getGitCredentialConfigArgs,
   getGitHubCommandEnvironment
 } from "./githubAuthService.js";
+import { spawnCollect } from "../utils/spawnCollect.js";
 
-const execFileAsync = promisify(execFile);
 const repoLocks = new Map<string, Promise<void>>();
 
 export interface RepoIdentity {
@@ -53,12 +50,16 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function runGit(args: string[]): Promise<void> {
+async function runGit(args: string[], options?: { useCredentialHelper?: boolean }): Promise<void> {
   try {
-    await ensureGitHubCliAuthenticated();
-    await execFileAsync("git", [...getGitCredentialConfigArgs(), ...args], {
+    const gitArgs = options?.useCredentialHelper
+      ? ["-c", "credential.helper=!gh auth git-credential", "-c", "credential.useHttpPath=true", ...args]
+      : args;
+
+    await spawnCollect("git", gitArgs, {
+      cwd: process.cwd(),
       env: getGitHubCommandEnvironment(),
-      timeout: 60_000,
+      timeoutMs: 60_000,
       maxBuffer: 4 * 1024 * 1024
     });
   } catch (error) {
@@ -79,6 +80,8 @@ export async function ensureRepoCheckedOutToMaster(
   reposRootPath: string,
   repoIdentity: RepoIdentity
 ): Promise<{ localPath: string }> {
+  await ensureGitHubCliAuthenticated();
+
   const localPath = buildRepoCheckoutPath(reposRootPath, repoIdentity.owner, repoIdentity.repo);
   const localGitDirectory = join(localPath, ".git");
   const ownerDirectory = join(reposRootPath, sanitizePathPart(repoIdentity.owner));
@@ -100,7 +103,7 @@ export async function ensureRepoCheckedOutToMaster(
     const hasExistingCheckout = await pathExists(localGitDirectory);
     if (!hasExistingCheckout) {
       try {
-        await runGit(["clone", remoteUrl, localPath]);
+        await runGit(["clone", remoteUrl, localPath], { useCredentialHelper: true });
       } catch (error) {
         if (error instanceof GitWorkspaceError) {
           throw error;
@@ -120,7 +123,7 @@ export async function ensureRepoCheckedOutToMaster(
     let checkoutSourceRef = "origin/master";
     try {
       await runGit(["-C", localPath, "remote", "set-url", "origin", remoteUrl]);
-      await runGit(["-C", localPath, "fetch", "origin", "master", "--prune"]);
+      await runGit(["-C", localPath, "fetch", "origin", "master", "--prune"], { useCredentialHelper: true });
     } catch (error) {
       if (error instanceof GitWorkspaceError) {
         throw error;
@@ -132,7 +135,7 @@ export async function ensureRepoCheckedOutToMaster(
       }
 
       try {
-        await runGit(["-C", localPath, "fetch", "origin", "main", "--prune"]);
+        await runGit(["-C", localPath, "fetch", "origin", "main", "--prune"], { useCredentialHelper: true });
         checkoutSourceRef = "origin/main";
       } catch (mainError) {
         if (mainError instanceof GitWorkspaceError) {
