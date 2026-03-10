@@ -2,6 +2,8 @@
 
 Discord bot container that links GitHub repos to Discord channels and creates request threads per prompt.
 
+**Deployment model:** One instance per Discord guild. Multi-guild operation from a single instance is not supported. Each instance supports multiple repositories via dedicated channels.
+
 ## What v1 does
 
 - Runs as a Docker container.

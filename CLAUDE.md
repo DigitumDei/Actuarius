@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Actuarius is a Discord bot that bridges GitHub repositories with Discord channels. Users connect repos to channels and submit `/ask <prompt>` commands that run the Claude CLI in isolated git worktrees, posting results back to per-request threads.
 
+**Deployment model:** One instance per Discord guild. Multi-guild operation from a single instance is not supported. Each instance supports multiple repositories via dedicated channels.
+
 ## Commands
 
 ```bash
