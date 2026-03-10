@@ -36,7 +36,10 @@ resource "google_compute_instance" "actuarius" {
     env-discord-token       = var.discord_token
     env-discord-client-id   = var.discord_client_id
     env-discord-guild-id    = var.discord_guild_id
-    env-gh-token            = var.gh_token
+    env-gh-token                   = var.gh_token
+    env-github-app-id              = var.github_app_id
+    env-github-app-installation-id = var.github_app_installation_id
+    env-github-app-private-key-b64 = var.github_app_private_key_b64
     env-claude-oauth-token  = var.claude_oauth_token
     env-docker-image        = var.docker_image
     env-ask-concurrency         = var.ask_concurrency
