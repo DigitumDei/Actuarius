@@ -942,12 +942,12 @@ export class ActuariusBot {
   private async handleIssueCreate(interaction: ChatInputCommandInteraction, type: "bug" | "issue"): Promise<void> {
     // Pre-check that gh CLI is authenticated before queuing work
     try {
-      const { execFile } = await import("node:child_process");
-      const { promisify } = await import("node:util");
-      const execFileAsync = promisify(execFile);
-      await execFileAsync("gh", ["auth", "token"], {
+      const { spawnCollect } = await import("../utils/spawnCollect.js");
+      await spawnCollect("gh", ["auth", "token"], {
+        cwd: process.cwd(),
         env: getGitHubCommandEnvironment(),
-        timeout: 10_000
+        timeoutMs: 10_000,
+        maxBuffer: 4 * 1024
       });
     } catch {
       await interaction.reply({

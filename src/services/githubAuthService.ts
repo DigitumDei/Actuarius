@@ -331,6 +331,15 @@ class GitHubAuthManager {
       child.stderr.on("data", (chunk: Buffer) => {
         stderr += chunk.toString();
       });
+      child.stdin.on("error", (error) => {
+        clearTimeout(timer);
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        reject(error);
+      });
 
       child.on("error", (error) => {
         clearTimeout(timer);

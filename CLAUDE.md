@@ -67,7 +67,9 @@ Four tables: `guilds`, `repos`, `requests`, `bot_state`. The `requests` table tr
 ### Environment Variables
 
 Required: `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`
-Optional: `GH_TOKEN`, `DATABASE_PATH`, `REPOS_ROOT_PATH`, `ASK_CONCURRENCY_PER_GUILD`, `ASK_EXECUTION_TIMEOUT_MS`, `DISCORD_GUILD_ID` (dev: guild-scoped command registration), `LOG_LEVEL`, `THREAD_AUTO_ARCHIVE_MINUTES`
+Preferred GitHub auth: `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, and either `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_B64`
+Fallback GitHub auth: `GH_TOKEN`
+Optional: `DATABASE_PATH`, `REPOS_ROOT_PATH`, `ASK_CONCURRENCY_PER_GUILD`, `ASK_EXECUTION_TIMEOUT_MS`, `DISCORD_GUILD_ID` (dev: guild-scoped command registration), `LOG_LEVEL`, `THREAD_AUTO_ARCHIVE_MINUTES`, `GIT_USER_NAME`, `GIT_USER_EMAIL`
 
 ## Lessons Learned
 
