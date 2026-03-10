@@ -69,6 +69,10 @@ Four tables: `guilds`, `repos`, `requests`, `bot_state`. The `requests` table tr
 Required: `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`
 Optional: `GH_TOKEN`, `DATABASE_PATH`, `REPOS_ROOT_PATH`, `ASK_CONCURRENCY_PER_GUILD`, `ASK_EXECUTION_TIMEOUT_MS`, `DISCORD_GUILD_ID` (dev: guild-scoped command registration), `LOG_LEVEL`, `THREAD_AUTO_ARCHIVE_MINUTES`
 
+## Lessons Learned
+
+See [docs/lessons-learned.md](docs/lessons-learned.md) for hard-won debugging knowledge and project conventions. Read before making subprocess or architecture changes.
+
 ## TypeScript Configuration
 
 - ES modules (`"type": "module"` in package.json)
