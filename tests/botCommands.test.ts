@@ -1,3 +1,4 @@
+import { DiscordjsErrorCodes } from "discord.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import pino from "pino";
 
@@ -191,6 +192,41 @@ describe("ActuariusBot delete command", () => {
     expect(updateRequestWorkspace).toHaveBeenCalledWith(35, null, null);
     expect(interaction.editReply).toHaveBeenCalledWith({
       content: "Deleted branch `ask/35-123` and cleared the tracked worktree for this thread.",
+      components: []
+    });
+  });
+
+  it("shows the timeout message when confirmation expires", async () => {
+    const bot = createBot({
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 35,
+        channel_id: "channel-1",
+        thread_id: "thread-1",
+        user_id: "user-1",
+        status: "succeeded",
+        branch_name: "ask/35-123",
+        worktree_path: "/tmp/worktree"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world"
+      })
+    });
+
+    const timeoutError = new Error("collector ended");
+    Object.assign(timeoutError, { code: DiscordjsErrorCodes.InteractionCollectorError });
+
+    const interaction = createInteraction({
+      fetchReply: vi.fn().mockResolvedValue({
+        awaitMessageComponent: vi.fn().mockRejectedValue(timeoutError)
+      })
+    });
+
+    await (bot as any).handleDelete(interaction);
+
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: "Branch deletion timed out without confirmation.",
       components: []
     });
   });

@@ -241,14 +241,6 @@ export class AppDatabase {
     this.db.prepare("UPDATE requests SET worktree_path = ?, branch_name = ? WHERE id = ?").run(worktreePath, branchName, requestId);
   }
 
-  public updateRequestWorktreePath(requestId: number, worktreePath: string | null): void {
-    this.db.prepare("UPDATE requests SET worktree_path = ? WHERE id = ?").run(worktreePath, requestId);
-  }
-
-  public updateRequestBranchName(requestId: number, branchName: string | null): void {
-    this.db.prepare("UPDATE requests SET branch_name = ? WHERE id = ?").run(branchName, requestId);
-  }
-
   public getWorktreeForThread(threadId: string): string | null {
     const row = this.db
       .prepare("SELECT worktree_path FROM requests WHERE thread_id = ? AND worktree_path IS NOT NULL ORDER BY id DESC LIMIT 1")

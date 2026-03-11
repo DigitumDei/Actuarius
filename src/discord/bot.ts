@@ -9,6 +9,7 @@ import {
   ChannelType,
   Client,
   ComponentType,
+  DiscordjsErrorCodes,
   GatewayIntentBits,
   PermissionFlagsBits,
   type AnyThreadChannel,
@@ -495,17 +496,6 @@ export class ActuariusBot {
       return;
     }
 
-    if (interaction.options.getString("repo")) {
-      const parsedReference = parseRepoReference(interaction.options.getString("repo") ?? "");
-      if (!parsedReference) {
-        await interaction.reply({
-          content: "Invalid repo format. Use `owner/name` or `https://github.com/owner/name`.",
-          ephemeral: true
-        });
-        return;
-      }
-    }
-
     const repo = this.resolveRepoFromInteraction(interaction);
 
     if (!repo) {
@@ -551,17 +541,6 @@ export class ActuariusBot {
     if (!interaction.guild || !interaction.guildId) {
       await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
       return;
-    }
-
-    if (interaction.options.getString("repo")) {
-      const parsedReference = parseRepoReference(interaction.options.getString("repo") ?? "");
-      if (!parsedReference) {
-        await interaction.reply({
-          content: "Invalid repo format. Use `owner/name` or `https://github.com/owner/name`.",
-          ephemeral: true
-        });
-        return;
-      }
     }
 
     const repo = this.resolveRepoFromInteraction(interaction);
@@ -1024,7 +1003,7 @@ export class ActuariusBot {
         components: []
       });
     } catch (error) {
-      if (error instanceof Error && /time/i.test(error.message) && /component/i.test(error.message)) {
+      if (error instanceof Error && "code" in error && error.code === DiscordjsErrorCodes.InteractionCollectorError) {
         await interaction.editReply({ content: "Branch deletion timed out without confirmation.", components: [] });
         return;
       }
