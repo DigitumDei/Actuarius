@@ -92,6 +92,16 @@ export class AppDatabase {
         FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE
       );
     `);
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS model_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (provider, model)
+      );
+    `);
   }
 
   public upsertGuild(id: string, name: string): void {
@@ -249,6 +259,34 @@ export class AppDatabase {
          RETURNING *`
       )
       .get(guildId, provider, model, updatedByUserId) as unknown as GuildModelConfigRow;
+  }
+
+  public addModelToHistory(provider: AiProvider, model: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO model_history (provider, model)
+         VALUES (?, ?)
+         ON CONFLICT(provider, model) DO UPDATE
+         SET used_at = CURRENT_TIMESTAMP`
+      )
+      .run(provider, model);
+
+    // Keep only the 3 most recently used models per provider
+    this.db
+      .prepare(
+        `DELETE FROM model_history
+         WHERE provider = ? AND id NOT IN (
+           SELECT id FROM model_history WHERE provider = ? ORDER BY used_at DESC LIMIT 3
+         )`
+      )
+      .run(provider, provider);
+  }
+
+  public getModelHistory(provider: AiProvider): string[] {
+    const rows = this.db
+      .prepare("SELECT model FROM model_history WHERE provider = ? ORDER BY used_at DESC LIMIT 3")
+      .all(provider) as Array<{ model: string }>;
+    return rows.map((row) => row.model);
   }
 
   public close(): void {
