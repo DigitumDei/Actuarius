@@ -539,7 +539,7 @@ export class ActuariusBot {
     }
 
     const provider = interaction.options.getString("provider");
-    if (!provider || !Object.keys(AI_PROVIDER_LABELS).includes(provider)) {
+    if (!provider || !(provider in AI_PROVIDER_LABELS)) {
       await interaction.respond([]);
       return;
     }

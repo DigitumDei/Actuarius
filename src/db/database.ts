@@ -262,24 +262,32 @@ export class AppDatabase {
   }
 
   public addModelToHistory(provider: AiProvider, model: string): void {
-    this.db
-      .prepare(
-        `INSERT INTO model_history (provider, model)
-         VALUES (?, ?)
-         ON CONFLICT(provider, model) DO UPDATE
-         SET used_at = CURRENT_TIMESTAMP`
-      )
-      .run(provider, model);
+    this.db.exec("BEGIN");
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO model_history (provider, model)
+           VALUES (?, ?)
+           ON CONFLICT(provider, model) DO UPDATE
+           SET used_at = CURRENT_TIMESTAMP`
+        )
+        .run(provider, model);
 
-    // Keep only the 3 most recently used models per provider
-    this.db
-      .prepare(
-        `DELETE FROM model_history
-         WHERE provider = ? AND id NOT IN (
-           SELECT id FROM model_history WHERE provider = ? ORDER BY used_at DESC LIMIT 3
-         )`
-      )
-      .run(provider, provider);
+      // Keep only the 3 most recently used models per provider
+      this.db
+        .prepare(
+          `DELETE FROM model_history
+           WHERE provider = ? AND id NOT IN (
+             SELECT id FROM model_history WHERE provider = ? ORDER BY used_at DESC LIMIT 3
+           )`
+        )
+        .run(provider, provider);
+
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   public getModelHistory(provider: AiProvider): string[] {
