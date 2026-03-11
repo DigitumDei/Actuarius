@@ -8,6 +8,7 @@ import {
   GatewayIntentBits,
   PermissionFlagsBits,
   type AnyThreadChannel,
+  type AutocompleteInteraction,
   type ChatInputCommandInteraction,
   type Guild,
   type GuildBasedChannel,
@@ -192,6 +193,15 @@ export class ActuariusBot {
     });
 
     this.client.on("interactionCreate", async (interaction) => {
+      if (interaction.isAutocomplete()) {
+        try {
+          await this.handleAutocomplete(interaction);
+        } catch (error) {
+          this.logger.error({ error }, "Autocomplete handler failed");
+        }
+        return;
+      }
+
       if (!interaction.isChatInputCommand()) {
         return;
       }
@@ -518,6 +528,33 @@ export class ActuariusBot {
     }
   }
 
+  private async handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
+    if (interaction.commandName !== "model-select") {
+      return;
+    }
+
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== "model") {
+      return;
+    }
+
+    const provider = interaction.options.getString("provider");
+    if (!provider || !(provider in AI_PROVIDER_LABELS)) {
+      await interaction.respond([]);
+      return;
+    }
+
+    const history = this.db.getModelHistory(provider as AiProvider);
+    const typed = focused.value.toLowerCase();
+    const filtered = typed
+      ? history.filter((m) => m.toLowerCase().includes(typed))
+      : history;
+
+    await interaction.respond(
+      filtered.map((model) => ({ name: model, value: model }))
+    );
+  }
+
   private async handleModelSelect(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guild || !interaction.guildId) {
       await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
@@ -566,6 +603,10 @@ export class ActuariusBot {
 
     this.db.upsertGuild(interaction.guild.id, interaction.guild.name);
     this.db.setGuildModelConfig(interaction.guildId, provider, model, interaction.user.id);
+
+    if (model) {
+      this.db.addModelToHistory(provider, model);
+    }
 
     const modelDisplay = model ? `model \`${model}\`` : "CLI default model";
     await interaction.reply({
