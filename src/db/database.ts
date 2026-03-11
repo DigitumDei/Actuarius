@@ -82,6 +82,12 @@ export class AppDatabase {
       // Column already exists
     }
 
+    try {
+      this.db.exec("ALTER TABLE requests ADD COLUMN branch_name TEXT");
+    } catch {
+      // Column already exists
+    }
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS guild_model_config (
         guild_id TEXT PRIMARY KEY,
@@ -215,12 +221,32 @@ export class AppDatabase {
     };
   }
 
+  private mapRequestRow(row: (RequestRow & { id: number | bigint; repo_id: number | bigint }) | undefined): RequestRow | undefined {
+    if (!row) {
+      return undefined;
+    }
+
+    return {
+      ...row,
+      id: toNumber(row.id),
+      repo_id: toNumber(row.repo_id)
+    };
+  }
+
   public updateRequestStatus(requestId: number, status: RequestStatus): void {
     this.db.prepare("UPDATE requests SET status = ? WHERE id = ?").run(status, requestId);
   }
 
-  public updateRequestWorktreePath(requestId: number, worktreePath: string): void {
+  public updateRequestWorkspace(requestId: number, worktreePath: string | null, branchName: string | null): void {
+    this.db.prepare("UPDATE requests SET worktree_path = ?, branch_name = ? WHERE id = ?").run(worktreePath, branchName, requestId);
+  }
+
+  public updateRequestWorktreePath(requestId: number, worktreePath: string | null): void {
     this.db.prepare("UPDATE requests SET worktree_path = ? WHERE id = ?").run(worktreePath, requestId);
+  }
+
+  public updateRequestBranchName(requestId: number, branchName: string | null): void {
+    this.db.prepare("UPDATE requests SET branch_name = ? WHERE id = ?").run(branchName, requestId);
   }
 
   public getWorktreeForThread(threadId: string): string | null {
@@ -228,6 +254,14 @@ export class AppDatabase {
       .prepare("SELECT worktree_path FROM requests WHERE thread_id = ? AND worktree_path IS NOT NULL ORDER BY id DESC LIMIT 1")
       .get(threadId) as { worktree_path: string } | undefined;
     return row?.worktree_path ?? null;
+  }
+
+  public getRequestByThreadId(threadId: string): RequestRow | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM requests WHERE thread_id = ? ORDER BY id DESC LIMIT 1")
+      .get(threadId) as (RequestRow & { id: number | bigint; repo_id: number | bigint }) | undefined;
+
+    return this.mapRequestRow(row);
   }
 
   public getGuildModelConfig(guildId: string): GuildModelConfigRow | undefined {

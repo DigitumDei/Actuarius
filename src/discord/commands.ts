@@ -19,6 +19,15 @@ export const commandBuilders = [
         .setDescription("Optional owner/name. If omitted, infer from current repo channel or thread.")
         .setRequired(false)
     ),
+  new SlashCommandBuilder()
+    .setName("branches")
+    .setDescription("List local and origin branches for a connected repository.")
+    .addStringOption((option) =>
+      option
+        .setName("repo")
+        .setDescription("Optional owner/name. If omitted, infer from current repo channel or thread.")
+        .setRequired(false)
+    ),
   new SlashCommandBuilder().setName("repos").setDescription("List repos connected in this Discord server."),
   new SlashCommandBuilder()
     .setName("ask")
@@ -75,10 +84,27 @@ export const commandBuilders = [
         .setName("credentials")
         .setDescription("The auth.json file from ~/.codex/ (or %USERPROFILE%\\.codex\\)")
         .setRequired(true)
-    )
+    ),
+  new SlashCommandBuilder()
+    .setName("delete")
+    .setDescription("Delete the worktree branch associated with this request thread.")
 ];
 
-export type CommandName = "help" | "connect-repo" | "sync-repo" | "repos" | "ask" | "bug" | "issue" | "model-select" | "model-current" | "gemini-auth" | "gemini-auth-complete" | "codex-auth";
+export type CommandName =
+  | "help"
+  | "connect-repo"
+  | "sync-repo"
+  | "branches"
+  | "repos"
+  | "ask"
+  | "bug"
+  | "issue"
+  | "model-select"
+  | "model-current"
+  | "gemini-auth"
+  | "gemini-auth-complete"
+  | "codex-auth"
+  | "delete";
 
 export async function registerSlashCommands(config: AppConfig, logger: pino.Logger): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(config.discordToken);

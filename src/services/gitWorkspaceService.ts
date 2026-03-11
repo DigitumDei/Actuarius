@@ -33,6 +33,11 @@ export class GitWorkspaceError extends Error {
   }
 }
 
+export interface RepoBranches {
+  local: string[];
+  remote: string[];
+}
+
 function sanitizePathPart(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9._-]/g, "_");
 }
@@ -70,6 +75,36 @@ async function runGit(args: string[], options?: { useCredentialHelper?: boolean 
       throw new GitWorkspaceError("GIT_UNAVAILABLE", "Git is not installed or not available in PATH.");
     }
     // Attach stderr to message so callers can inspect the full git error
+    const fullMessage = stderr ? `${message}\n${stderr}`.trim() : message;
+    const enriched = new Error(fullMessage);
+    Object.assign(enriched, { stderr, code: spawnError.code });
+    throw enriched;
+  }
+}
+
+async function runGitWithOutput(
+  args: string[],
+  options?: { cwd?: string; useCredentialHelper?: boolean }
+): Promise<{ stdout: string; stderr: string }> {
+  try {
+    const gitArgs = options?.useCredentialHelper
+      ? ["-c", "credential.helper=!gh auth git-credential", "-c", "credential.useHttpPath=true", ...args]
+      : args;
+
+    return await spawnCollect("git", gitArgs, {
+      cwd: options?.cwd ?? process.cwd(),
+      env: getGitHubCommandEnvironment(),
+      timeoutMs: 60_000,
+      maxBuffer: 4 * 1024 * 1024
+    });
+  } catch (error) {
+    const spawnError = error as { message?: string; stderr?: string; code?: string };
+    const message = spawnError.message ?? "Git command failed.";
+    const stderr = spawnError.stderr ?? "";
+    if (message.includes("ENOENT") || spawnError.code === "ENOENT") {
+      throw new GitWorkspaceError("GIT_UNAVAILABLE", "Git is not installed or not available in PATH.");
+    }
+
     const fullMessage = stderr ? `${message}\n${stderr}`.trim() : message;
     const enriched = new Error(fullMessage);
     Object.assign(enriched, { stderr, code: spawnError.code });
@@ -178,5 +213,40 @@ export async function ensureRepoCheckedOutToMaster(
     if (repoLocks.get(localPath) === lockTail) {
       repoLocks.delete(localPath);
     }
+  }
+}
+
+export async function listBranches(repoPath: string): Promise<RepoBranches> {
+  try {
+    const [localResult, remoteResult] = await Promise.all([
+      runGitWithOutput(["branch", "--format=%(refname:short)"], { cwd: repoPath }),
+      runGitWithOutput(["ls-remote", "--heads", "origin"], { cwd: repoPath, useCredentialHelper: true })
+    ]);
+
+    const local = localResult.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .sort((a, b) => a.localeCompare(b));
+
+    const remote = remoteResult.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => {
+        const ref = line.split(/\s+/u)[1] ?? "";
+        return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
+      })
+      .filter((line) => line.length > 0)
+      .sort((a, b) => a.localeCompare(b));
+
+    return { local, remote };
+  } catch (error) {
+    if (error instanceof GitWorkspaceError) {
+      throw error;
+    }
+
+    const message = error instanceof Error ? error.message : "Could not list repository branches.";
+    throw new GitWorkspaceError("CHECKOUT_FAILED", message);
   }
 }
