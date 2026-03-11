@@ -16,17 +16,23 @@ function normalizeArchiveDuration(rawValue: number): AllowedArchiveDuration {
   return 1440;
 }
 
+// Treat empty strings as undefined for optional fields
+const optionalNonEmpty = z
+  .string()
+  .optional()
+  .transform((val) => (val === "" ? undefined : val));
+
 const envSchema = z.object({
   DISCORD_TOKEN: z.string().min(1),
   DISCORD_CLIENT_ID: z.string().min(1),
-  DISCORD_GUILD_ID: z.string().min(1).optional(),
-  GH_TOKEN: z.string().min(1).optional(),
-  GITHUB_APP_ID: z.string().min(1).optional(),
-  GITHUB_APP_PRIVATE_KEY: z.string().min(1).optional(),
-  GITHUB_APP_PRIVATE_KEY_B64: z.string().min(1).optional(),
-  GITHUB_APP_INSTALLATION_ID: z.string().min(1).optional(),
-  GIT_USER_NAME: z.string().min(1).optional(),
-  GIT_USER_EMAIL: z.string().min(1).optional(),
+  DISCORD_GUILD_ID: optionalNonEmpty,
+  GH_TOKEN: optionalNonEmpty,
+  GITHUB_APP_ID: optionalNonEmpty,
+  GITHUB_APP_PRIVATE_KEY: optionalNonEmpty,
+  GITHUB_APP_PRIVATE_KEY_B64: optionalNonEmpty,
+  GITHUB_APP_INSTALLATION_ID: optionalNonEmpty,
+  GIT_USER_NAME: optionalNonEmpty,
+  GIT_USER_EMAIL: optionalNonEmpty,
   DATABASE_PATH: z.string().default("/data/app.db"),
   REPOS_ROOT_PATH: z.string().default("/data/repos"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
