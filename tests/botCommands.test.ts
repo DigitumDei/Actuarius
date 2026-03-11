@@ -13,7 +13,20 @@ vi.mock("../src/services/requestWorktreeService.js", async () => {
   };
 });
 
+vi.mock("../src/services/gitWorkspaceService.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/gitWorkspaceService.js")>(
+    "../src/services/gitWorkspaceService.js"
+  );
+
+  return {
+    ...actual,
+    ensureRepoCheckedOutToMaster: vi.fn(),
+    listBranches: vi.fn()
+  };
+});
+
 const { deleteRequestBranch } = await import("../src/services/requestWorktreeService.js");
+const { ensureRepoCheckedOutToMaster, listBranches } = await import("../src/services/gitWorkspaceService.js");
 const { ActuariusBot } = await import("../src/discord/bot.js");
 
 const logger = pino({ level: "silent" });
@@ -42,7 +55,11 @@ function createBot(dbOverrides: Record<string, unknown> = {}): ActuariusBot {
   } as const;
 
   const db = {
+    createRequest: vi.fn(),
+    getGuildModelConfig: vi.fn(),
+    getLatestRequestWithWorkspaceByThreadId: vi.fn(),
     getRequestByThreadId: vi.fn(),
+    getRepoByFullName: vi.fn(),
     getRepoByChannelId: vi.fn(),
     updateRequestWorkspace: vi.fn(),
     ...dbOverrides
@@ -229,5 +246,95 @@ describe("ActuariusBot delete command", () => {
       content: "Branch deletion timed out without confirmation.",
       components: []
     });
+  });
+});
+
+describe("ActuariusBot thread follow-ups", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("reuses the latest non-null workspace for follow-up messages", async () => {
+    const createRequest = vi.fn().mockReturnValue({ id: 77 });
+    const bot = createBot({
+      createRequest,
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 35,
+        repo_id: 1,
+        channel_id: "channel-1",
+        thread_id: "thread-1",
+        user_id: "user-1",
+        prompt: "existing",
+        status: "succeeded",
+        worktree_path: "/tmp/worktree",
+        branch_name: "ask/35-123"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      })
+    });
+
+    const enqueue = vi.fn();
+    (bot as any).requestQueue.enqueue = enqueue;
+
+    await (bot as any).handleThreadMessage({
+      author: { bot: false, id: "user-1" },
+      guildId: "guild-1",
+      guild: { id: "guild-1" },
+      channelId: "thread-1",
+      channel: { isThread: () => true, parentId: "channel-1" },
+      content: "follow-up prompt"
+    });
+
+    expect(createRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread-1",
+        prompt: "follow-up prompt",
+        status: "queued"
+      })
+    );
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ActuariusBot branches command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("truncates oversized branch listings before editing the reply", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(listBranches).mockResolvedValue({
+      local: Array.from({ length: 180 }, (_, index) => `local-branch-${index.toString().padStart(3, "0")}`),
+      remote: Array.from({ length: 180 }, (_, index) => `remote-branch-${index.toString().padStart(3, "0")}`)
+    });
+
+    const interaction = createInteraction({
+      channel: { isThread: () => false },
+      options: { getString: vi.fn().mockReturnValue(null) },
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined)
+    });
+    const bot = createBot({
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      })
+    });
+
+    await (bot as any).handleBranches(interaction);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.any(String));
+    const content = vi.mocked(interaction.editReply).mock.calls[0]?.[0];
+    expect(typeof content).toBe("string");
+    expect((content as string).length).toBeLessThanOrEqual(2_000);
+    expect(content).toContain("...(truncated to fit Discord's 2000 character limit)");
   });
 });

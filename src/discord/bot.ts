@@ -92,6 +92,44 @@ function splitIntoDiscordMessages(text: string, providerLabel: string = "Claude"
   return chunks.length > 0 ? chunks : [`${HEADER}${CODE_OPEN}(no output)${CODE_CLOSE}`];
 }
 
+function fitDiscordMessage(lines: string[], truncationNotice: string): string {
+  const normalizedLines = lines.map((line) => line.trimEnd());
+  const emptyMessage = truncationNotice.length <= DISCORD_MESSAGE_LIMIT ? truncationNotice : truncationNotice.slice(0, DISCORD_MESSAGE_LIMIT);
+
+  let message = "";
+  for (const line of normalizedLines) {
+    const nextMessage = message ? `${message}\n${line}` : line;
+    if (nextMessage.length > DISCORD_MESSAGE_LIMIT) {
+      if (!message) {
+        return emptyMessage;
+      }
+
+      const reserved = DISCORD_MESSAGE_LIMIT - truncationNotice.length - 1;
+      const trimmed = reserved > 0 ? message.slice(0, reserved).trimEnd() : "";
+      return trimmed ? `${trimmed}\n${truncationNotice}` : emptyMessage;
+    }
+    message = nextMessage;
+  }
+
+  return message || emptyMessage;
+}
+
+function formatBranchesReply(fullName: string, branches: { local: string[]; remote: string[] }): string {
+  const sectionLines = (label: string, values: string[]): string[] =>
+    values.length > 0 ? [`**${label}**`, ...values.map((branch) => `- \`${branch}\``)] : [`**${label}**`, "(no branches found)"];
+
+  return fitDiscordMessage(
+    [
+      `Branches for \`${fullName}\`:`,
+      "",
+      ...sectionLines("Local", branches.local),
+      "",
+      ...sectionLines("Origin", branches.remote)
+    ],
+    "...(truncated to fit Discord's 2000 character limit)"
+  );
+}
+
 function parseThreadEntry(
   content: string,
   isBot: boolean
@@ -248,7 +286,7 @@ export class ActuariusBot {
     const parentId = message.channel.parentId;
     if (!parentId) return;
 
-    const latestRequest = this.db.getRequestByThreadId(message.channelId);
+    const latestRequest = this.db.getLatestRequestWithWorkspaceByThreadId(message.channelId);
     const existingWorktreePath = latestRequest?.worktree_path;
     if (!existingWorktreePath) return;
 
@@ -563,20 +601,7 @@ export class ActuariusBot {
       }).then((checkout) => checkout.localPath);
       const branches = await listBranches(await repoPath);
 
-      const formatBranchSection = (label: string, values: string[]): string =>
-        values.length > 0
-          ? `**${label}**\n${values.map((branch) => `- \`${branch}\``).join("\n")}`
-          : `**${label}**\n(no branches found)`;
-
-      await interaction.editReply(
-        [
-          `Branches for \`${repo.full_name}\`:`,
-          "",
-          formatBranchSection("Local", branches.local),
-          "",
-          formatBranchSection("Origin", branches.remote)
-        ].join("\n")
-      );
+      await interaction.editReply(formatBranchesReply(repo.full_name, branches));
     } catch (error) {
       if (error instanceof GitWorkspaceError) {
         if (error.code === "MASTER_BRANCH_MISSING") {

@@ -54,6 +54,35 @@ describe("AppDatabase request workspace state", () => {
     });
   });
 
+  it("retrieves the latest request that still has workspace state", () => {
+    const first = db.createRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      channelId: "channel-1",
+      threadId: "thread-workspace",
+      userId: "user-1",
+      prompt: "first",
+      status: "succeeded"
+    });
+    db.updateRequestWorkspace(first.id, "/tmp/worktree-keep", "ask/keep-123");
+
+    db.createRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      channelId: "channel-1",
+      threadId: "thread-workspace",
+      userId: "user-1",
+      prompt: "queued follow-up",
+      status: "queued"
+    });
+
+    expect(db.getLatestRequestWithWorkspaceByThreadId("thread-workspace")).toMatchObject({
+      id: first.id,
+      worktree_path: "/tmp/worktree-keep",
+      branch_name: "ask/keep-123"
+    });
+  });
+
   it("clears stored workspace state when requested", () => {
     const request = db.createRequest({
       guildId: "guild-1",

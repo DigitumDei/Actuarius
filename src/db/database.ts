@@ -248,6 +248,14 @@ export class AppDatabase {
     return row?.worktree_path ?? null;
   }
 
+  public getLatestRequestWithWorkspaceByThreadId(threadId: string): RequestRow | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM requests WHERE thread_id = ? AND worktree_path IS NOT NULL ORDER BY id DESC LIMIT 1")
+      .get(threadId) as (RequestRow & { id: number | bigint; repo_id: number | bigint }) | undefined;
+
+    return this.mapRequestRow(row);
+  }
+
   public getRequestByThreadId(threadId: string): RequestRow | undefined {
     const row = this.db
       .prepare("SELECT * FROM requests WHERE thread_id = ? ORDER BY id DESC LIMIT 1")
