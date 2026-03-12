@@ -12,9 +12,9 @@ export interface RequestWorktreeHandle {
 }
 
 export class RequestWorktreeError extends Error {
-  public readonly code: "CREATE_FAILED" | "CLEANUP_FAILED" | "GIT_UNAVAILABLE";
+  public readonly code: "CREATE_FAILED" | "CLEANUP_FAILED" | "DELETE_FAILED" | "GIT_UNAVAILABLE";
 
-  public constructor(code: "CREATE_FAILED" | "CLEANUP_FAILED" | "GIT_UNAVAILABLE", message: string) {
+  public constructor(code: "CREATE_FAILED" | "CLEANUP_FAILED" | "DELETE_FAILED" | "GIT_UNAVAILABLE", message: string) {
     super(message);
     this.name = "RequestWorktreeError";
     this.code = code;
@@ -56,6 +56,23 @@ async function runGit(args: string[]): Promise<void> {
     }
     throw error;
   }
+}
+
+function describeGitError(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function isMissingWorktreeError(message: string): boolean {
+  const lowered = message.toLowerCase();
+  return lowered.includes("is not a working tree")
+    || lowered.includes("no such file or directory")
+    || lowered.includes("cannot find the file")
+    || lowered.includes("does not exist");
+}
+
+function isMissingBranchError(message: string): boolean {
+  const lowered = message.toLowerCase();
+  return lowered.includes("branch") && lowered.includes("not found");
 }
 
 export async function createRequestWorktree(
@@ -128,4 +145,41 @@ export async function cleanupRequestWorktree(
     parts.push(`prune: ${message}`);
   }
   throw new RequestWorktreeError("CLEANUP_FAILED", parts.join(" | "));
+}
+
+export async function deleteRequestBranch(
+  reposRootPath: string,
+  repoIdentity: RepoIdentity,
+  options: {
+    branchName: string;
+    worktreePath?: string | null;
+  }
+): Promise<void> {
+  const baseCheckoutPath = buildRepoCheckoutPath(reposRootPath, repoIdentity.owner, repoIdentity.repo);
+
+  if (options.worktreePath) {
+    try {
+      await cleanupRequestWorktree(reposRootPath, repoIdentity, options.worktreePath);
+    } catch (error) {
+      const message = describeGitError(error, "Failed to remove request worktree.");
+      if (!isMissingWorktreeError(message)) {
+        throw new RequestWorktreeError("DELETE_FAILED", `Could not remove request worktree: ${message}`);
+      }
+    }
+  }
+
+  try {
+    await runGit(["-C", baseCheckoutPath, "branch", "-D", options.branchName]);
+  } catch (error) {
+    if (error instanceof RequestWorktreeError) {
+      throw error;
+    }
+
+    const message = describeGitError(error, "Failed to delete request branch.");
+    if (isMissingBranchError(message)) {
+      return;
+    }
+
+    throw new RequestWorktreeError("DELETE_FAILED", message);
+  }
 }

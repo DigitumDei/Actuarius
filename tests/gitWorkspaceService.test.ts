@@ -1,7 +1,17 @@
-import { describe, expect, it } from "vitest";
-import { buildRepoCheckoutPath } from "../src/services/gitWorkspaceService.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-describe("buildRepoCheckoutPath", () => {
+vi.mock("../src/utils/spawnCollect.js");
+
+const { spawnCollect } = await import("../src/utils/spawnCollect.js");
+const mockSpawnCollect = vi.mocked(spawnCollect);
+
+const { buildRepoCheckoutPath, GitWorkspaceError, listBranches } = await import("../src/services/gitWorkspaceService.js");
+
+describe("gitWorkspaceService", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
   it("builds a deterministic lowercase path", () => {
     const path = buildRepoCheckoutPath("/data/repos", "DigitumDei", "Actuarius").replaceAll("\\", "/");
     expect(path.endsWith("digitumdei/actuarius")).toBe(true);
@@ -10,5 +20,29 @@ describe("buildRepoCheckoutPath", () => {
   it("sanitizes invalid path characters", () => {
     const path = buildRepoCheckoutPath("/data/repos", "My Org", "repo:name").replaceAll("\\", "/");
     expect(path.endsWith("my_org/repo_name")).toBe(true);
+  });
+
+  it("lists sorted local and remote branches", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "master\nfeature/zeta\nfeature/alpha\n", stderr: "" })
+      .mockResolvedValueOnce({
+        stdout: "hash1\trefs/heads/main\nhash2\trefs/heads/release/1.0\n",
+        stderr: ""
+      });
+
+    await expect(listBranches("/tmp/repo")).resolves.toEqual({
+      local: ["feature/alpha", "feature/zeta", "master"],
+      remote: ["main", "release/1.0"]
+    });
+  });
+
+  it("maps git ENOENT into a GitWorkspaceError", async () => {
+    const error = Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" });
+    mockSpawnCollect.mockRejectedValueOnce(error);
+
+    await expect(listBranches("/tmp/repo")).rejects.toMatchObject({
+      code: "GIT_UNAVAILABLE",
+      name: "GitWorkspaceError"
+    } satisfies Partial<GitWorkspaceError>);
   });
 });

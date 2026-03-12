@@ -3,8 +3,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
   Client,
+  ComponentType,
+  DiscordjsErrorCodes,
   GatewayIntentBits,
   PermissionFlagsBits,
   type AnyThreadChannel,
@@ -18,18 +23,18 @@ import {
 import type pino from "pino";
 import type { AppConfig } from "../config.js";
 import { AppDatabase } from "../db/database.js";
-import type { AiProvider } from "../db/types.js";
+import type { AiProvider, RepoRow } from "../db/types.js";
 import { commandBuilders } from "./commands.js";
 import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
 import { getGitHubCommandEnvironment } from "../services/githubAuthService.js";
 import { GitHubRepoLookupError, lookupRepo, parseRepoReference } from "../services/githubService.js";
-import { GitWorkspaceError, ensureRepoCheckedOutToMaster } from "../services/gitWorkspaceService.js";
+import { GitWorkspaceError, ensureRepoCheckedOutToMaster, listBranches } from "../services/gitWorkspaceService.js";
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
 import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
 import { GeminiExecutionError, runGeminiRequest } from "../services/geminiExecutionService.js";
 import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
-import { createRequestWorktree, RequestWorktreeError } from "../services/requestWorktreeService.js";
+import { createRequestWorktree, deleteRequestBranch, RequestWorktreeError } from "../services/requestWorktreeService.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
 
@@ -86,6 +91,44 @@ function splitIntoDiscordMessages(text: string, providerLabel: string = "Claude"
   }
 
   return chunks.length > 0 ? chunks : [`${HEADER}${CODE_OPEN}(no output)${CODE_CLOSE}`];
+}
+
+function fitDiscordMessage(lines: string[], truncationNotice: string): string {
+  const normalizedLines = lines.map((line) => line.trimEnd());
+  const emptyMessage = truncationNotice.length <= DISCORD_MESSAGE_LIMIT ? truncationNotice : truncationNotice.slice(0, DISCORD_MESSAGE_LIMIT);
+
+  let message = "";
+  for (const line of normalizedLines) {
+    const nextMessage = message ? `${message}\n${line}` : line;
+    if (nextMessage.length > DISCORD_MESSAGE_LIMIT) {
+      if (!message) {
+        return emptyMessage;
+      }
+
+      const reserved = DISCORD_MESSAGE_LIMIT - truncationNotice.length - 1;
+      const trimmed = reserved > 0 ? message.slice(0, reserved).trimEnd() : "";
+      return trimmed ? `${trimmed}\n${truncationNotice}` : emptyMessage;
+    }
+    message = nextMessage;
+  }
+
+  return message || emptyMessage;
+}
+
+function formatBranchesReply(fullName: string, branches: { local: string[]; remote: string[] }): string {
+  const sectionLines = (label: string, values: string[]): string[] =>
+    values.length > 0 ? [`**${label}**`, ...values.map((branch) => `- \`${branch}\``)] : [`**${label}**`, "(no branches found)"];
+
+  return fitDiscordMessage(
+    [
+      `Branches for \`${fullName}\`:`,
+      "",
+      ...sectionLines("Local", branches.local),
+      "",
+      ...sectionLines("Origin", branches.remote)
+    ],
+    "...(truncated to fit Discord's 2000 character limit)"
+  );
 }
 
 function parseThreadEntry(
@@ -253,8 +296,9 @@ export class ActuariusBot {
     const parentId = message.channel.parentId;
     if (!parentId) return;
 
-    const worktreePath = this.db.getWorktreeForThread(message.channelId);
-    if (!worktreePath) return;
+    const latestRequest = this.db.getLatestRequestWithWorkspaceByThreadId(message.channelId);
+    const existingWorktreePath = latestRequest?.worktree_path;
+    if (!existingWorktreePath) return;
 
     const repo = this.db.getRepoByChannelId(message.guildId, parentId);
     if (!repo) return;
@@ -284,7 +328,8 @@ export class ActuariusBot {
         prompt,
         provider,
         ...(model ? { model } : {}),
-        existingWorktreePath: worktreePath
+        existingWorktreePath,
+        ...(latestRequest.branch_name ? { existingBranchName: latestRequest.branch_name } : {})
       });
     });
   }
@@ -299,6 +344,9 @@ export class ActuariusBot {
         return;
       case "sync-repo":
         await this.handleSyncRepo(interaction);
+        return;
+      case "branches":
+        await this.handleBranches(interaction);
         return;
       case "repos":
         await this.handleRepos(interaction);
@@ -327,9 +375,37 @@ export class ActuariusBot {
       case "codex-auth":
         await this.handleCodexAuth(interaction);
         return;
+      case "delete":
+        await this.handleDelete(interaction);
+        return;
       default:
         await interaction.reply({ content: "Unknown command.", ephemeral: true });
     }
+  }
+
+  private resolveRepoFromInteraction(interaction: ChatInputCommandInteraction): RepoRow | null {
+    if (!interaction.guildId) {
+      return null;
+    }
+
+    const rawRepo = interaction.options.getString("repo");
+    const resolvedChannelId =
+      interaction.channel && interaction.channel.isThread() ? interaction.channel.parentId : interaction.channelId;
+
+    if (rawRepo) {
+      const parsedReference = parseRepoReference(rawRepo);
+      if (!parsedReference) {
+        return null;
+      }
+
+      return this.db.getRepoByFullName(interaction.guildId, parsedReference.fullName) ?? null;
+    }
+
+    if (!resolvedChannelId) {
+      return null;
+    }
+
+    return this.db.getRepoByChannelId(interaction.guildId, resolvedChannelId) ?? null;
   }
 
   private async handleConnectRepo(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -468,26 +544,7 @@ export class ActuariusBot {
       return;
     }
 
-    const rawRepo = interaction.options.getString("repo");
-    const resolvedChannelId =
-      interaction.channel && interaction.channel.isThread() ? interaction.channel.parentId : interaction.channelId;
-
-    let repo = null;
-
-    if (rawRepo) {
-      const parsedReference = parseRepoReference(rawRepo);
-      if (!parsedReference) {
-        await interaction.reply({
-          content: "Invalid repo format. Use `owner/name` or `https://github.com/owner/name`.",
-          ephemeral: true
-        });
-        return;
-      }
-
-      repo = this.db.getRepoByFullName(interaction.guildId, parsedReference.fullName);
-    } else if (resolvedChannelId) {
-      repo = this.db.getRepoByChannelId(interaction.guildId, resolvedChannelId);
-    }
+    const repo = this.resolveRepoFromInteraction(interaction);
 
     if (!repo) {
       await interaction.reply({
@@ -525,6 +582,51 @@ export class ActuariusBot {
 
       this.logger.error({ error }, "sync-repo failed");
       await interaction.editReply("Failed to sync repository due to an unexpected error.");
+    }
+  }
+
+  private async handleBranches(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    const repo = this.resolveRepoFromInteraction(interaction);
+    if (!repo) {
+      await interaction.reply({
+        content:
+          "No connected repo could be resolved. Provide `repo:<owner/name>` or run this in a mapped repo channel/thread.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const repoPath = ensureRepoCheckedOutToMaster(this.config.reposRootPath, {
+        owner: repo.owner,
+        repo: repo.repo,
+        fullName: repo.full_name
+      }).then((checkout) => checkout.localPath);
+      const branches = await listBranches(await repoPath);
+
+      await interaction.editReply(formatBranchesReply(repo.full_name, branches));
+    } catch (error) {
+      if (error instanceof GitWorkspaceError) {
+        if (error.code === "MASTER_BRANCH_MISSING") {
+          await interaction.editReply(
+            "Connected repo found, but neither `master` nor `main` was found on origin to source local `master`."
+          );
+          return;
+        }
+
+        await interaction.editReply(`Git branch lookup failed: ${error.message}`);
+        return;
+      }
+
+      this.logger.error({ error }, "branches failed");
+      await interaction.editReply("Failed to list repository branches due to an unexpected error.");
     }
   }
 
@@ -871,6 +973,115 @@ export class ActuariusBot {
     }
   }
 
+  private async handleDelete(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.channel?.isThread()) {
+      await interaction.reply({ content: "Run `/delete` from within the request thread you want to clean up.", ephemeral: true });
+      return;
+    }
+
+    const request = this.db.getRequestByThreadId(interaction.channelId);
+    if (!request) {
+      await interaction.reply({ content: "No request record was found for this thread.", ephemeral: true });
+      return;
+    }
+
+    const isOwner = request.user_id === interaction.user.id;
+    const canManageGuild = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
+    if (!isOwner && !canManageGuild) {
+      await interaction.reply({
+        content: "Only the original requester or a user with `Manage Server` can delete this branch.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (request.status === "queued" || request.status === "running") {
+      await interaction.reply({ content: "This request is still running. Wait for it to finish before deleting the branch.", ephemeral: true });
+      return;
+    }
+
+    if (!request.branch_name) {
+      await interaction.reply({
+        content: "No tracked worktree branch is stored for this thread. It may already be deleted or was created detached.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const repo = this.db.getRepoByChannelId(interaction.guildId, request.channel_id);
+    if (!repo) {
+      await interaction.reply({ content: "The repository linked to this thread could not be resolved.", ephemeral: true });
+      return;
+    }
+
+    const confirmId = `delete-confirm:${request.id}:${interaction.user.id}`;
+    const cancelId = `delete-cancel:${request.id}:${interaction.user.id}`;
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(confirmId).setLabel("Confirm").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(cancelId).setLabel("Cancel").setStyle(ButtonStyle.Secondary)
+    );
+
+    await interaction.reply({
+      content: `Delete branch \`${request.branch_name}\` for this thread? This removes the worktree and cannot be undone.`,
+      components: [row],
+      ephemeral: true
+    });
+
+    try {
+      const reply = await interaction.fetchReply();
+      const confirmation = await reply.awaitMessageComponent({
+        componentType: ComponentType.Button,
+        time: 30_000,
+        filter: (buttonInteraction) =>
+          buttonInteraction.user.id === interaction.user.id
+          && (buttonInteraction.customId === confirmId || buttonInteraction.customId === cancelId)
+      });
+
+      if (confirmation.customId === cancelId) {
+        await confirmation.update({ content: "Branch deletion cancelled.", components: [] });
+        return;
+      }
+
+      await confirmation.update({ content: `Deleting branch \`${request.branch_name}\`...`, components: [] });
+
+      await deleteRequestBranch(
+        this.config.reposRootPath,
+        {
+          owner: repo.owner,
+          repo: repo.repo,
+          fullName: repo.full_name
+        },
+        {
+          branchName: request.branch_name,
+          worktreePath: request.worktree_path
+        }
+      );
+
+      this.db.updateRequestWorkspace(request.id, null, null);
+
+      await interaction.editReply({
+        content: `Deleted branch \`${request.branch_name}\` and cleared the tracked worktree for this thread.`,
+        components: []
+      });
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === DiscordjsErrorCodes.InteractionCollectorError) {
+        await interaction.editReply({ content: "Branch deletion timed out without confirmation.", components: [] });
+        return;
+      }
+
+      this.logger.error({ error, requestId: request.id }, "delete branch failed");
+      await interaction.editReply({
+        content: `Failed to delete branch \`${request.branch_name}\`: ${this.describeExecutionError(error)}`,
+        components: []
+      });
+    }
+  }
+
   private async handleAsk(interaction: ChatInputCommandInteraction): Promise<void> {
     await this.handleRepoCommand(interaction, { label: "request" });
   }
@@ -1030,6 +1241,7 @@ Output the result of the command or the link to the created issue.`;
     provider: AiProvider;
     model?: string;
     existingWorktreePath?: string;
+    existingBranchName?: string;
     promptTransformer?: (prompt: string) => string;
     rawOutput?: boolean;
     detachWorktree?: boolean;
@@ -1037,6 +1249,7 @@ Output the result of the command or the link to the created issue.`;
     const startedAt = Date.now();
     const providerLabel = AI_PROVIDER_LABELS[input.provider];
     let worktreePath: string | null = null;
+    let branchName: string | null = input.existingBranchName ?? null;
     let statusFinalized = false;
     let stage = "init";
     let threadChannel: Awaited<ReturnType<Client["channels"]["fetch"]>> | null = null;
@@ -1069,7 +1282,7 @@ Output the result of the command or the link to the created issue.`;
 
       if (input.existingWorktreePath) {
         worktreePath = input.existingWorktreePath;
-        this.logger.info({ requestId: input.requestId, worktreePath }, "Reusing existing worktree for follow-up");
+        this.logger.info({ requestId: input.requestId, worktreePath, branchName }, "Reusing existing worktree for follow-up");
       } else {
         stage = "sync-repo";
         this.logger.info({ requestId: input.requestId, repo: input.repo.fullName }, "Syncing repository before AI execution");
@@ -1093,13 +1306,14 @@ Output the result of the command or the link to the created issue.`;
           input.detachWorktree ? { detached: true } : undefined
         );
         worktreePath = worktree.path;
+        branchName = worktree.branchName;
         this.logger.info(
           { requestId: input.requestId, branchName: worktree.branchName, worktreePath: worktree.path },
           "Request worktree created"
         );
       }
 
-      this.db.updateRequestWorktreePath(input.requestId, worktreePath);
+      this.db.updateRequestWorkspace(input.requestId, worktreePath, branchName);
 
       stage = "run-ai";
       let effectivePrompt = input.existingWorktreePath

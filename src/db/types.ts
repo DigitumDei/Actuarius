@@ -39,5 +39,6 @@ export interface RequestRow {
   prompt: string;
   status: RequestStatus;
   worktree_path: string | null;
+  branch_name: string | null;
   created_at: string;
 }
