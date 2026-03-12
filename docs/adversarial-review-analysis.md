@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add an Actuarius command that runs an adversarial, multi-model code review after implementation is complete and before a PR is opened. The command should work against the request worktree that `/ask` already creates, produce a structured review artifact, and gate the later PR step on review completion.
+Add an Actuarius command that runs an adversarial, multi-model code review after implementation is complete and before a PR is opened. The command should work against the request worktree that `/ask` already creates, produce a structured review artifact, store each review pass in a historical review-docs folder, and gate the later PR step until the branch reaches review consensus.
 
 ## Repositories Reviewed
 
@@ -28,7 +28,7 @@ Actuarius already has most of the platform pieces needed to implement a narrower
 - provider CLI execution for Claude, Codex, and Gemini in [src/services/claudeExecutionService.ts](/data/repos/.worktrees/digitumdei/actuarius/70/src/services/claudeExecutionService.ts), [src/services/codexExecutionService.ts](/data/repos/.worktrees/digitumdei/actuarius/70/src/services/codexExecutionService.ts), and [src/services/geminiExecutionService.ts](/data/repos/.worktrees/digitumdei/actuarius/70/src/services/geminiExecutionService.ts)
 - SQLite persistence in [src/db/database.ts](/data/repos/.worktrees/digitumdei/actuarius/70/src/db/database.ts)
 
-The right implementation for Actuarius is not to copy Magpie as a separate generic CLI. The right move is to add an Actuarius-native review workflow that reuses the existing request thread, worktree, provider runners, and database.
+The right implementation for Actuarius is not to copy Magpie as a separate generic CLI. The right move is to add an Actuarius-native review workflow that reuses the existing request thread, worktree, provider runners, and database, and keeps GitHub PR creation as the last step after one or more review-fix-review cycles.
 
 ## What Magpie Does That Matters
 
@@ -84,7 +84,7 @@ This is enough to support a review flow that runs against the completed code in 
 
 ## Recommended User Flow
 
-The cleanest flow is thread-centric:
+The cleanest flow is thread-centric and deliberately keeps the initial GitHub PR late:
 
 1. User runs `/ask` and iterates until the code is ready.
 2. User runs a new command from the same request thread, for example `/review`.
@@ -100,9 +100,11 @@ The cleanest flow is thread-centric:
    - blocking issues
    - disagreements
    - recommended next action: `revise` or `ready for PR`
-7. Only after that should a later PR command be allowed, for example `/pr`.
+7. Actuarius writes the full review artifact to a historical docs location such as `docs/reviews/<request-id>/<timestamp>-review.md`.
+8. If the verdict is `revise`, the user or agent fixes the code on the same branch and runs `/review` again.
+9. Only after the latest review on the latest branch head reaches `ready_for_pr` should a later PR command be allowed, for example `/pr`.
 
-This keeps the review coupled to the exact branch the implementation produced. It also avoids inventing a separate repo-wide review UX.
+This keeps the review coupled to the exact branch the implementation produced, creates an auditable review trail, and avoids opening a premature PR full of review churn.
 
 ## Proposed Commands
 
@@ -133,6 +135,8 @@ Not required for v1, but the design should leave room for:
 - `/review-rerun`
 - `/pr`
 
+`/pr` should be treated as a post-consensus publishing step, not as the start of the review process.
+
 ## Architecture Proposal
 
 ### 1. Add a dedicated review orchestration service
@@ -148,6 +152,7 @@ Responsibilities:
 - run providers in the required order
 - execute reviewers in parallel per round
 - merge outputs into a stable result object
+- write a durable markdown artifact under a historical review-docs path
 
 This should be a separate service, not more logic folded into `ActuariusBot`.
 
@@ -223,7 +228,7 @@ CREATE TABLE review_messages (
 );
 ```
 
-For v1, `raw_result_json` may be enough.
+For v1, `raw_result_json` plus a generated markdown artifact path may be enough.
 
 ### 5. Add guild-level review configuration
 
@@ -332,7 +337,7 @@ One neutral model synthesizes:
 - recommended PR description bullets
 - final verdict: `revise` or `ready_for_pr`
 
-That final verdict is the gating output for the future PR command.
+That final verdict is the gating output for the next step in the loop: either fix code and rerun review, or allow the future PR command.
 
 ## Prompting Guidance
 
@@ -381,7 +386,7 @@ The use case here is "review the completed code for this request branch before P
 
 ## Implementation Plan
 
-### Phase 1: Minimal viable review gate
+### Phase 1: Minimal viable review loop
 
 - Add `/review`
 - Require execution inside a request thread with a tracked branch
@@ -391,6 +396,7 @@ The use case here is "review the completed code for this request branch before P
   - 3 reviewers in parallel for one round
   - summarizer
 - Persist final review result
+- Write a markdown review artifact under `docs/reviews/...`
 - Post markdown summary in thread
 
 This phase is enough to prove value.
@@ -402,7 +408,7 @@ This phase is enough to prove value.
 - Add `review_runs` status transitions
 - Add guild-level adversarial review config
 
-### Phase 3: PR gating integration
+### Phase 3: PR publishing integration
 
 - Add `/pr`
 - Refuse PR creation if:
@@ -410,6 +416,14 @@ This phase is enough to prove value.
   - last review verdict is `revise`
   - branch changed since review completed
 - Use summarizer output to seed PR body
+
+The intended operating order is:
+
+1. code
+2. `/review`
+3. fix findings
+4. `/review` again until verdict is `ready_for_pr`
+5. `/pr`
 
 ## Recommended Data and Type Additions
 
@@ -448,6 +462,7 @@ interface AdversarialReviewResult {
   }>;
   finalSummary: string;
   finalVerdict: "ready_for_pr" | "revise";
+  artifactPath: string;
 }
 ```
 
@@ -467,7 +482,7 @@ Actuarius already knows whether Codex or Gemini auth is present. Review configur
 
 ### 3. Discord output limits
 
-Long review transcripts will overflow Discord quickly. Persist full raw output in SQLite and post:
+Long review transcripts will overflow Discord quickly. Persist full raw output in SQLite, write a markdown artifact to `docs/reviews/...`, and post:
 
 - short progress updates during execution
 - concise final summary in-thread
@@ -490,8 +505,9 @@ Implement an Actuarius-native `/review` command that operates on the existing re
 - optional second round only when blocking issues or disagreement exist
 - neutral summarizer
 - persisted structured result with final verdict
+- markdown artifact saved in a historical review-docs folder
 
-Do not build a standalone Magpie-like CLI first. Reuse Actuarius's existing Discord workflow, worktree tracking, provider runners, queue, and database. The future `/pr` command should be explicitly gated on the latest successful review result for the current branch SHA.
+Do not build a standalone Magpie-like CLI first. Reuse Actuarius's existing Discord workflow, worktree tracking, provider runners, queue, and database. The future `/pr` command should be explicitly gated on the latest successful review result for the current branch SHA, and teams should expect review-fix-review iteration before the first PR is opened.
 
 ## Suggested File-Level Work Split
 
@@ -513,4 +529,6 @@ Do not build a standalone Magpie-like CLI first. Reuse Actuarius's existing Disc
 - At least 2 providers can review in parallel.
 - Final output contains blocking issues, non-blocking issues, missing tests, and verdict.
 - Review result is persisted with the reviewed branch SHA.
+- Review markdown artifact is saved under `docs/reviews/...`.
 - A later PR flow can verify that the latest review matches the current branch SHA.
+- A later PR flow only opens a PR after the latest review verdict for the current branch SHA is `ready_for_pr`.
