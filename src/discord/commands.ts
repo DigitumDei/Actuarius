@@ -60,6 +60,7 @@ export const commandBuilders = [
         .setName("model")
         .setDescription("Model name (e.g. claude-opus-4-5, o4-mini, gemini-2.0-flash). Omit to use the CLI default.")
         .setRequired(false)
+        .setAutocomplete(true)
     ),
   new SlashCommandBuilder()
     .setName("model-current")
