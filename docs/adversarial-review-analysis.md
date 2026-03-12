@@ -89,7 +89,7 @@ The cleanest flow is thread-centric and deliberately keeps the initial GitHub PR
 1. User runs `/ask` and iterates until the code is ready.
 2. User runs a new command from the same request thread, for example `/review`.
 3. Actuarius inspects the thread's tracked worktree and branch.
-4. Actuarius computes the review scope from `master...<request-branch>`.
+4. Actuarius computes the review scope from `<default-branch>...<request-branch>` (detecting whether the repo uses `main` or `master`).
 5. Actuarius runs:
    - analyzer pass
    - reviewer round 1 in parallel
@@ -123,7 +123,7 @@ Expected behavior:
 - must be run inside a request thread
 - requires a tracked branch, not a detached worktree
 - fails if the request is still running
-- compares request branch against `master`
+- compares request branch against the repo's default branch
 - posts progress updates in the thread
 - persists structured results
 
@@ -184,7 +184,7 @@ Actuarius currently syncs repos and manages worktrees, but it does not yet compu
 
 Add helpers in the git layer for:
 
-- `git diff master...<branch>`
+- `git diff <default-branch>...<branch>` (auto-detecting `main` or `master`)
 - changed file list
 - optional line range extraction for future inline PR comments
 
@@ -202,7 +202,7 @@ CREATE TABLE review_runs (
   branch_name TEXT NOT NULL,
   status TEXT NOT NULL,
   config_json TEXT NOT NULL,
-  diff_base TEXT NOT NULL DEFAULT 'master',
+  diff_base TEXT NOT NULL,
   diff_head TEXT NOT NULL,
   final_verdict TEXT,
   summary_markdown TEXT,
@@ -267,7 +267,7 @@ Input should be deterministic and shared across all reviewers:
 
 - request prompt
 - latest code in the request worktree
-- git diff vs `master`
+- git diff vs the repo's default branch
 - changed file list
 - optional short thread summary
 
@@ -386,24 +386,28 @@ The use case here is "review the completed code for this request branch before P
 
 ## Implementation Plan
 
-### Phase 1: Minimal viable review loop
+### Phase 1: Minimal viable review loop (single round, no debate)
 
 - Add `/review`
 - Require execution inside a request thread with a tracked branch
-- Compute branch diff vs `master`
-- Run:
+- Compute branch diff vs the repo's default branch (auto-detect `main`/`master`)
+- Run strictly one round:
   - analyzer
-  - 3 reviewers in parallel for one round
+  - 2-3 reviewers in parallel
   - summarizer
-- Persist final review result
-- Write a markdown review artifact under `docs/reviews/...`
+- No round 2, no convergence check — the summarizer produces a verdict from the single round
+- Persist final review result with reviewed commit SHA
+- Write a markdown review artifact under `docs/reviews/...` (excluded from subsequent review diffs)
 - Post markdown summary in thread
+- Handle partial reviewer failure (degrade gracefully, require ≥2 successful reviewers)
+- Per-stage and total pipeline timeouts
 
 This phase is enough to prove value.
 
-### Phase 2: Debate round and stricter gating
+### Phase 2: Multi-round debate and stricter gating
 
-- Add optional second round
+- Add conditional second round when round 1 has blocking issues or reviewer disagreement
+- Add convergence check (Stage 5) to decide whether round 2 is needed
 - Add reviewer-agreement heuristics
 - Add `review_runs` status transitions
 - Add guild-level adversarial review config
@@ -466,6 +470,48 @@ interface AdversarialReviewResult {
 }
 ```
 
+## Operational Design Decisions
+
+### Queue strategy
+
+`/review` should use the same `RequestExecutionQueue` as `/ask`. Reasons:
+
+- Reviews and ask requests compete for the same provider API quotas.
+- A separate queue would allow unbounded concurrent provider calls when both `/ask` and `/review` run simultaneously.
+- The existing per-guild concurrency limit already prevents overload.
+
+The trade-off is that a long-running review blocks an `/ask` slot. If this becomes a problem in practice, a future phase could split the queue into separate `/ask` and `/review` lanes with independent concurrency limits.
+
+### Partial provider failure
+
+If one of N reviewers fails (timeout, auth error, API error), the review should:
+
+- Continue with the remaining reviewers rather than aborting entirely.
+- Mark the failed reviewer as `error` in the result with the failure reason.
+- Require at least 2 successful reviewers to produce a valid verdict. If fewer than 2 succeed, the overall review status should be `failed`.
+- Post a warning in the thread identifying which reviewer failed.
+
+This avoids a single flaky provider from blocking the entire review loop.
+
+### Timeout budget
+
+A review pipeline has multiple stages, each involving one or more model invocations. A single flat timeout is insufficient.
+
+Recommended approach:
+
+- **Per-stage timeout**: Each model invocation (analyzer, individual reviewer, summarizer) gets its own timeout, defaulting to the existing `ASK_EXECUTION_TIMEOUT_MS`.
+- **Total pipeline timeout**: A separate overall timeout for the entire review (e.g., `3 * ASK_EXECUTION_TIMEOUT_MS`). If the total budget expires mid-pipeline, cancel remaining stages and summarize what completed.
+- **Parallel reviewer timeout**: When running N reviewers in parallel, use `Promise.allSettled` with the per-stage timeout so one slow reviewer does not block the others.
+
+### Review artifact storage
+
+Writing review artifacts into `docs/reviews/...` inside the worktree changes the branch diff, which would affect subsequent reviews. Two options:
+
+1. **Commit artifacts to the branch but exclude from review diff**: The diff computation for subsequent reviews filters out `docs/reviews/**`. This keeps artifacts versioned with the code.
+2. **Store artifacts outside the worktree**: Write to a guild-scoped path like `<REPOS_ROOT_PATH>/<owner>/<repo>/.review-artifacts/<request-id>/`. Artifacts are durable but not committed to the branch.
+
+Option 1 is recommended because it keeps review history visible in the eventual PR and in the repo itself. The diff filter is a one-line glob exclusion.
+
 ## Risks and Design Constraints
 
 ### 1. Token and runtime cost
@@ -525,7 +571,7 @@ Do not build a standalone Magpie-like CLI first. Reuse Actuarius's existing Disc
 ## Initial Acceptance Criteria
 
 - `/review` can be run from an implementation thread with a tracked branch.
-- Review uses the request branch diff against `master`.
+- Review uses the request branch diff against the repo's default branch.
 - At least 2 providers can review in parallel.
 - Final output contains blocking issues, non-blocking issues, missing tests, and verdict.
 - Review result is persisted with the reviewed branch SHA.
