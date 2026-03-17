@@ -53,13 +53,7 @@ resource "google_compute_instance" "actuarius" {
 
   # Static bootstrapper — pulls the real startup script from metadata and runs it.
   # Because this string never changes, Terraform won't force-replace the VM.
-  metadata_startup_script = <<-EOT
-    #!/bin/bash
-    META="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
-    curl -sf -H "Metadata-Flavor: Google" "$${META}/env-startup-script" > /var/startup-inner.sh
-    chmod +x /var/startup-inner.sh
-    exec /var/startup-inner.sh
-  EOT
+  metadata_startup_script = "#!/bin/bash\nMETA=\"http://metadata.google.internal/computeMetadata/v1/instance/attributes\"\ncurl -sf -H \"Metadata-Flavor: Google\" \"$${META}/env-startup-script\" > /var/startup-inner.sh\nchmod +x /var/startup-inner.sh\nexec /var/startup-inner.sh\n"
 
   service_account {
     email  = google_service_account.actuarius_bot.email
