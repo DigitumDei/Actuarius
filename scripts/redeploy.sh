@@ -28,8 +28,9 @@ ASK_CONCURRENCY=$(get_meta env-ask-concurrency)
 if [ -z "$DISCORD_TOKEN" ];          then echo "FATAL: env-discord-token is not set"      >&2; exit 1; fi
 if [ -z "$DISCORD_CLIENT_ID" ];      then echo "FATAL: env-discord-client-id is not set"  >&2; exit 1; fi
 if [ -z "$GH_TOKEN" ] && \
-   ( [ -z "$GITHUB_APP_ID" ] || [ -z "$GITHUB_APP_INSTALLATION_ID" ] || [ -z "$GITHUB_APP_PRIVATE_KEY_B64" ] ); then
+   ( [ -z "$GITHUB_APP_ID" ] && [ -z "$GITHUB_APP_INSTALLATION_ID" ] && [ -z "$GITHUB_APP_PRIVATE_KEY_B64" ] ); then
   echo "FATAL: either env-gh-token or all GitHub App credentials (env-github-app-id, env-github-app-installation-id, env-github-app-private-key-b64) must be set" >&2; exit 1
+fi
 fi
 if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ];then echo "FATAL: env-claude-oauth-token is not set" >&2; exit 1; fi
 if [ -z "$ASK_CONCURRENCY" ];        then echo "FATAL: env-ask-concurrency is not set"     >&2; exit 1; fi
