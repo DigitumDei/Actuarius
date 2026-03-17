@@ -18,13 +18,18 @@ echo "Deploying $IMAGE ..."
 DISCORD_TOKEN=$(get_meta env-discord-token)
 DISCORD_CLIENT_ID=$(get_meta env-discord-client-id)
 GUILD_ID=$(get_meta "env-discord-guild-id" || true)
-GH_TOKEN=$(get_meta env-gh-token)
+GH_TOKEN=$(get_meta "env-gh-token" || true)
+GITHUB_APP_ID=$(get_meta "env-github-app-id" || true)
+GITHUB_APP_INSTALLATION_ID=$(get_meta "env-github-app-installation-id" || true)
+GITHUB_APP_PRIVATE_KEY_B64=$(get_meta "env-github-app-private-key-b64" || true)
 CLAUDE_CODE_OAUTH_TOKEN=$(get_meta env-claude-oauth-token)
 ASK_CONCURRENCY=$(get_meta env-ask-concurrency)
 
 if [ -z "$DISCORD_TOKEN" ];          then echo "FATAL: env-discord-token is not set"      >&2; exit 1; fi
 if [ -z "$DISCORD_CLIENT_ID" ];      then echo "FATAL: env-discord-client-id is not set"  >&2; exit 1; fi
-if [ -z "$GH_TOKEN" ];               then echo "FATAL: env-gh-token is not set"            >&2; exit 1; fi
+if [ -z "$GH_TOKEN" ] && [ -z "$GITHUB_APP_ID" ]; then
+  echo "FATAL: either env-gh-token or GitHub App credentials (env-github-app-id, env-github-app-installation-id, env-github-app-private-key-b64) must be set" >&2; exit 1
+fi
 if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ];then echo "FATAL: env-claude-oauth-token is not set" >&2; exit 1; fi
 if [ -z "$ASK_CONCURRENCY" ];        then echo "FATAL: env-ask-concurrency is not set"     >&2; exit 1; fi
 
@@ -35,6 +40,14 @@ GOOGLE_GENAI_USE_GCA=$(get_meta "env-google-genai-use-gca" || true)
 EXTRA_ARGS=()
 if [ -n "$GUILD_ID" ]; then
   EXTRA_ARGS+=(-e "DISCORD_GUILD_ID=$GUILD_ID")
+fi
+if [ -n "$GH_TOKEN" ]; then
+  EXTRA_ARGS+=(-e "GH_TOKEN=$GH_TOKEN")
+fi
+if [ -n "$GITHUB_APP_ID" ]; then
+  EXTRA_ARGS+=(-e "GITHUB_APP_ID=$GITHUB_APP_ID")
+  EXTRA_ARGS+=(-e "GITHUB_APP_INSTALLATION_ID=$GITHUB_APP_INSTALLATION_ID")
+  EXTRA_ARGS+=(-e "GITHUB_APP_PRIVATE_KEY_B64=$GITHUB_APP_PRIVATE_KEY_B64")
 fi
 if [ "$ENABLE_CODEX" = "true" ]; then
   EXTRA_ARGS+=(-e "ENABLE_CODEX_EXECUTION=true")
@@ -56,7 +69,6 @@ docker run -d \
   -e DISCORD_TOKEN="$DISCORD_TOKEN" \
   -e DISCORD_CLIENT_ID="$DISCORD_CLIENT_ID" \
   "${EXTRA_ARGS[@]}" \
-  -e GH_TOKEN="$GH_TOKEN" \
   -e CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN" \
   -e DATABASE_PATH=/data/app.db \
   -e REPOS_ROOT_PATH=/data/repos \

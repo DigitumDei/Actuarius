@@ -30,8 +30,9 @@ resource "google_compute_instance" "actuarius" {
     access_config {}    # Ephemeral public IP (free while VM is running)
   }
 
-  # All config passed via metadata — read by startup script at runtime.
-  # This keeps metadata_startup_script static so changes here don't force VM recreation.
+  # All config and scripts stored in metadata — the startup script is a static
+  # bootstrapper that pulls the real script from metadata, so metadata changes
+  # never force VM recreation.
   metadata = {
     env-discord-token       = var.discord_token
     env-discord-client-id   = var.discord_client_id
@@ -47,9 +48,18 @@ resource "google_compute_instance" "actuarius" {
     env-enable-gemini-execution = var.enable_gemini_execution
     env-google-genai-use-gca    = var.google_genai_use_gca
     env-redeploy-script         = file("${path.module}/../scripts/redeploy.sh")
+    env-startup-script          = file("${path.module}/startup.sh")
   }
 
-  metadata_startup_script = replace(file("${path.module}/startup.sh"), "\r\n", "\n")
+  # Static bootstrapper — pulls the real startup script from metadata and runs it.
+  # Because this string never changes, Terraform won't force-replace the VM.
+  metadata_startup_script = <<-'EOT'
+    #!/bin/bash
+    META="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
+    curl -sf -H "Metadata-Flavor: Google" "$META/env-startup-script" > /var/startup-inner.sh
+    chmod +x /var/startup-inner.sh
+    exec /var/startup-inner.sh
+  EOT
 
   service_account {
     email  = google_service_account.actuarius_bot.email

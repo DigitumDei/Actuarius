@@ -34,27 +34,10 @@ if [ ! -f "$SWAP" ]; then
 fi
 swapon "$SWAP" 2>/dev/null || true
 
-# --- Read config from instance metadata service ---
+# --- Install redeploy helper script from metadata ---
 META="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
 HDR="Metadata-Flavor: Google"
-get_meta() { curl -sf -H "$HDR" "$META/$1"; }
-
-DISCORD_TOKEN=$(get_meta "env-discord-token")
-DISCORD_CLIENT_ID=$(get_meta "env-discord-client-id")
-DISCORD_GUILD_ID=$(get_meta "env-discord-guild-id" || true)
-GH_TOKEN=$(get_meta "env-gh-token" || true)
-GITHUB_APP_ID=$(get_meta "env-github-app-id" || true)
-GITHUB_APP_INSTALLATION_ID=$(get_meta "env-github-app-installation-id" || true)
-GITHUB_APP_PRIVATE_KEY_B64=$(get_meta "env-github-app-private-key-b64" || true)
-CLAUDE_OAUTH_TOKEN=$(get_meta "env-claude-oauth-token")
-DOCKER_IMAGE=$(get_meta "env-docker-image")
-ASK_CONCURRENCY=$(get_meta "env-ask-concurrency")
-ENABLE_CODEX=$(get_meta "env-enable-codex-execution")
-ENABLE_GEMINI=$(get_meta "env-enable-gemini-execution")
-GOOGLE_GENAI_USE_GCA=$(get_meta "env-google-genai-use-gca")
-
-# --- Install redeploy helper script ---
-get_meta "env-redeploy-script" > /var/redeploy.sh
+curl -sf -H "$HDR" "$META/env-redeploy-script" > /var/redeploy.sh
 chmod +x /var/redeploy.sh
 
 # --- Move Docker data-root to the persistent data disk ---
@@ -65,56 +48,5 @@ cat > /etc/docker/daemon.json <<DJSON
 DJSON
 systemctl restart docker
 
-# --- Pull latest image (public ghcr.io, no auth needed) ---
-docker pull "$DOCKER_IMAGE"
-
-# --- Remove existing container if present (idempotent) ---
-docker stop actuarius 2>/dev/null || true
-docker rm   actuarius 2>/dev/null || true
-
-# --- Run the bot ---
-GUILD_ARG=""
-if [ -n "$DISCORD_GUILD_ID" ]; then
-  GUILD_ARG="-e DISCORD_GUILD_ID=$DISCORD_GUILD_ID"
-fi
-
-OPTIONAL_ARGS=""
-if [ -n "$GH_TOKEN" ]; then
-  OPTIONAL_ARGS="$OPTIONAL_ARGS -e GH_TOKEN=$GH_TOKEN"
-fi
-if [ -n "$GITHUB_APP_ID" ]; then
-  OPTIONAL_ARGS="$OPTIONAL_ARGS -e GITHUB_APP_ID=$GITHUB_APP_ID"
-fi
-if [ -n "$GITHUB_APP_INSTALLATION_ID" ]; then
-  OPTIONAL_ARGS="$OPTIONAL_ARGS -e GITHUB_APP_INSTALLATION_ID=$GITHUB_APP_INSTALLATION_ID"
-fi
-if [ -n "$GITHUB_APP_PRIVATE_KEY_B64" ]; then
-  OPTIONAL_ARGS="$OPTIONAL_ARGS -e GITHUB_APP_PRIVATE_KEY_B64=$GITHUB_APP_PRIVATE_KEY_B64"
-fi
-if [ "$ENABLE_CODEX" = "true" ]; then
-  OPTIONAL_ARGS="$OPTIONAL_ARGS -e ENABLE_CODEX_EXECUTION=true"
-fi
-if [ "$ENABLE_GEMINI" = "true" ]; then
-  OPTIONAL_ARGS="$OPTIONAL_ARGS -e ENABLE_GEMINI_EXECUTION=true"
-fi
-if [ "$GOOGLE_GENAI_USE_GCA" = "true" ]; then
-  OPTIONAL_ARGS="$OPTIONAL_ARGS -e GOOGLE_GENAI_USE_GCA=true"
-fi
-
-docker run -d \
-  --name actuarius \
-  --restart unless-stopped \
-  -v "$DATA_MNT:/data" \
-  -e DISCORD_TOKEN="$DISCORD_TOKEN" \
-  -e DISCORD_CLIENT_ID="$DISCORD_CLIENT_ID" \
-  $GUILD_ARG \
-  -e CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_OAUTH_TOKEN" \
-  -e DATABASE_PATH=/data/app.db \
-  -e REPOS_ROOT_PATH=/data/repos \
-  -e ASK_CONCURRENCY_PER_GUILD="$ASK_CONCURRENCY" \
-  -e LOG_LEVEL=info \
-  $OPTIONAL_ARGS \
-  "$DOCKER_IMAGE"
-
-# --- Clean up old images to reclaim disk space ---
-docker image prune -f || true
+# --- Deploy the bot (reuses the same script used for manual redeploys) ---
+/var/redeploy.sh
