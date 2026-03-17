@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import {
@@ -299,6 +299,11 @@ export class ActuariusBot {
     const latestRequest = this.db.getLatestRequestWithWorkspaceByThreadId(message.channelId);
     const existingWorktreePath = latestRequest?.worktree_path;
     if (!existingWorktreePath) return;
+
+    if (!existsSync(existingWorktreePath)) {
+      await message.reply("The worktree for this thread no longer exists (the bot may have been restarted or migrated). Use `/ask` to start a new request.");
+      return;
+    }
 
     const repo = this.db.getRepoByChannelId(message.guildId, parentId);
     if (!repo) return;
