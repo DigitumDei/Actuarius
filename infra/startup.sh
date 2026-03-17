@@ -5,13 +5,15 @@ set -euo pipefail
 # --- Mount persistent data disk ---
 DATA_DEV="/dev/disk/by-id/google-actuarius-data"
 DATA_MNT="/mnt/disks/data"
-
-if ! blkid "$DATA_DEV" &>/dev/null; then
-  mkfs.ext4 -m 0 -F -E lazy_itable_init=0,lazy_journal_init=0 "$DATA_DEV"
-fi
-
 mkdir -p "$DATA_MNT"
-mount -o defaults "$DATA_DEV" "$DATA_MNT"
+
+# Try to mount first. Only format if mount fails (truly new/empty disk).
+# This avoids accidental data loss from blkid race conditions on boot.
+if ! mount -o defaults "$DATA_DEV" "$DATA_MNT" 2>/dev/null; then
+  echo "Mount failed — formatting new disk..."
+  mkfs.ext4 -m 0 -F -E lazy_itable_init=0,lazy_journal_init=0 "$DATA_DEV"
+  mount -o defaults "$DATA_DEV" "$DATA_MNT"
+fi
 
 if ! grep -q "google-actuarius-data" /etc/fstab; then
   echo "$DATA_DEV $DATA_MNT ext4 defaults,nofail 0 2" >> /etc/fstab
