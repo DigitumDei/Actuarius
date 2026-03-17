@@ -35,10 +35,10 @@ fi
 swapon "$SWAP" 2>/dev/null || true
 
 # --- Install redeploy helper script from metadata ---
+# Note: /var is mounted noexec on COS, so scripts must be invoked with `bash`
 META="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
 HDR="Metadata-Flavor: Google"
 curl -sf -H "$HDR" "$META/env-redeploy-script" > /var/redeploy.sh
-chmod +x /var/redeploy.sh
 
 # --- Move Docker data-root to the persistent data disk ---
 DOCKER_DATA="$DATA_MNT/docker"
@@ -49,4 +49,4 @@ DJSON
 systemctl restart docker
 
 # --- Deploy the bot (reuses the same script used for manual redeploys) ---
-/var/redeploy.sh
+bash /var/redeploy.sh
