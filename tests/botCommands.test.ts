@@ -21,12 +21,13 @@ vi.mock("../src/services/gitWorkspaceService.js", async () => {
   return {
     ...actual,
     ensureRepoCheckedOutToMaster: vi.fn(),
-    listBranches: vi.fn()
+    listBranches: vi.fn(),
+    cleanupDeletedRemoteBranches: vi.fn()
   };
 });
 
 const { deleteRequestBranch } = await import("../src/services/requestWorktreeService.js");
-const { ensureRepoCheckedOutToMaster, listBranches } = await import("../src/services/gitWorkspaceService.js");
+const { ensureRepoCheckedOutToMaster, listBranches, cleanupDeletedRemoteBranches } = await import("../src/services/gitWorkspaceService.js");
 const { ActuariusBot } = await import("../src/discord/bot.js");
 
 const logger = pino({ level: "silent" });
@@ -61,6 +62,7 @@ function createBot(dbOverrides: Record<string, unknown> = {}): ActuariusBot {
     getRequestByThreadId: vi.fn(),
     getRepoByFullName: vi.fn(),
     getRepoByChannelId: vi.fn(),
+    listReposByGuild: vi.fn(),
     updateRequestWorkspace: vi.fn(),
     ...dbOverrides
   };
@@ -72,6 +74,7 @@ function createInteraction(overrides: Record<string, unknown> = {}) {
   return {
     guild: { id: "guild-1", name: "Guild" },
     guildId: "guild-1",
+    id: "interaction-1",
     channelId: "thread-1",
     channel: { isThread: () => true },
     user: { id: "user-1" },
@@ -266,7 +269,7 @@ describe("ActuariusBot thread follow-ups", () => {
         user_id: "user-1",
         prompt: "existing",
         status: "succeeded",
-        worktree_path: "/tmp/worktree",
+        worktree_path: "/tmp",
         branch_name: "ask/35-123"
       }),
       getRepoByChannelId: vi.fn().mockReturnValue({
@@ -287,7 +290,8 @@ describe("ActuariusBot thread follow-ups", () => {
       guild: { id: "guild-1" },
       channelId: "thread-1",
       channel: { isThread: () => true, parentId: "channel-1" },
-      content: "follow-up prompt"
+      content: "follow-up prompt",
+      reply: vi.fn().mockResolvedValue(undefined)
     });
 
     expect(createRequest).toHaveBeenCalledWith(
@@ -336,5 +340,131 @@ describe("ActuariusBot branches command", () => {
     expect(typeof content).toBe("string");
     expect((content as string).length).toBeLessThanOrEqual(2_000);
     expect(content).toContain("...(truncated to fit Discord's 2000 character limit)");
+  });
+});
+
+describe("ActuariusBot cleanup command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("cleans a single repo resolved from the current repo channel after confirmation", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(cleanupDeletedRemoteBranches).mockResolvedValue({
+      deleted: ["feature/old"],
+      removedWorktrees: ["/tmp/worktree-1"],
+      skippedDirtyWorktrees: [{ branchName: "feature/stale", path: "/tmp/worktree-2" }]
+    });
+
+    const confirmation = {
+      customId: "cleanup-confirm:interaction-1:user-1",
+      user: { id: "user-1" },
+      update: vi.fn().mockResolvedValue(undefined)
+    };
+    const interaction = createInteraction({
+      channelId: "channel-1",
+      channel: { isThread: () => false },
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: { getString: vi.fn().mockReturnValue(null) },
+      fetchReply: vi.fn().mockResolvedValue({
+        awaitMessageComponent: vi.fn().mockResolvedValue(confirmation)
+      }),
+      editReply: vi.fn().mockResolvedValue(undefined)
+    });
+    const bot = createBot({
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      }),
+      listReposByGuild: vi.fn().mockReturnValue([])
+    });
+
+    await (bot as any).handleCleanup(interaction);
+
+    expect(cleanupDeletedRemoteBranches).toHaveBeenCalledWith("/tmp/repo");
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: [
+        "Cleanup completed.",
+        "",
+        "`octocat/hello-world`",
+        "- deleted `feature/old`",
+        "- removed worktree `/tmp/worktree-1`",
+        "- skipped dirty worktree `/tmp/worktree-2` for `feature/stale`"
+      ].join("\n"),
+      components: []
+    });
+  });
+
+  it("cleans all connected repos when invoked outside a mapped repo channel", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster)
+      .mockResolvedValueOnce({ localPath: "/tmp/repo-1" })
+      .mockResolvedValueOnce({ localPath: "/tmp/repo-2" });
+    vi.mocked(cleanupDeletedRemoteBranches)
+      .mockResolvedValueOnce({
+        deleted: ["feature/old"],
+        removedWorktrees: ["/tmp/worktree-1"],
+        skippedDirtyWorktrees: []
+      })
+      .mockResolvedValueOnce({
+        deleted: [],
+        removedWorktrees: [],
+        skippedDirtyWorktrees: []
+      });
+
+    const confirmation = {
+      customId: "cleanup-confirm:interaction-1:user-1",
+      user: { id: "user-1" },
+      update: vi.fn().mockResolvedValue(undefined)
+    };
+    const interaction = createInteraction({
+      channelId: "general-1",
+      channel: { isThread: () => false },
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: { getString: vi.fn().mockReturnValue(null) },
+      fetchReply: vi.fn().mockResolvedValue({
+        awaitMessageComponent: vi.fn().mockResolvedValue(confirmation)
+      }),
+      editReply: vi.fn().mockResolvedValue(undefined)
+    });
+    const bot = createBot({
+      getRepoByChannelId: vi.fn().mockReturnValue(undefined),
+      listReposByGuild: vi.fn().mockReturnValue([
+        {
+          id: 1,
+          owner: "octocat",
+          repo: "hello-world",
+          full_name: "octocat/hello-world",
+          channel_id: "channel-1"
+        },
+        {
+          id: 2,
+          owner: "digitumdei",
+          repo: "actuarius",
+          full_name: "digitumdei/actuarius",
+          channel_id: "channel-2"
+        }
+      ])
+    });
+
+    await (bot as any).handleCleanup(interaction);
+
+    expect(cleanupDeletedRemoteBranches).toHaveBeenNthCalledWith(1, "/tmp/repo-1");
+    expect(cleanupDeletedRemoteBranches).toHaveBeenNthCalledWith(2, "/tmp/repo-2");
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: [
+        "Cleanup completed.",
+        "",
+        "`octocat/hello-world`",
+        "- deleted `feature/old`",
+        "- removed worktree `/tmp/worktree-1`",
+        "",
+        "`digitumdei/actuarius`",
+        "- no deleted origin branches were found locally"
+      ].join("\n"),
+      components: []
+    });
   });
 });

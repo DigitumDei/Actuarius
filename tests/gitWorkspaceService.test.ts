@@ -5,7 +5,12 @@ vi.mock("../src/utils/spawnCollect.js");
 const { spawnCollect } = await import("../src/utils/spawnCollect.js");
 const mockSpawnCollect = vi.mocked(spawnCollect);
 
-const { buildRepoCheckoutPath, GitWorkspaceError, listBranches } = await import("../src/services/gitWorkspaceService.js");
+const {
+  buildRepoCheckoutPath,
+  cleanupDeletedRemoteBranches,
+  GitWorkspaceError,
+  listBranches
+} = await import("../src/services/gitWorkspaceService.js");
 
 describe("gitWorkspaceService", () => {
   beforeEach(() => {
@@ -44,5 +49,67 @@ describe("gitWorkspaceService", () => {
       code: "GIT_UNAVAILABLE",
       name: "GitWorkspaceError"
     } satisfies Partial<GitWorkspaceError>);
+  });
+
+  it("deletes local branches whose origin upstream is gone", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({
+        stdout: [
+          "feature/stale\torigin/feature/stale\t[gone]",
+          "feature/live\torigin/feature/live\t[ahead 1]",
+          "master\torigin/master\t"
+        ].join("\n"),
+        stderr: ""
+      })
+      .mockResolvedValueOnce({
+        stdout: ["worktree /tmp/repo", "HEAD abc123", "branch refs/heads/master", "", "worktree /tmp/worktree-1", "HEAD def456", "branch refs/heads/feature/stale", ""].join("\n"),
+        stderr: ""
+      })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    await expect(cleanupDeletedRemoteBranches("/tmp/repo")).resolves.toEqual({
+      deleted: ["feature/stale"],
+      removedWorktrees: ["/tmp/worktree-1"],
+      skippedDirtyWorktrees: []
+    });
+
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(
+      6,
+      "git",
+      ["-C", "/tmp/repo", "worktree", "remove", "/tmp/worktree-1"],
+      expect.any(Object)
+    );
+
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(
+      7,
+      "git",
+      ["-C", "/tmp/repo", "branch", "-D", "feature/stale"],
+      expect.any(Object)
+    );
+  });
+
+  it("skips dirty worktrees for gone upstream branches", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({
+        stdout: "feature/stale\torigin/feature/stale\t[gone]",
+        stderr: ""
+      })
+      .mockResolvedValueOnce({
+        stdout: ["worktree /tmp/repo", "HEAD abc123", "branch refs/heads/master", "", "worktree /tmp/worktree-1", "HEAD def456", "branch refs/heads/feature/stale", ""].join("\n"),
+        stderr: ""
+      })
+      .mockResolvedValueOnce({ stdout: " M src/index.ts\n", stderr: "" });
+
+    await expect(cleanupDeletedRemoteBranches("/tmp/repo")).resolves.toEqual({
+      deleted: [],
+      removedWorktrees: [],
+      skippedDirtyWorktrees: [{ branchName: "feature/stale", path: "/tmp/worktree-1" }]
+    });
   });
 });

@@ -28,6 +28,15 @@ export const commandBuilders = [
         .setDescription("Optional owner/name. If omitted, infer from current repo channel or thread.")
         .setRequired(false)
     ),
+  new SlashCommandBuilder()
+    .setName("cleanup")
+    .setDescription("Delete local branches whose origin branches were removed.")
+    .addStringOption((option) =>
+      option
+        .setName("repo")
+        .setDescription("Optional owner/name. Otherwise infer the current repo, or clean all repos in this server.")
+        .setRequired(false)
+    ),
   new SlashCommandBuilder().setName("repos").setDescription("List repos connected in this Discord server."),
   new SlashCommandBuilder()
     .setName("ask")
@@ -96,6 +105,7 @@ export type CommandName =
   | "connect-repo"
   | "sync-repo"
   | "branches"
+  | "cleanup"
   | "repos"
   | "ask"
   | "bug"

@@ -29,7 +29,12 @@ import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
 import { getGitHubCommandEnvironment } from "../services/githubAuthService.js";
 import { GitHubRepoLookupError, lookupRepo, parseRepoReference } from "../services/githubService.js";
-import { GitWorkspaceError, ensureRepoCheckedOutToMaster, listBranches } from "../services/gitWorkspaceService.js";
+import {
+  GitWorkspaceError,
+  cleanupDeletedRemoteBranches,
+  ensureRepoCheckedOutToMaster,
+  listBranches
+} from "../services/gitWorkspaceService.js";
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
 import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
 import { GeminiExecutionError, runGeminiRequest } from "../services/geminiExecutionService.js";
@@ -129,6 +134,40 @@ function formatBranchesReply(fullName: string, branches: { local: string[]; remo
     ],
     "...(truncated to fit Discord's 2000 character limit)"
   );
+}
+
+function formatCleanupReply(
+  results: Array<{
+    fullName: string;
+    deleted: string[];
+    removedWorktrees: string[];
+    skippedDirtyWorktrees: Array<{ branchName: string; path: string }>;
+  }>
+): string {
+  const lines: string[] = ["Cleanup completed."];
+
+  for (const result of results) {
+    lines.push("");
+    lines.push(`\`${result.fullName}\``);
+    if (
+      result.deleted.length === 0
+      && result.removedWorktrees.length === 0
+      && result.skippedDirtyWorktrees.length === 0
+    ) {
+      lines.push("- no deleted origin branches were found locally");
+      continue;
+    }
+
+    lines.push(...result.deleted.map((branch) => `- deleted \`${branch}\``));
+    lines.push(...result.removedWorktrees.map((worktreePath) => `- removed worktree \`${worktreePath}\``));
+    lines.push(
+      ...result.skippedDirtyWorktrees.map(
+        (entry) => `- skipped dirty worktree \`${entry.path}\` for \`${entry.branchName}\``
+      )
+    );
+  }
+
+  return fitDiscordMessage(lines, "...(truncated to fit Discord's 2000 character limit)");
 }
 
 function parseThreadEntry(
@@ -352,6 +391,9 @@ export class ActuariusBot {
         return;
       case "branches":
         await this.handleBranches(interaction);
+        return;
+      case "cleanup":
+        await this.handleCleanup(interaction);
         return;
       case "repos":
         await this.handleRepos(interaction);
@@ -632,6 +674,118 @@ export class ActuariusBot {
 
       this.logger.error({ error }, "branches failed");
       await interaction.editReply("Failed to list repository branches due to an unexpected error.");
+    }
+  }
+
+  private async handleCleanup(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to run repository cleanup.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const repo = this.resolveRepoFromInteraction(interaction);
+    const repos = repo ? [repo] : this.db.listReposByGuild(interaction.guildId);
+
+    if (repos.length === 0) {
+      await interaction.reply({
+        content:
+          "No connected repo could be resolved. Provide `repo:<owner/name>`, run this in a mapped repo channel/thread, or connect repos first.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const confirmId = `cleanup-confirm:${interaction.id}:${interaction.user.id}`;
+    const cancelId = `cleanup-cancel:${interaction.id}:${interaction.user.id}`;
+    const scopeDescription = repo ? `clean up \`${repo.full_name}\`` : `clean up all ${repos.length} connected repos in this server`;
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(confirmId).setLabel("Confirm").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(cancelId).setLabel("Cancel").setStyle(ButtonStyle.Secondary)
+    );
+
+    await interaction.reply({
+      content: `Confirm cleanup: ${scopeDescription}? This deletes local branches whose origin branches are gone.`,
+      components: [row],
+      ephemeral: true
+    });
+
+    try {
+      const reply = await interaction.fetchReply();
+      const confirmation = await reply.awaitMessageComponent({
+        componentType: ComponentType.Button,
+        time: 30_000,
+        filter: (buttonInteraction) =>
+          buttonInteraction.user.id === interaction.user.id
+          && (buttonInteraction.customId === confirmId || buttonInteraction.customId === cancelId)
+      });
+
+      if (confirmation.customId === cancelId) {
+        await confirmation.update({ content: "Cleanup cancelled.", components: [] });
+        return;
+      }
+
+      await confirmation.update({
+        content: `Running cleanup for ${repo ? `\`${repo.full_name}\`` : "all connected repos"}...`,
+        components: []
+      });
+
+      const results: Array<{
+        fullName: string;
+        deleted: string[];
+        removedWorktrees: string[];
+        skippedDirtyWorktrees: Array<{ branchName: string; path: string }>;
+      }> = [];
+      for (const repoEntry of repos) {
+        const checkout = await ensureRepoCheckedOutToMaster(this.config.reposRootPath, {
+          owner: repoEntry.owner,
+          repo: repoEntry.repo,
+          fullName: repoEntry.full_name
+        });
+        const cleanup = await cleanupDeletedRemoteBranches(checkout.localPath);
+        results.push({
+          fullName: repoEntry.full_name,
+          deleted: cleanup.deleted,
+          removedWorktrees: cleanup.removedWorktrees,
+          skippedDirtyWorktrees: cleanup.skippedDirtyWorktrees
+        });
+      }
+
+      await interaction.editReply({
+        content: formatCleanupReply(results),
+        components: []
+      });
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === DiscordjsErrorCodes.InteractionCollectorError) {
+        await interaction.editReply({ content: "Cleanup timed out without confirmation.", components: [] });
+        return;
+      }
+
+      if (error instanceof GitWorkspaceError) {
+        if (error.code === "MASTER_BRANCH_MISSING") {
+          await interaction.editReply({
+            content: "Cleanup failed because a connected repo has neither `origin/master` nor `origin/main` available.",
+            components: []
+          });
+          return;
+        }
+
+        await interaction.editReply({ content: `Cleanup failed: ${error.message}`, components: [] });
+        return;
+      }
+
+      this.logger.error({ error }, "cleanup failed");
+      await interaction.editReply({
+        content: "Failed to clean repositories due to an unexpected error.",
+        components: []
+      });
     }
   }
 
