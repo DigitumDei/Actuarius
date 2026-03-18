@@ -4,6 +4,7 @@ export function buildHelpText(): string {
     "- `/help` Show this command list.",
     "- `/connect-repo repo:<owner/name>` Link a GitHub repo to this server and create its channel.",
     "- `/sync-repo [repo:<owner/name>]` Sync an existing connected repo checkout to `master`.",
+    "- `/cleanup [repo:<owner/name>]` Delete local branches whose origin branches are gone. In a non-repo channel, cleans all connected repos after confirmation.",
     "- `/repos` List connected repos and their channels.",
     "- `/ask prompt:<text>` Create a new request thread and run AI in an isolated worktree.",
     "- `/model-select provider:<claude|codex|gemini> model:<name>` Set the AI provider and model for `/ask` (admin only).",

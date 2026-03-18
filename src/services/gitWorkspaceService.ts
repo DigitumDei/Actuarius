@@ -38,6 +38,10 @@ export interface RepoBranches {
   remote: string[];
 }
 
+export interface CleanupDeletedBranchesResult {
+  deleted: string[];
+}
+
 function sanitizePathPart(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9._-]/g, "_");
 }
@@ -247,6 +251,38 @@ export async function listBranches(repoPath: string): Promise<RepoBranches> {
     }
 
     const message = error instanceof Error ? error.message : "Could not list repository branches.";
+    throw new GitWorkspaceError("CHECKOUT_FAILED", message);
+  }
+}
+
+export async function cleanupDeletedRemoteBranches(repoPath: string): Promise<CleanupDeletedBranchesResult> {
+  try {
+    await runGit(["-C", repoPath, "fetch", "origin", "--prune"], { useCredentialHelper: true });
+
+    const refs = await runGitWithOutput(
+      ["for-each-ref", "--format=%(refname:short)%09%(upstream:short)%09%(upstream:track)", "refs/heads"],
+      { cwd: repoPath }
+    );
+
+    const deleted: string[] = [];
+    for (const line of refs.stdout.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
+      const [branchName = "", upstream = "", track = ""] = line.split("\t");
+      if (!branchName || !upstream.startsWith("origin/") || !track.includes("[gone]")) {
+        continue;
+      }
+
+      await runGit(["-C", repoPath, "branch", "-D", branchName]);
+      deleted.push(branchName);
+    }
+
+    deleted.sort((a, b) => a.localeCompare(b));
+    return { deleted };
+  } catch (error) {
+    if (error instanceof GitWorkspaceError) {
+      throw error;
+    }
+
+    const message = error instanceof Error ? error.message : "Could not clean deleted remote branches.";
     throw new GitWorkspaceError("CHECKOUT_FAILED", message);
   }
 }
