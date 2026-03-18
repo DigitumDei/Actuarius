@@ -2,6 +2,8 @@ import { DiscordjsErrorCodes } from "discord.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import pino from "pino";
 
+vi.mock("../src/utils/spawnCollect.js");
+
 vi.mock("../src/services/requestWorktreeService.js", async () => {
   const actual = await vi.importActual<typeof import("../src/services/requestWorktreeService.js")>(
     "../src/services/requestWorktreeService.js"
@@ -26,8 +28,34 @@ vi.mock("../src/services/gitWorkspaceService.js", async () => {
   };
 });
 
+vi.mock("../src/services/githubService.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/githubService.js")>(
+    "../src/services/githubService.js"
+  );
+
+  return {
+    ...actual,
+    listOpenIssues: vi.fn(),
+    viewIssueDetail: vi.fn()
+  };
+});
+
+vi.mock("../src/services/claudeExecutionService.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/claudeExecutionService.js")>(
+    "../src/services/claudeExecutionService.js"
+  );
+
+  return {
+    ...actual,
+    runClaudeRequest: vi.fn()
+  };
+});
+
 const { deleteRequestBranch } = await import("../src/services/requestWorktreeService.js");
 const { ensureRepoCheckedOutToMaster, listBranches, cleanupDeletedRemoteBranches } = await import("../src/services/gitWorkspaceService.js");
+const { spawnCollect } = await import("../src/utils/spawnCollect.js");
+const { listOpenIssues, viewIssueDetail } = await import("../src/services/githubService.js");
+const { runClaudeRequest } = await import("../src/services/claudeExecutionService.js");
 const { ActuariusBot } = await import("../src/discord/bot.js");
 
 const logger = pino({ level: "silent" });
@@ -79,9 +107,15 @@ function createInteraction(overrides: Record<string, unknown> = {}) {
     channel: { isThread: () => true },
     user: { id: "user-1" },
     memberPermissions: { has: vi.fn().mockReturnValue(false) },
+    options: {
+      getString: vi.fn().mockReturnValue(null),
+      getInteger: vi.fn().mockReturnValue(null)
+    },
     reply: vi.fn().mockResolvedValue(undefined),
     fetchReply: vi.fn(),
     editReply: vi.fn().mockResolvedValue(undefined),
+    deferReply: vi.fn().mockResolvedValue(undefined),
+    followUp: vi.fn().mockResolvedValue(undefined),
     ...overrides
   };
 }
@@ -340,6 +374,189 @@ describe("ActuariusBot branches command", () => {
     expect(typeof content).toBe("string");
     expect((content as string).length).toBeLessThanOrEqual(2_000);
     expect(content).toContain("...(truncated to fit Discord's 2000 character limit)");
+  });
+});
+
+describe("ActuariusBot issues command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("rejects when invoked outside a mapped repo channel", async () => {
+    vi.mocked(spawnCollect).mockResolvedValue({ stdout: "token", stderr: "" });
+    const interaction = createInteraction({
+      channelId: "general-1",
+      channel: { isThread: () => false }
+    });
+    const bot = createBot({
+      getRepoByChannelId: vi.fn().mockReturnValue(undefined)
+    });
+
+    await (bot as any).handleIssues(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "This channel (or its parent thread channel) is not mapped to a repository. Run `/connect-repo` first.",
+      ephemeral: true
+    });
+  });
+
+  it("rejects when GitHub CLI auth is unavailable", async () => {
+    vi.mocked(spawnCollect).mockRejectedValue(new Error("not authenticated"));
+    const interaction = createInteraction({
+      channelId: "channel-1",
+      channel: { isThread: () => false }
+    });
+    const bot = createBot({
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      })
+    });
+
+    await (bot as any).handleIssues(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content:
+        "GitHub CLI is not authenticated. Configure GitHub App credentials or `GH_TOKEN`, or run `gh auth login` on the host before using /issues.",
+      ephemeral: true
+    });
+  });
+
+  it("returns an issue title list in default mode", async () => {
+    vi.mocked(spawnCollect).mockResolvedValue({ stdout: "token", stderr: "" });
+    vi.mocked(listOpenIssues).mockResolvedValue([
+      {
+        number: 49,
+        title: "Add /issues command",
+        url: "https://example.com/49",
+        state: "OPEN",
+        body: "Issue body",
+        labels: ["enhancement"],
+        authorLogin: "bot",
+        createdAt: "2026-03-12T05:24:53Z",
+        updatedAt: "2026-03-12T05:24:53Z"
+      }
+    ]);
+
+    const interaction = createInteraction({
+      channelId: "channel-1",
+      channel: { isThread: () => false }
+    });
+    const bot = createBot({
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      })
+    });
+
+    await (bot as any).handleIssues(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith("Open issues for `octocat/hello-world`:\n- #49 Add /issues command");
+  });
+
+  it("returns issue detail for detail mode", async () => {
+    vi.mocked(spawnCollect).mockResolvedValue({ stdout: "token", stderr: "" });
+    vi.mocked(viewIssueDetail).mockResolvedValue({
+      number: 49,
+      title: "Add /issues command",
+      url: "https://example.com/49",
+      state: "OPEN",
+      body: "Detailed issue body",
+      labels: ["enhancement"],
+      authorLogin: "bot",
+      assignees: ["maintainer"],
+      createdAt: "2026-03-12T05:24:53Z",
+      updatedAt: "2026-03-13T05:24:53Z"
+    });
+
+    const interaction = createInteraction({
+      channelId: "channel-1",
+      channel: { isThread: () => false },
+      options: {
+        getString: vi.fn().mockImplementation((name: string) => (name === "mode" ? "detail" : null)),
+        getInteger: vi.fn().mockImplementation((name: string) => (name === "issue" ? 49 : null))
+      }
+    });
+    const bot = createBot({
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      })
+    });
+
+    await (bot as any).handleIssues(interaction);
+
+    expect(viewIssueDetail).toHaveBeenCalledWith("octocat/hello-world", 49);
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("#49 Add /issues command"));
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Detailed issue body"));
+  });
+
+  it("uses the configured provider to summarize open issues", async () => {
+    vi.mocked(spawnCollect).mockResolvedValue({ stdout: "token", stderr: "" });
+    vi.mocked(listOpenIssues).mockResolvedValue([
+      {
+        number: 49,
+        title: "Add /issues command",
+        url: "https://example.com/49",
+        state: "OPEN",
+        body: "Issue body",
+        labels: ["enhancement"],
+        authorLogin: "bot",
+        createdAt: "2026-03-12T05:24:53Z",
+        updatedAt: "2026-03-12T05:24:53Z"
+      }
+    ]);
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(runClaudeRequest).mockResolvedValue({ text: "- #49 Add /issues command: Adds issue listing support." });
+
+    const interaction = createInteraction({
+      channelId: "channel-1",
+      channel: { isThread: () => false },
+      options: {
+        getString: vi.fn().mockImplementation((name: string) => (name === "mode" ? "summary" : null)),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        provider: "claude",
+        model: "claude-opus",
+        updated_at: "2026-03-18T00:00:00Z"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      })
+    });
+
+    await (bot as any).handleIssues(interaction);
+
+    expect(ensureRepoCheckedOutToMaster).toHaveBeenCalledWith("/data/repos", {
+      owner: "octocat",
+      repo: "hello-world",
+      fullName: "octocat/hello-world"
+    });
+    expect(runClaudeRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: "/tmp/repo",
+        model: "claude-opus"
+      }),
+      expect.anything()
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith("Issue summaries\n\n- #49 Add /issues command: Adds issue listing support.");
   });
 });
 

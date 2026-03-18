@@ -39,6 +39,27 @@ export const commandBuilders = [
     ),
   new SlashCommandBuilder().setName("repos").setDescription("List repos connected in this Discord server."),
   new SlashCommandBuilder()
+    .setName("issues")
+    .setDescription("List, summarize, or view GitHub issues for the connected repository.")
+    .addStringOption((option) =>
+      option
+        .setName("mode")
+        .setDescription("Issue view mode")
+        .setRequired(false)
+        .addChoices(
+          { name: "List", value: "list" },
+          { name: "Summary", value: "summary" },
+          { name: "Detail", value: "detail" }
+        )
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName("issue")
+        .setDescription("Issue number to view when mode is detail.")
+        .setRequired(false)
+        .setMinValue(1)
+    ),
+  new SlashCommandBuilder()
     .setName("ask")
     .setDescription("Create a request thread in the connected repo channel.")
     .addStringOption((option) => option.setName("prompt").setDescription("Request text for this thread.").setRequired(true)),
@@ -107,6 +128,7 @@ export type CommandName =
   | "branches"
   | "cleanup"
   | "repos"
+  | "issues"
   | "ask"
   | "bug"
   | "issue"

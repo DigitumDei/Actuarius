@@ -28,7 +28,16 @@ import { commandBuilders } from "./commands.js";
 import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
 import { getGitHubCommandEnvironment } from "../services/githubAuthService.js";
-import { GitHubRepoLookupError, lookupRepo, parseRepoReference } from "../services/githubService.js";
+import {
+  GitHubIssueLookupError,
+  GitHubRepoLookupError,
+  listOpenIssues,
+  lookupRepo,
+  parseRepoReference,
+  viewIssueDetail,
+  type GitHubIssueDetail,
+  type GitHubIssueSummary
+} from "../services/githubService.js";
 import {
   GitWorkspaceError,
   cleanupDeletedRemoteBranches,
@@ -118,6 +127,76 @@ function fitDiscordMessage(lines: string[], truncationNotice: string): string {
   }
 
   return message || emptyMessage;
+}
+
+function splitPlainTextForDiscord(text: string, header?: string): string[] {
+  const trimmedBody = text.trim();
+  const normalizedHeader = header?.trim();
+  const firstChunkLimit = DISCORD_MESSAGE_LIMIT - (normalizedHeader ? normalizedHeader.length + 2 : 0);
+  const laterChunkLimit = DISCORD_MESSAGE_LIMIT;
+  const chunks: string[] = [];
+
+  if (!trimmedBody) {
+    return [normalizedHeader ?? "(no content)"];
+  }
+
+  let remaining = trimmedBody;
+  let isFirst = true;
+  while (remaining.length > 0) {
+    const maxLength = isFirst ? firstChunkLimit : laterChunkLimit;
+    let splitAt: number;
+    if (remaining.length <= maxLength) {
+      splitAt = remaining.length;
+    } else {
+      splitAt = remaining.lastIndexOf("\n", maxLength);
+      if (splitAt <= 0) {
+        splitAt = remaining.lastIndexOf(" ", maxLength);
+      }
+      if (splitAt <= 0) {
+        splitAt = maxLength;
+      }
+    }
+
+    const chunkBody = remaining.slice(0, splitAt).trim();
+    remaining = remaining.slice(splitAt).trimStart();
+
+    if (isFirst && normalizedHeader) {
+      chunks.push(chunkBody ? `${normalizedHeader}\n\n${chunkBody}` : normalizedHeader);
+    } else {
+      chunks.push(chunkBody);
+    }
+    isFirst = false;
+  }
+
+  return chunks;
+}
+
+function formatIssueListReply(fullName: string, issues: GitHubIssueSummary[]): string {
+  if (issues.length === 0) {
+    return `No open issues found for \`${fullName}\`.`;
+  }
+
+  return [
+    `Open issues for \`${fullName}\`:`,
+    ...issues.map((issue) => `- #${issue.number} ${issue.title}`)
+  ].join("\n");
+}
+
+function formatIssueDetail(issue: GitHubIssueDetail): string {
+  const lines = [
+    `#${issue.number} ${issue.title}`,
+    `State: ${issue.state}`,
+    `Author: ${issue.authorLogin ?? "unknown"}`,
+    `Labels: ${issue.labels.length > 0 ? issue.labels.join(", ") : "(none)"}`,
+    `Assignees: ${issue.assignees.length > 0 ? issue.assignees.join(", ") : "(none)"}`,
+    `Created: ${issue.createdAt ?? "unknown"}`,
+    `Updated: ${issue.updatedAt ?? "unknown"}`,
+    `URL: ${issue.url}`,
+    "",
+    issue.body.trim() || "(no description)"
+  ];
+
+  return lines.join("\n");
 }
 
 function formatBranchesReply(fullName: string, branches: { local: string[]; remote: string[] }): string {
@@ -398,6 +477,9 @@ export class ActuariusBot {
       case "repos":
         await this.handleRepos(interaction);
         return;
+      case "issues":
+        await this.handleIssues(interaction);
+        return;
       case "ask":
         await this.handleAsk(interaction);
         return;
@@ -575,6 +657,108 @@ export class ActuariusBot {
       content: ["Connected repositories:", ...lines].join("\n"),
       ephemeral: true
     });
+  }
+
+  private async handleIssues(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    const resolvedChannelId =
+      interaction.channel && interaction.channel.isThread() ? interaction.channel.parentId : interaction.channelId;
+
+    if (!resolvedChannelId) {
+      await interaction.reply({
+        content: "Could not resolve a parent channel for this thread.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const repo = this.db.getRepoByChannelId(interaction.guildId, resolvedChannelId);
+    if (!repo) {
+      await interaction.reply({
+        content: "This channel (or its parent thread channel) is not mapped to a repository. Run `/connect-repo` first.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!(await this.ensureGitHubCliAccess(interaction, ["/issues"]))) {
+      return;
+    }
+
+    const mode = interaction.options.getString("mode") ?? "list";
+    const issueNumber = interaction.options.getInteger("issue");
+
+    if (mode === "detail" && (!issueNumber || issueNumber <= 0)) {
+      await interaction.reply({
+        content: "Detail mode requires a positive `issue` number.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      if (mode === "detail") {
+        const detail = await viewIssueDetail(repo.full_name, issueNumber!);
+        await this.sendDeferredInteractionChunks(interaction, splitPlainTextForDiscord(formatIssueDetail(detail), "Issue detail"));
+        return;
+      }
+
+      const issues = await listOpenIssues(repo.full_name);
+      if (mode === "summary") {
+        const checkout = await ensureRepoCheckedOutToMaster(this.config.reposRootPath, {
+          owner: repo.owner,
+          repo: repo.repo,
+          fullName: repo.full_name
+        });
+        const summaryText = await this.summarizeIssues({
+          repoFullName: repo.full_name,
+          issues,
+          cwd: checkout.localPath,
+          guildId: interaction.guildId
+        });
+        await this.sendDeferredInteractionChunks(interaction, splitPlainTextForDiscord(summaryText, "Issue summaries"));
+        return;
+      }
+
+      await this.sendDeferredInteractionChunks(interaction, splitPlainTextForDiscord(formatIssueListReply(repo.full_name, issues)));
+    } catch (error) {
+      if (error instanceof GitHubIssueLookupError) {
+        if (error.code === "NOT_FOUND") {
+          await interaction.editReply("Issue not found. Check the issue number and repository mapping.");
+          return;
+        }
+
+        if (error.code === "GH_UNAVAILABLE") {
+          await interaction.editReply("GitHub CLI is unavailable in this container.");
+          return;
+        }
+
+        await interaction.editReply(`GitHub issue lookup failed: ${error.message}`);
+        return;
+      }
+
+      if (error instanceof GitWorkspaceError) {
+        if (error.code === "MASTER_BRANCH_MISSING") {
+          await interaction.editReply(
+            "Connected repo found, but neither `master` nor `main` was found on origin to source local `master`."
+          );
+          return;
+        }
+
+        await interaction.editReply(`Git checkout failed: ${error.message}`);
+        return;
+      }
+
+      this.logger.error({ error, command: "issues", repo: repo.full_name, mode }, "issues failed");
+      const message = this.describeExecutionError(error);
+      await interaction.editReply(`Failed to read issues: ${message}`);
+    }
   }
 
   private async handleSyncRepo(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -1351,21 +1535,7 @@ export class ActuariusBot {
   }
 
   private async handleIssueCreate(interaction: ChatInputCommandInteraction, type: "bug" | "issue"): Promise<void> {
-    // Pre-check that gh CLI is authenticated before queuing work
-    try {
-      const { spawnCollect } = await import("../utils/spawnCollect.js");
-      await spawnCollect("gh", ["auth", "token"], {
-        cwd: process.cwd(),
-        env: getGitHubCommandEnvironment(),
-        timeoutMs: 10_000,
-        maxBuffer: 4 * 1024
-      });
-    } catch {
-      await interaction.reply({
-        content:
-          "GitHub CLI is not authenticated. Configure GitHub App credentials or `GH_TOKEN`, or run `gh auth login` on the host before using `/bug` or `/issue`.",
-        ephemeral: true
-      });
+    if (!(await this.ensureGitHubCliAccess(interaction, ["/bug", "/issue"]))) {
       return;
     }
 
@@ -1386,6 +1556,118 @@ Output the result of the command or the link to the created issue.`;
       rawOutput: true,
       detachWorktree: true
     });
+  }
+
+  private async ensureGitHubCliAccess(interaction: ChatInputCommandInteraction, commands: string[]): Promise<boolean> {
+    try {
+      const { spawnCollect } = await import("../utils/spawnCollect.js");
+      await spawnCollect("gh", ["auth", "token"], {
+        cwd: process.cwd(),
+        env: getGitHubCommandEnvironment(),
+        timeoutMs: 10_000,
+        maxBuffer: 4 * 1024
+      });
+      return true;
+    } catch {
+      await interaction.reply({
+        content:
+          `GitHub CLI is not authenticated. Configure GitHub App credentials or \`GH_TOKEN\`, or run \`gh auth login\` on the host before using ${commands.join(" or ")}.`,
+        ephemeral: true
+      });
+      return false;
+    }
+  }
+
+  private async sendDeferredInteractionChunks(interaction: ChatInputCommandInteraction, chunks: string[]): Promise<void> {
+    const [firstChunk, ...remainingChunks] = chunks;
+    await interaction.editReply(firstChunk ?? "(no content)");
+    for (const chunk of remainingChunks) {
+      await interaction.followUp({ content: chunk, ephemeral: true });
+    }
+  }
+
+  private async summarizeIssues(input: {
+    repoFullName: string;
+    issues: GitHubIssueSummary[];
+    cwd: string;
+    guildId: string;
+  }): Promise<string> {
+    const modelConfig = this.db.getGuildModelConfig(input.guildId);
+    const provider: AiProvider = modelConfig?.provider ?? "claude";
+    const model = modelConfig?.model;
+    const issuePayload = input.issues.map((issue) => ({
+      number: issue.number,
+      title: issue.title,
+      labels: issue.labels,
+      author: issue.authorLogin,
+      createdAt: issue.createdAt,
+      updatedAt: issue.updatedAt,
+      body: issue.body
+    }));
+    const prompt =
+      `Summarize the open GitHub issues for ${input.repoFullName}.\n`
+      + "Return plain text only.\n"
+      + "Format each issue as a single bullet in the form `- #<number> <title>: <short summary>`.\n"
+      + "Keep each summary to one sentence and keep the total response concise.\n\n"
+      + JSON.stringify(issuePayload, null, 2);
+
+    const result = await this.runProviderText({
+      provider,
+      cwd: input.cwd,
+      prompt,
+      ...(model ? { model } : {})
+    });
+
+    return result;
+  }
+
+  private async runProviderText(input: {
+    provider: AiProvider;
+    prompt: string;
+    cwd: string;
+    model?: string;
+  }): Promise<string> {
+    if (input.provider === "codex") {
+      if (!this.config.enableCodexExecution) {
+        throw new CodexExecutionError(
+          "CODEX_DISABLED",
+          "The server's configured AI provider (Codex) is currently disabled. An admin can switch providers with `/model-select`."
+        );
+      }
+
+      const result = await runCodexRequest({
+        prompt: input.prompt,
+        cwd: input.cwd,
+        timeoutMs: this.config.askExecutionTimeoutMs,
+        ...(input.model ? { model: input.model } : {})
+      }, this.logger);
+      return result.text;
+    }
+
+    if (input.provider === "gemini") {
+      if (!this.config.enableGeminiExecution) {
+        throw new GeminiExecutionError(
+          "GEMINI_DISABLED",
+          "The server's configured AI provider (Gemini) is currently disabled. An admin can switch providers with `/model-select`."
+        );
+      }
+
+      const result = await runGeminiRequest({
+        prompt: input.prompt,
+        cwd: input.cwd,
+        timeoutMs: this.config.askExecutionTimeoutMs,
+        ...(input.model ? { model: input.model } : {})
+      }, this.logger);
+      return result.text;
+    }
+
+    const result = await runClaudeRequest({
+      prompt: input.prompt,
+      cwd: input.cwd,
+      timeoutMs: this.config.askExecutionTimeoutMs,
+      ...(input.model ? { model: input.model } : {})
+    }, this.logger);
+    return result.text;
   }
 
   private async runQueuedRequest(input: {
@@ -1493,41 +1775,12 @@ Output the result of the command or the link to the created issue.`;
         "Starting AI execution"
       );
 
-      let resultText: string;
-
-      if (input.provider === "codex") {
-        if (!this.config.enableCodexExecution) {
-          throw new CodexExecutionError(
-            "CODEX_DISABLED",
-            "The server's configured AI provider (Codex) is currently disabled. An admin can switch providers with `/model-select`."
-          );
-        }
-        // exactOptionalPropertyTypes: model must be absent (not undefined) when not set,
-        // so we use a conditional spread rather than model: input.model.
-        const result = await runCodexRequest(
-          { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs, ...(input.model ? { model: input.model } : {}) },
-          this.logger
-        );
-        resultText = result.text;
-      } else if (input.provider === "gemini") {
-        if (!this.config.enableGeminiExecution) {
-          throw new GeminiExecutionError(
-            "GEMINI_DISABLED",
-            "The server's configured AI provider (Gemini) is currently disabled. An admin can switch providers with `/model-select`."
-          );
-        }
-        const result = await runGeminiRequest(
-          { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs, ...(input.model ? { model: input.model } : {}) },
-          this.logger
-        );
-        resultText = result.text;
-      } else {
-        const result = await runClaudeRequest(
-          { prompt: effectivePrompt, cwd: worktreePath, timeoutMs: this.config.askExecutionTimeoutMs, ...(input.model ? { model: input.model } : {}) },
-          this.logger
-        );
-        resultText = result.text;
-      }
+      const resultText = await this.runProviderText({
+        provider: input.provider,
+        prompt: effectivePrompt,
+        cwd: worktreePath,
+        ...(input.model ? { model: input.model } : {})
+      });
 
       this.logger.info(
         { requestId: input.requestId, outputLength: resultText.length, durationMs: Date.now() - startedAt, provider: input.provider },
