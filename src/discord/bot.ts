@@ -136,18 +136,35 @@ function formatBranchesReply(fullName: string, branches: { local: string[]; remo
   );
 }
 
-function formatCleanupReply(results: Array<{ fullName: string; deleted: string[] }>): string {
+function formatCleanupReply(
+  results: Array<{
+    fullName: string;
+    deleted: string[];
+    removedWorktrees: string[];
+    skippedDirtyWorktrees: Array<{ branchName: string; path: string }>;
+  }>
+): string {
   const lines: string[] = ["Cleanup completed."];
 
   for (const result of results) {
     lines.push("");
     lines.push(`\`${result.fullName}\``);
-    if (result.deleted.length === 0) {
+    if (
+      result.deleted.length === 0
+      && result.removedWorktrees.length === 0
+      && result.skippedDirtyWorktrees.length === 0
+    ) {
       lines.push("- no deleted origin branches were found locally");
       continue;
     }
 
     lines.push(...result.deleted.map((branch) => `- deleted \`${branch}\``));
+    lines.push(...result.removedWorktrees.map((worktreePath) => `- removed worktree \`${worktreePath}\``));
+    lines.push(
+      ...result.skippedDirtyWorktrees.map(
+        (entry) => `- skipped dirty worktree \`${entry.path}\` for \`${entry.branchName}\``
+      )
+    );
   }
 
   return fitDiscordMessage(lines, "...(truncated to fit Discord's 2000 character limit)");
@@ -720,7 +737,12 @@ export class ActuariusBot {
         components: []
       });
 
-      const results: Array<{ fullName: string; deleted: string[] }> = [];
+      const results: Array<{
+        fullName: string;
+        deleted: string[];
+        removedWorktrees: string[];
+        skippedDirtyWorktrees: Array<{ branchName: string; path: string }>;
+      }> = [];
       for (const repoEntry of repos) {
         const checkout = await ensureRepoCheckedOutToMaster(this.config.reposRootPath, {
           owner: repoEntry.owner,
@@ -728,7 +750,12 @@ export class ActuariusBot {
           fullName: repoEntry.full_name
         });
         const cleanup = await cleanupDeletedRemoteBranches(checkout.localPath);
-        results.push({ fullName: repoEntry.full_name, deleted: cleanup.deleted });
+        results.push({
+          fullName: repoEntry.full_name,
+          deleted: cleanup.deleted,
+          removedWorktrees: cleanup.removedWorktrees,
+          skippedDirtyWorktrees: cleanup.skippedDirtyWorktrees
+        });
       }
 
       await interaction.editReply({

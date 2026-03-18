@@ -40,6 +40,13 @@ export interface RepoBranches {
 
 export interface CleanupDeletedBranchesResult {
   deleted: string[];
+  removedWorktrees: string[];
+  skippedDirtyWorktrees: Array<{ branchName: string; path: string }>;
+}
+
+interface GitWorktreeEntry {
+  branchName: string | null;
+  path: string;
 }
 
 function sanitizePathPart(value: string): string {
@@ -258,17 +265,40 @@ export async function listBranches(repoPath: string): Promise<RepoBranches> {
 export async function cleanupDeletedRemoteBranches(repoPath: string): Promise<CleanupDeletedBranchesResult> {
   try {
     await runGit(["-C", repoPath, "fetch", "origin", "--prune"], { useCredentialHelper: true });
+    await runGit(["-C", repoPath, "worktree", "prune"]);
 
     const refs = await runGitWithOutput(
       ["for-each-ref", "--format=%(refname:short)%09%(upstream:short)%09%(upstream:track)", "refs/heads"],
       { cwd: repoPath }
     );
+    const worktrees = await listWorktrees(repoPath);
+    const worktreesByBranch = new Map<string, GitWorktreeEntry>();
+    for (const worktree of worktrees) {
+      if (!worktree.branchName) {
+        continue;
+      }
+      worktreesByBranch.set(worktree.branchName, worktree);
+    }
 
     const deleted: string[] = [];
+    const removedWorktrees: string[] = [];
+    const skippedDirtyWorktrees: Array<{ branchName: string; path: string }> = [];
     for (const line of refs.stdout.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
       const [branchName = "", upstream = "", track = ""] = line.split("\t");
       if (!branchName || !upstream.startsWith("origin/") || !track.includes("[gone]")) {
         continue;
+      }
+
+      const worktree = worktreesByBranch.get(branchName);
+      if (worktree) {
+        const isClean = await isWorktreeClean(worktree.path);
+        if (!isClean) {
+          skippedDirtyWorktrees.push({ branchName, path: worktree.path });
+          continue;
+        }
+
+        await runGit(["-C", repoPath, "worktree", "remove", worktree.path]);
+        removedWorktrees.push(worktree.path);
       }
 
       await runGit(["-C", repoPath, "branch", "-D", branchName]);
@@ -276,7 +306,9 @@ export async function cleanupDeletedRemoteBranches(repoPath: string): Promise<Cl
     }
 
     deleted.sort((a, b) => a.localeCompare(b));
-    return { deleted };
+    removedWorktrees.sort((a, b) => a.localeCompare(b));
+    skippedDirtyWorktrees.sort((a, b) => a.branchName.localeCompare(b.branchName) || a.path.localeCompare(b.path));
+    return { deleted, removedWorktrees, skippedDirtyWorktrees };
   } catch (error) {
     if (error instanceof GitWorkspaceError) {
       throw error;
@@ -285,4 +317,43 @@ export async function cleanupDeletedRemoteBranches(repoPath: string): Promise<Cl
     const message = error instanceof Error ? error.message : "Could not clean deleted remote branches.";
     throw new GitWorkspaceError("CHECKOUT_FAILED", message);
   }
+}
+
+async function listWorktrees(repoPath: string): Promise<GitWorktreeEntry[]> {
+  const result = await runGitWithOutput(["worktree", "list", "--porcelain"], { cwd: repoPath });
+  const entries: GitWorktreeEntry[] = [];
+  let currentPath: string | null = null;
+  let currentBranchName: string | null = null;
+
+  for (const rawLine of result.stdout.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) {
+      if (currentPath) {
+        entries.push({ path: currentPath, branchName: currentBranchName });
+      }
+      currentPath = null;
+      currentBranchName = null;
+      continue;
+    }
+
+    if (line.startsWith("worktree ")) {
+      currentPath = line.slice("worktree ".length);
+      continue;
+    }
+
+    if (line.startsWith("branch refs/heads/")) {
+      currentBranchName = line.slice("branch refs/heads/".length);
+    }
+  }
+
+  if (currentPath) {
+    entries.push({ path: currentPath, branchName: currentBranchName });
+  }
+
+  return entries;
+}
+
+async function isWorktreeClean(worktreePath: string): Promise<boolean> {
+  const result = await runGitWithOutput(["status", "--porcelain"], { cwd: worktreePath });
+  return result.stdout.trim().length === 0;
 }

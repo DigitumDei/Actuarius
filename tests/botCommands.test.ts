@@ -350,7 +350,11 @@ describe("ActuariusBot cleanup command", () => {
 
   it("cleans a single repo resolved from the current repo channel after confirmation", async () => {
     vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
-    vi.mocked(cleanupDeletedRemoteBranches).mockResolvedValue({ deleted: ["feature/old"] });
+    vi.mocked(cleanupDeletedRemoteBranches).mockResolvedValue({
+      deleted: ["feature/old"],
+      removedWorktrees: ["/tmp/worktree-1"],
+      skippedDirtyWorktrees: [{ branchName: "feature/stale", path: "/tmp/worktree-2" }]
+    });
 
     const confirmation = {
       customId: "cleanup-confirm:interaction-1:user-1",
@@ -382,7 +386,14 @@ describe("ActuariusBot cleanup command", () => {
 
     expect(cleanupDeletedRemoteBranches).toHaveBeenCalledWith("/tmp/repo");
     expect(interaction.editReply).toHaveBeenCalledWith({
-      content: "Cleanup completed.\n\n`octocat/hello-world`\n- deleted `feature/old`",
+      content: [
+        "Cleanup completed.",
+        "",
+        "`octocat/hello-world`",
+        "- deleted `feature/old`",
+        "- removed worktree `/tmp/worktree-1`",
+        "- skipped dirty worktree `/tmp/worktree-2` for `feature/stale`"
+      ].join("\n"),
       components: []
     });
   });
@@ -392,8 +403,16 @@ describe("ActuariusBot cleanup command", () => {
       .mockResolvedValueOnce({ localPath: "/tmp/repo-1" })
       .mockResolvedValueOnce({ localPath: "/tmp/repo-2" });
     vi.mocked(cleanupDeletedRemoteBranches)
-      .mockResolvedValueOnce({ deleted: ["feature/old"] })
-      .mockResolvedValueOnce({ deleted: [] });
+      .mockResolvedValueOnce({
+        deleted: ["feature/old"],
+        removedWorktrees: ["/tmp/worktree-1"],
+        skippedDirtyWorktrees: []
+      })
+      .mockResolvedValueOnce({
+        deleted: [],
+        removedWorktrees: [],
+        skippedDirtyWorktrees: []
+      });
 
     const confirmation = {
       customId: "cleanup-confirm:interaction-1:user-1",
@@ -440,6 +459,7 @@ describe("ActuariusBot cleanup command", () => {
         "",
         "`octocat/hello-world`",
         "- deleted `feature/old`",
+        "- removed worktree `/tmp/worktree-1`",
         "",
         "`digitumdei/actuarius`",
         "- no deleted origin branches were found locally"
