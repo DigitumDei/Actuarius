@@ -68,6 +68,7 @@ describe("gitWorkspaceService", () => {
         stderr: ""
       })
       .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
       .mockResolvedValueOnce({ stdout: "", stderr: "" });
 
     await expect(cleanupDeletedRemoteBranches("/tmp/repo")).resolves.toEqual({

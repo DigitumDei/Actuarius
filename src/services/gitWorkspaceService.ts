@@ -21,10 +21,11 @@ export class GitWorkspaceError extends Error {
     | "GIT_UNAVAILABLE"
     | "CLONE_FAILED"
     | "MASTER_BRANCH_MISSING"
-    | "CHECKOUT_FAILED";
+    | "CHECKOUT_FAILED"
+    | "CLEANUP_FAILED";
 
   public constructor(
-    code: "GIT_UNAVAILABLE" | "CLONE_FAILED" | "MASTER_BRANCH_MISSING" | "CHECKOUT_FAILED",
+    code: "GIT_UNAVAILABLE" | "CLONE_FAILED" | "MASTER_BRANCH_MISSING" | "CHECKOUT_FAILED" | "CLEANUP_FAILED",
     message: string
   ) {
     super(message);
@@ -315,7 +316,7 @@ export async function cleanupDeletedRemoteBranches(repoPath: string): Promise<Cl
     }
 
     const message = error instanceof Error ? error.message : "Could not clean deleted remote branches.";
-    throw new GitWorkspaceError("CHECKOUT_FAILED", message);
+    throw new GitWorkspaceError("CLEANUP_FAILED", message);
   }
 }
 
