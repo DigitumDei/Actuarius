@@ -44,6 +44,11 @@ import {
   ensureRepoCheckedOutToMaster,
   listBranches
 } from "../services/gitWorkspaceService.js";
+import {
+  AdversarialReviewError,
+  runAdversarialReview,
+  type ReviewModelRunner
+} from "../services/adversarialReviewService.js";
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
 import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
 import { GeminiExecutionError, runGeminiRequest } from "../services/geminiExecutionService.js";
@@ -506,6 +511,9 @@ export class ActuariusBot {
         return;
       case "delete":
         await this.handleDelete(interaction);
+        return;
+      case "review":
+        await this.handleReview(interaction);
         return;
       default:
         await interaction.reply({ content: "Unknown command.", ephemeral: true });
@@ -1621,16 +1629,74 @@ Output the result of the command or the link to the created issue.`;
     return result;
   }
 
+  private buildReviewRunners(guildId: string): {
+    analyzer: ReviewModelRunner;
+    reviewers: ReviewModelRunner[];
+    summarizer: ReviewModelRunner;
+  } {
+    const modelConfig = this.db.getGuildModelConfig(guildId);
+    const preferredProvider: AiProvider = modelConfig?.provider ?? "claude";
+    const preferredModel = modelConfig?.model ?? undefined;
+    const providers: AiProvider[] = [preferredProvider];
+    for (const candidate of ["claude", "codex", "gemini"] satisfies AiProvider[]) {
+      if (!providers.includes(candidate)) {
+        providers.push(candidate);
+      }
+    }
+
+    const reviewModels = new Map<AiProvider, string | undefined>();
+    for (const provider of providers) {
+      if (provider === preferredProvider) {
+        reviewModels.set(provider, preferredModel);
+        continue;
+      }
+
+      const history = this.db.getModelHistory(provider);
+      reviewModels.set(provider, history[0]);
+    }
+
+    const reviewers: ReviewModelRunner[] = [];
+    for (const provider of providers) {
+      if (provider === "codex" && !this.config.enableCodexExecution) {
+        continue;
+      }
+      if (provider === "gemini" && !this.config.enableGeminiExecution) {
+        continue;
+      }
+
+      const reviewModel = reviewModels.get(provider);
+      reviewers.push({
+        provider,
+        ...(reviewModel ? { model: reviewModel } : {}),
+        label: AI_PROVIDER_LABELS[provider],
+        run: async ({ prompt, cwd, timeoutMs, model }) =>
+          this.runProviderText({ provider, prompt, cwd, timeoutMs, ...(model ? { model } : {}) })
+      });
+    }
+
+    if (reviewers.length < 2) {
+      throw new AdversarialReviewError(
+        "INSUFFICIENT_REVIEWERS",
+        "At least two enabled AI providers are required for /review."
+      );
+    }
+
+    const analyzer = reviewers[0]!;
+    const summarizer = reviewers.find((reviewer) => reviewer.provider !== analyzer.provider || reviewer.model !== analyzer.model) ?? analyzer;
+    return { analyzer, reviewers, summarizer };
+  }
+
   private async runProviderText(input: {
     provider: AiProvider;
     prompt: string;
     cwd: string;
+    timeoutMs?: number;
     model?: string;
   }): Promise<string> {
     const request = {
       prompt: input.prompt,
       cwd: input.cwd,
-      timeoutMs: this.config.askExecutionTimeoutMs,
+      timeoutMs: input.timeoutMs ?? this.config.askExecutionTimeoutMs,
       ...(input.model ? { model: input.model } : {})
     };
 
@@ -1662,6 +1728,166 @@ Output the result of the command or the link to the created issue.`;
         const result = await runClaudeRequest(request, this.logger);
         return result.text;
       }
+    }
+  }
+
+  private formatReviewSummaryMessage(input: {
+    requestId: number;
+    branchName: string;
+    reviewRunId: number;
+    diffHeadSha: string;
+    reviewersSucceeded: number;
+    reviewersAttempted: number;
+    artifactPath: string;
+    summary: {
+      executiveSummary: string;
+      blockingIssues: Array<{ title: string }>;
+      nonBlockingIssues: Array<{ title: string }>;
+      missingTests: string[];
+      verdict: "ready_for_pr" | "revise";
+    };
+  }): string {
+    return fitDiscordMessage(
+      [
+        `**Adversarial review completed**`,
+        `Request: #${input.requestId}`,
+        `Review run: #${input.reviewRunId}`,
+        `Branch: \`${input.branchName}\``,
+        `Reviewed commit: \`${input.diffHeadSha}\``,
+        `Reviewers: ${input.reviewersSucceeded}/${input.reviewersAttempted} succeeded`,
+        `Verdict: \`${input.summary.verdict}\``,
+        `Artifact: \`${input.artifactPath}\``,
+        "",
+        input.summary.executiveSummary,
+        "",
+        `Blocking issues (${input.summary.blockingIssues.length}):`,
+        ...(input.summary.blockingIssues.length > 0
+          ? input.summary.blockingIssues.map((issue) => `- ${issue.title}`)
+          : ["- None"]),
+        "",
+        `Non-blocking issues (${input.summary.nonBlockingIssues.length}):`,
+        ...(input.summary.nonBlockingIssues.length > 0
+          ? input.summary.nonBlockingIssues.map((issue) => `- ${issue.title}`)
+          : ["- None"]),
+        "",
+        `Missing tests (${input.summary.missingTests.length}):`,
+        ...(input.summary.missingTests.length > 0
+          ? input.summary.missingTests.map((item) => `- ${item}`)
+          : ["- None"])
+      ],
+      "...(truncated to fit Discord's 2000 character limit)"
+    );
+  }
+
+  private async handleReview(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.channel?.isThread()) {
+      await interaction.reply({ content: "`/review` must be run inside a request thread.", ephemeral: true });
+      return;
+    }
+
+    const parentId = interaction.channel.parentId;
+    if (!parentId) {
+      await interaction.reply({ content: "Could not resolve the parent repo channel for this thread.", ephemeral: true });
+      return;
+    }
+
+    const latestRequest = this.db.getLatestRequestWithWorkspaceByThreadId(interaction.channelId);
+    if (!latestRequest?.worktree_path || !latestRequest.branch_name) {
+      await interaction.reply({
+        content: "This thread does not have a tracked request branch. Run `/ask` first and keep the worktree attached.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const isOwner = latestRequest.user_id === interaction.user.id;
+    const canManageGuild = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
+    if (!isOwner && !canManageGuild) {
+      await interaction.reply({
+        content: "Only the original requester or a user with `Manage Server` can run `/review` for this branch.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (latestRequest.status === "running" || latestRequest.status === "queued") {
+      await interaction.reply({
+        content: "The latest request in this thread is still queued or running. Wait for it to finish before reviewing.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!existsSync(latestRequest.worktree_path)) {
+      await interaction.reply({
+        content: "The tracked worktree for this thread no longer exists. Start a new `/ask` request before reviewing.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const repo = this.db.getRepoByChannelId(interaction.guildId, parentId);
+    if (!repo) {
+      await interaction.reply({
+        content: "This thread is not attached to a connected repository channel. Run `/connect-repo` first.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+    await interaction.channel.send("Adversarial review started.");
+
+    try {
+      const runners = this.buildReviewRunners(interaction.guildId);
+      const result = await new Promise<Awaited<ReturnType<typeof runAdversarialReview>>>((resolve, reject) => {
+        this.requestQueue.enqueue(interaction.guildId!, async () => {
+          try {
+            resolve(await runAdversarialReview({
+              db: this.db,
+              logger: this.logger,
+              requestId: latestRequest.id,
+              threadId: interaction.channelId,
+              repoFullName: repo.full_name,
+              branchName: latestRequest.branch_name!,
+              worktreePath: latestRequest.worktree_path!,
+              artifactRootPath: this.config.reposRootPath,
+              analyzer: runners.analyzer,
+              reviewers: runners.reviewers,
+              summarizer: runners.summarizer,
+              stageTimeoutMs: this.config.askExecutionTimeoutMs,
+              totalTimeoutMs: this.config.askExecutionTimeoutMs * 2
+            }));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+
+      await interaction.channel.send(
+        this.formatReviewSummaryMessage({
+          requestId: latestRequest.id,
+          branchName: latestRequest.branch_name,
+          reviewRunId: result.reviewRunId,
+          diffHeadSha: result.diffHeadSha,
+          reviewersSucceeded: result.reviewersSucceeded,
+          reviewersAttempted: result.reviewersAttempted,
+          artifactPath: result.artifactPath,
+          summary: result.summary
+        })
+      );
+      await interaction.editReply(
+        `Review completed for \`${repo.full_name}\` at \`${result.diffHeadSha}\` with verdict \`${result.summary.verdict}\`.`
+      );
+    } catch (error) {
+      const message = this.describeExecutionError(error);
+      await interaction.channel.send(`**Adversarial review failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
+      await interaction.editReply(`Review failed: ${message}`);
     }
   }
 
@@ -1829,6 +2055,10 @@ Output the result of the command or the link to the created issue.`;
 
     if (error instanceof GitWorkspaceError) {
       return `Repository sync failed: ${error.message}`;
+    }
+
+    if (error instanceof AdversarialReviewError) {
+      return error.message;
     }
 
     if (error instanceof Error) {

@@ -1,5 +1,14 @@
 import { DatabaseSync } from "node:sqlite";
-import type { AiProvider, GuildModelConfigRow, RepoRow, RequestRow, RequestStatus } from "./types.js";
+import type {
+  AiProvider,
+  GuildModelConfigRow,
+  RepoRow,
+  RequestRow,
+  RequestStatus,
+  ReviewRunRow,
+  ReviewRunStatus,
+  ReviewVerdict
+} from "./types.js";
 
 function toNumber(value: number | bigint): number {
   if (typeof value === "bigint") {
@@ -72,6 +81,24 @@ export class AppDatabase {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS review_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id INTEGER NOT NULL,
+        thread_id TEXT NOT NULL,
+        branch_name TEXT NOT NULL,
+        status TEXT NOT NULL,
+        config_json TEXT NOT NULL,
+        diff_base TEXT NOT NULL,
+        diff_head TEXT NOT NULL,
+        final_verdict TEXT,
+        summary_markdown TEXT,
+        raw_result_json TEXT,
+        artifact_path TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (request_id) REFERENCES requests(id) ON DELETE CASCADE
       );
     `);
 
@@ -243,6 +270,25 @@ export class AppDatabase {
     };
   }
 
+  private mapReviewRunRow(
+    row:
+      | (ReviewRunRow & {
+        id: number | bigint;
+        request_id: number | bigint;
+      })
+      | undefined
+  ): ReviewRunRow | undefined {
+    if (!row) {
+      return undefined;
+    }
+
+    return {
+      ...row,
+      id: toNumber(row.id),
+      request_id: toNumber(row.request_id)
+    };
+  }
+
   public updateRequestStatus(requestId: number, status: RequestStatus): void {
     this.db.prepare("UPDATE requests SET status = ? WHERE id = ?").run(status, requestId);
   }
@@ -329,6 +375,75 @@ export class AppDatabase {
       .prepare("SELECT model FROM model_history WHERE provider = ? ORDER BY used_at DESC LIMIT 3")
       .all(provider) as Array<{ model: string }>;
     return rows.map((row) => row.model);
+  }
+
+  public createReviewRun(input: {
+    requestId: number;
+    threadId: string;
+    branchName: string;
+    status: ReviewRunStatus;
+    configJson: string;
+    diffBase: string;
+    diffHead: string;
+  }): ReviewRunRow {
+    const row = this.db
+      .prepare(
+        `INSERT INTO review_runs (request_id, thread_id, branch_name, status, config_json, diff_base, diff_head)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         RETURNING *`
+      )
+      .get(
+        input.requestId,
+        input.threadId,
+        input.branchName,
+        input.status,
+        input.configJson,
+        input.diffBase,
+        input.diffHead
+      ) as unknown as ReviewRunRow & { id: number | bigint; request_id: number | bigint };
+
+    return {
+      ...row,
+      id: toNumber(row.id),
+      request_id: toNumber(row.request_id)
+    };
+  }
+
+  public completeReviewRun(input: {
+    reviewRunId: number;
+    status: Exclude<ReviewRunStatus, "running">;
+    finalVerdict: ReviewVerdict | null;
+    summaryMarkdown: string | null;
+    rawResultJson: string | null;
+    artifactPath: string | null;
+  }): void {
+    this.db
+      .prepare(
+        `UPDATE review_runs
+         SET status = ?,
+             final_verdict = ?,
+             summary_markdown = ?,
+             raw_result_json = ?,
+             artifact_path = ?,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`
+      )
+      .run(
+        input.status,
+        input.finalVerdict,
+        input.summaryMarkdown,
+        input.rawResultJson,
+        input.artifactPath,
+        input.reviewRunId
+      );
+  }
+
+  public getLatestReviewRunForRequest(requestId: number): ReviewRunRow | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM review_runs WHERE request_id = ? ORDER BY id DESC LIMIT 1")
+      .get(requestId) as (ReviewRunRow & { id: number | bigint; request_id: number | bigint }) | undefined;
+
+    return this.mapReviewRunRow(row);
   }
 
   public close(): void {
