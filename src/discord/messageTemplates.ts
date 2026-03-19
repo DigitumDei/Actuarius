@@ -6,6 +6,7 @@ export function buildHelpText(): string {
     "- `/sync-repo [repo:<owner/name>]` Sync an existing connected repo checkout to `master`.",
     "- `/cleanup [repo:<owner/name>]` Delete local branches whose origin branches are gone. In a non-repo channel, cleans all connected repos after confirmation.",
     "- `/repos` List connected repos and their channels.",
+    "- `/issues [mode:<list|summary|detail>] [issue:<number>]` Read open GitHub issues for the connected repo.",
     "- `/ask prompt:<text>` Create a new request thread and run AI in an isolated worktree.",
     "- `/model-select provider:<claude|codex|gemini> model:<name>` Set the AI provider and model for `/ask` (admin only).",
     "- `/model-current` Show the active AI provider and model for this server.",
