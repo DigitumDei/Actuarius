@@ -1627,47 +1627,42 @@ Output the result of the command or the link to the created issue.`;
     cwd: string;
     model?: string;
   }): Promise<string> {
-    if (input.provider === "codex") {
-      if (!this.config.enableCodexExecution) {
-        throw new CodexExecutionError(
-          "CODEX_DISABLED",
-          "The server's configured AI provider (Codex) is currently disabled. An admin can switch providers with `/model-select`."
-        );
-      }
-
-      const result = await runCodexRequest({
-        prompt: input.prompt,
-        cwd: input.cwd,
-        timeoutMs: this.config.askExecutionTimeoutMs,
-        ...(input.model ? { model: input.model } : {})
-      }, this.logger);
-      return result.text;
-    }
-
-    if (input.provider === "gemini") {
-      if (!this.config.enableGeminiExecution) {
-        throw new GeminiExecutionError(
-          "GEMINI_DISABLED",
-          "The server's configured AI provider (Gemini) is currently disabled. An admin can switch providers with `/model-select`."
-        );
-      }
-
-      const result = await runGeminiRequest({
-        prompt: input.prompt,
-        cwd: input.cwd,
-        timeoutMs: this.config.askExecutionTimeoutMs,
-        ...(input.model ? { model: input.model } : {})
-      }, this.logger);
-      return result.text;
-    }
-
-    const result = await runClaudeRequest({
+    const request = {
       prompt: input.prompt,
       cwd: input.cwd,
       timeoutMs: this.config.askExecutionTimeoutMs,
       ...(input.model ? { model: input.model } : {})
-    }, this.logger);
-    return result.text;
+    };
+
+    switch (input.provider) {
+      case "codex": {
+        if (!this.config.enableCodexExecution) {
+          throw new CodexExecutionError(
+            "CODEX_DISABLED",
+            "The server's configured AI provider (Codex) is currently disabled. An admin can switch providers with `/model-select`."
+          );
+        }
+
+        const result = await runCodexRequest(request, this.logger);
+        return result.text;
+      }
+      case "gemini": {
+        if (!this.config.enableGeminiExecution) {
+          throw new GeminiExecutionError(
+            "GEMINI_DISABLED",
+            "The server's configured AI provider (Gemini) is currently disabled. An admin can switch providers with `/model-select`."
+          );
+        }
+
+        const result = await runGeminiRequest(request, this.logger);
+        return result.text;
+      }
+      case "claude":
+      default: {
+        const result = await runClaudeRequest(request, this.logger);
+        return result.text;
+      }
+    }
   }
 
   private async runQueuedRequest(input: {

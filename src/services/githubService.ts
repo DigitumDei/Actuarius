@@ -331,49 +331,44 @@ export async function lookupRepo(reference: ParsedRepoReference): Promise<RepoLo
 }
 
 export async function listOpenIssues(repoFullName: string): Promise<GitHubIssueSummary[]> {
-  try {
-    await ensureGitHubCliAuthenticated();
-    const { stdout } = await execFileAsync(
-      "gh",
-      [
-        "issue",
-        "list",
-        "--repo",
-        repoFullName,
-        "--state",
-        "open",
-        "--limit",
-        "100",
-        "--json",
-        "number,title,url,state,body,labels,author,createdAt,updatedAt"
-      ],
-      {
-        env: getGitHubCommandEnvironment(),
-        timeout: 15_000,
-        maxBuffer: 4 * 1024 * 1024
-      }
-    );
-
-    return parseIssueListJson(stdout);
-  } catch (error) {
-    mapGitHubIssueLookupError(error);
-  }
+  return runGhIssueCommand(
+    [
+      "issue",
+      "list",
+      "--repo",
+      repoFullName,
+      "--state",
+      "open",
+      "--limit",
+      "100",
+      "--json",
+      "number,title,url,state,body,labels,author,createdAt,updatedAt"
+    ],
+    parseIssueListJson
+  );
 }
 
 export async function viewIssueDetail(repoFullName: string, issueNumber: number): Promise<GitHubIssueDetail> {
+  return runGhIssueCommand(
+    [
+      "issue",
+      "view",
+      String(issueNumber),
+      "--repo",
+      repoFullName,
+      "--json",
+      "number,title,url,state,body,labels,author,assignees,createdAt,updatedAt"
+    ],
+    parseIssueDetailJson
+  );
+}
+
+async function runGhIssueCommand<T>(args: string[], parser: (stdout: string) => T): Promise<T> {
   try {
     await ensureGitHubCliAuthenticated();
     const { stdout } = await execFileAsync(
       "gh",
-      [
-        "issue",
-        "view",
-        String(issueNumber),
-        "--repo",
-        repoFullName,
-        "--json",
-        "number,title,url,state,body,labels,author,assignees,createdAt,updatedAt"
-      ],
+      args,
       {
         env: getGitHubCommandEnvironment(),
         timeout: 15_000,
@@ -381,7 +376,7 @@ export async function viewIssueDetail(repoFullName: string, issueNumber: number)
       }
     );
 
-    return parseIssueDetailJson(stdout);
+    return parser(stdout);
   } catch (error) {
     mapGitHubIssueLookupError(error);
   }
