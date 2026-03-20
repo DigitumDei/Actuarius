@@ -75,6 +75,19 @@ describe("adversarialReviewService", () => {
     expect(summary.executiveSummary).toContain("This branch looks fine");
   });
 
+  it("uses a concise first sentence for long malformed summarizer output", () => {
+    const summary = parseStructuredSummary(
+      "revise\n\nThe queue permission check is missing, so any thread participant can trigger /review. "
+      + "Additional repeated filler text ".repeat(80)
+    );
+
+    expect(summary.verdict).toBe("revise");
+    expect(summary.executiveSummary).toBe(
+      "revise The queue permission check is missing, so any thread participant can trigger /review."
+    );
+    expect(summary.executiveSummary.length).toBeLessThan(160);
+  });
+
   it("runs the full review pipeline, tolerates one reviewer failure, and writes a stable artifact", async () => {
     mockGetReviewDiff.mockResolvedValue({
       baseBranch: "main",

@@ -83,6 +83,21 @@ function stripCodeFence(text: string): string {
   return fencedMatch?.[1]?.trim() ?? trimmed;
 }
 
+function summarizeMalformedSummary(text: string): string {
+  const normalized = text.replace(/\s+/gu, " ").trim();
+  if (normalized.length === 0) {
+    return "Summarizer returned empty output.";
+  }
+
+  const firstSentence = normalized.match(/^(.{1,600}?[.!?])(?:\s|$)/u)?.[1]?.trim();
+  if (firstSentence) {
+    return firstSentence;
+  }
+
+  const firstWords = normalized.split(/\s+/u).slice(0, 40).join(" ");
+  return clip(firstWords, 600);
+}
+
 export function parseStructuredSummary(rawText: string): ReviewSummary {
   const cleaned = stripCodeFence(rawText);
 
@@ -129,7 +144,7 @@ export function parseStructuredSummary(rawText: string): ReviewSummary {
   } catch {
     const verdict: ReviewVerdict = /\bready_for_pr\b/i.test(cleaned) ? "ready_for_pr" : "revise";
     return {
-      executiveSummary: clip(cleaned || "Summarizer returned empty output.", 600),
+      executiveSummary: summarizeMalformedSummary(cleaned),
       blockingIssues: [],
       nonBlockingIssues: [],
       missingTests: [],
