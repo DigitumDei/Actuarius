@@ -101,4 +101,47 @@ describe("AppDatabase request workspace state", () => {
       branch_name: null
     });
   });
+
+  it("persists completed review runs with reviewed sha", () => {
+    const request = db.createRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      channelId: "channel-1",
+      threadId: "thread-review",
+      userId: "user-1",
+      prompt: "review target",
+      status: "succeeded"
+    });
+    db.updateRequestWorkspace(request.id, "/tmp/worktree-review", "ask/99-123");
+
+    const reviewRun = db.createReviewRun({
+      requestId: request.id,
+      threadId: request.thread_id,
+      branchName: "ask/99-123",
+      status: "running",
+      configJson: "{\"reviewers\":2}",
+      diffBase: "origin/main",
+      diffHead: "abc123def"
+    });
+
+    db.completeReviewRun({
+      reviewRunId: reviewRun.id,
+      status: "completed",
+      finalVerdict: "revise",
+      summaryMarkdown: "# Review",
+      rawResultJson: "{\"ok\":true}",
+      artifactPath: "docs/reviews/1/review.md"
+    });
+
+    expect(db.getLatestReviewRunForRequest(request.id)).toMatchObject({
+      id: reviewRun.id,
+      request_id: request.id,
+      branch_name: "ask/99-123",
+      status: "completed",
+      diff_base: "origin/main",
+      diff_head: "abc123def",
+      final_verdict: "revise",
+      artifact_path: "docs/reviews/1/review.md"
+    });
+  });
 });

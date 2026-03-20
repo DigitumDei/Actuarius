@@ -51,11 +51,23 @@ vi.mock("../src/services/claudeExecutionService.js", async () => {
   };
 });
 
+vi.mock("../src/services/adversarialReviewService.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/adversarialReviewService.js")>(
+    "../src/services/adversarialReviewService.js"
+  );
+
+  return {
+    ...actual,
+    runAdversarialReview: vi.fn()
+  };
+});
+
 const { deleteRequestBranch } = await import("../src/services/requestWorktreeService.js");
 const { ensureRepoCheckedOutToMaster, listBranches, cleanupDeletedRemoteBranches } = await import("../src/services/gitWorkspaceService.js");
 const { spawnCollect } = await import("../src/utils/spawnCollect.js");
 const { listOpenIssues, viewIssueDetail } = await import("../src/services/githubService.js");
 const { runClaudeRequest } = await import("../src/services/claudeExecutionService.js");
+const { runAdversarialReview } = await import("../src/services/adversarialReviewService.js");
 const { ActuariusBot } = await import("../src/discord/bot.js");
 
 const logger = pino({ level: "silent" });
@@ -86,6 +98,7 @@ function createBot(dbOverrides: Record<string, unknown> = {}): ActuariusBot {
   const db = {
     createRequest: vi.fn(),
     getGuildModelConfig: vi.fn(),
+    getModelHistory: vi.fn().mockReturnValue([]),
     getLatestRequestWithWorkspaceByThreadId: vi.fn(),
     getRequestByThreadId: vi.fn(),
     getRepoByFullName: vi.fn(),
@@ -104,7 +117,7 @@ function createInteraction(overrides: Record<string, unknown> = {}) {
     guildId: "guild-1",
     id: "interaction-1",
     channelId: "thread-1",
-    channel: { isThread: () => true },
+    channel: { isThread: () => true, parentId: "channel-1", send: vi.fn().mockResolvedValue(undefined) },
     user: { id: "user-1" },
     memberPermissions: { has: vi.fn().mockReturnValue(false) },
     options: {
@@ -683,5 +696,78 @@ describe("ActuariusBot cleanup command", () => {
       ].join("\n"),
       components: []
     });
+  });
+});
+
+describe("ActuariusBot review runner selection", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("uses model history for non-preferred review providers", () => {
+    const getModelHistory = vi.fn().mockImplementation((provider: string) => {
+      switch (provider) {
+        case "claude":
+          return ["claude-sonnet-4"];
+        case "gemini":
+          return ["gemini-2.5-pro"];
+        default:
+          return [];
+      }
+    });
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        provider: "codex",
+        model: "o4-mini",
+        updated_at: "2026-03-18T00:00:00Z"
+      }),
+      getModelHistory
+    });
+    (bot as any).config.enableCodexExecution = true;
+    (bot as any).config.enableGeminiExecution = true;
+
+    const runners = (bot as any).buildReviewRunners("guild-1");
+
+    expect(runners.reviewers).toHaveLength(3);
+    expect(runners.reviewers.map((runner: { provider: string; model?: string }) => ({
+      provider: runner.provider,
+      model: runner.model
+    }))).toEqual([
+      { provider: "codex", model: "o4-mini" },
+      { provider: "claude", model: "claude-sonnet-4" },
+      { provider: "gemini", model: "gemini-2.5-pro" }
+    ]);
+    expect(getModelHistory).toHaveBeenCalledWith("claude");
+    expect(getModelHistory).toHaveBeenCalledWith("gemini");
+    expect(getModelHistory).not.toHaveBeenCalledWith("codex");
+    expect(runners.summarizer.provider).toBe("claude");
+    expect(runners.summarizer.model).toBe("claude-sonnet-4");
+  });
+});
+
+describe("ActuariusBot review command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("rejects users without ownership or manage server permission", async () => {
+    const bot = createBot({
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "owner-1",
+        worktree_path: "/tmp/worktree-review",
+        branch_name: "ask/41-123",
+        status: "succeeded"
+      })
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleReview(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Only the original requester or a user with `Manage Server` can run `/review` for this branch.",
+      ephemeral: true
+    });
+    expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 });
