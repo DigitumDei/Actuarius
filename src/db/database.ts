@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import type {
   AiProvider,
   GuildModelConfigRow,
+  GuildReviewConfigRow,
   RepoRow,
   RequestRow,
   RequestStatus,
@@ -120,6 +121,16 @@ export class AppDatabase {
         guild_id TEXT PRIMARY KEY,
         provider TEXT NOT NULL,
         model TEXT,
+        updated_by_user_id TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE
+      );
+    `);
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS guild_review_config (
+        guild_id TEXT PRIMARY KEY,
+        rounds INTEGER NOT NULL,
         updated_by_user_id TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE
@@ -341,6 +352,26 @@ export class AppDatabase {
       .get(guildId, provider, model, updatedByUserId) as unknown as GuildModelConfigRow;
   }
 
+  public getGuildReviewConfig(guildId: string): GuildReviewConfigRow | undefined {
+    return this.db
+      .prepare("SELECT * FROM guild_review_config WHERE guild_id = ?")
+      .get(guildId) as GuildReviewConfigRow | undefined;
+  }
+
+  public setGuildReviewConfig(guildId: string, rounds: number, updatedByUserId: string): GuildReviewConfigRow {
+    return this.db
+      .prepare(
+        `INSERT INTO guild_review_config (guild_id, rounds, updated_by_user_id)
+         VALUES (?, ?, ?)
+         ON CONFLICT(guild_id) DO UPDATE
+         SET rounds = excluded.rounds,
+             updated_by_user_id = excluded.updated_by_user_id,
+             updated_at = CURRENT_TIMESTAMP
+         RETURNING *`
+      )
+      .get(guildId, rounds, updatedByUserId) as unknown as GuildReviewConfigRow;
+  }
+
   public addModelToHistory(provider: AiProvider, model: string): void {
     this.db.exec("BEGIN");
     try {
@@ -402,11 +433,7 @@ export class AppDatabase {
         input.diffHead
       ) as unknown as ReviewRunRow & { id: number | bigint; request_id: number | bigint };
 
-    return {
-      ...row,
-      id: toNumber(row.id),
-      request_id: toNumber(row.request_id)
-    };
+    return this.mapReviewRunRow(row)!;
   }
 
   public completeReviewRun(input: {

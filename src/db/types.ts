@@ -15,6 +15,13 @@ export interface GuildModelConfigRow {
   updated_at: string;
 }
 
+export interface GuildReviewConfigRow {
+  guild_id: string;
+  rounds: number;
+  updated_by_user_id: string;
+  updated_at: string;
+}
+
 export interface RepoRow {
   id: number;
   guild_id: string;

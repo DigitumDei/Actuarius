@@ -9,6 +9,7 @@ export function buildHelpText(): string {
     "- `/issues [mode:<list|summary|detail>] [issue:<number>]` Read open GitHub issues for the connected repo.",
     "- `/ask prompt:<text>` Create a new request thread and run AI in an isolated worktree.",
     "- `/review` Run adversarial code review in the current request thread (request owner or Manage Server).",
+    "- `/review-rounds [rounds:<number>]` Show or set the max `/review` consensus rounds for this server (admin only to set).",
     "- `/model-select provider:<claude|codex|gemini> model:<name>` Set the AI provider and model for `/ask` (admin only).",
     "- `/model-current` Show the active AI provider and model for this server.",
     "- `/gemini-auth` Start Google OAuth flow to authenticate the Gemini CLI (admin only).",

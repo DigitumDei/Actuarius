@@ -98,13 +98,16 @@ function createBot(dbOverrides: Record<string, unknown> = {}): ActuariusBot {
   const db = {
     createRequest: vi.fn(),
     getGuildModelConfig: vi.fn(),
+    getGuildReviewConfig: vi.fn(),
     getModelHistory: vi.fn().mockReturnValue([]),
     getLatestRequestWithWorkspaceByThreadId: vi.fn(),
     getRequestByThreadId: vi.fn(),
     getRepoByFullName: vi.fn(),
     getRepoByChannelId: vi.fn(),
     listReposByGuild: vi.fn(),
+    setGuildReviewConfig: vi.fn(),
     updateRequestWorkspace: vi.fn(),
+    upsertGuild: vi.fn(),
     ...dbOverrides
   };
 
@@ -740,8 +743,76 @@ describe("ActuariusBot review runner selection", () => {
     expect(getModelHistory).toHaveBeenCalledWith("claude");
     expect(getModelHistory).toHaveBeenCalledWith("gemini");
     expect(getModelHistory).not.toHaveBeenCalledWith("codex");
+    expect(runners.judge.provider).toBe("codex");
+    expect(runners.judge.model).toBe("o4-mini");
     expect(runners.summarizer.provider).toBe("claude");
     expect(runners.summarizer.model).toBe("claude-sonnet-4");
+  });
+});
+
+describe("ActuariusBot review-rounds command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns the default round limit when no guild config is set", async () => {
+    const bot = createBot({
+      getGuildReviewConfig: vi.fn().mockReturnValue(undefined)
+    });
+    const interaction = createInteraction({
+      options: {
+        getString: vi.fn().mockReturnValue(null),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleReviewRounds(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Current adversarial review round limit: `2` (default).",
+      ephemeral: true
+    });
+  });
+
+  it("requires manage server permission to change the round limit", async () => {
+    const setGuildReviewConfig = vi.fn();
+    const bot = createBot({ setGuildReviewConfig });
+    const interaction = createInteraction({
+      options: {
+        getString: vi.fn().mockReturnValue(null),
+        getInteger: vi.fn().mockReturnValue(4)
+      }
+    });
+
+    await (bot as any).handleReviewRounds(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "You need the `Manage Server` permission to change the adversarial review round limit.",
+      ephemeral: true
+    });
+    expect(setGuildReviewConfig).not.toHaveBeenCalled();
+  });
+
+  it("stores the round limit when an admin sets it", async () => {
+    const upsertGuild = vi.fn();
+    const setGuildReviewConfig = vi.fn();
+    const bot = createBot({ upsertGuild, setGuildReviewConfig });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn().mockReturnValue(null),
+        getInteger: vi.fn().mockReturnValue(4)
+      }
+    });
+
+    await (bot as any).handleReviewRounds(interaction);
+
+    expect(upsertGuild).toHaveBeenCalledWith("guild-1", "Guild");
+    expect(setGuildReviewConfig).toHaveBeenCalledWith("guild-1", 4, "user-1");
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Adversarial review round limit set to `4`. Future `/review` runs in this server will use this value.",
+      ephemeral: true
+    });
   });
 });
 
@@ -769,5 +840,72 @@ describe("ActuariusBot review command", () => {
       ephemeral: true
     });
     expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("passes the configured review round limit into the review service", async () => {
+    vi.mocked(runAdversarialReview).mockResolvedValue({
+      reviewRunId: 12,
+      diffHeadSha: "abc123",
+      reviewersSucceeded: 2,
+      reviewersAttempted: 2,
+      artifactPath: "docs/reviews/41/review.md",
+      summary: {
+        executiveSummary: "Consensus reached.",
+        blockingIssues: [],
+        nonBlockingIssues: [],
+        missingTests: [],
+        outstandingConcerns: [],
+        verdict: "ready_for_pr"
+      }
+    });
+
+    const bot = createBot({
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        rounds: 4,
+        updated_by_user_id: "admin-1",
+        updated_at: "2026-03-24T00:00:00Z"
+      }),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "user-1",
+        worktree_path: "/tmp",
+        branch_name: "ask/41-123",
+        status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      }),
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        provider: "claude",
+        model: "claude-opus",
+        updated_at: "2026-03-18T00:00:00Z"
+      })
+    });
+    vi.spyOn((bot as any), "buildReviewRunners").mockReturnValue({
+      analyzer: { provider: "claude", model: "claude-opus", label: "Claude", run: vi.fn() },
+      reviewers: [
+        { provider: "claude", model: "claude-opus", label: "Claude", run: vi.fn() },
+        { provider: "codex", model: "o4-mini", label: "Codex", run: vi.fn() }
+      ],
+      judge: { provider: "claude", model: "claude-opus", label: "Claude", run: vi.fn() },
+      summarizer: { provider: "codex", model: "o4-mini", label: "Codex", run: vi.fn() }
+    });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      channel: { isThread: () => true, parentId: "channel-1", send: vi.fn().mockResolvedValue(undefined) }
+    });
+
+    await (bot as any).handleReview(interaction);
+
+    expect(runAdversarialReview).toHaveBeenCalledWith(expect.objectContaining({
+      maxConsensusRounds: 4
+    }));
   });
 });

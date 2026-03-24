@@ -445,7 +445,8 @@ export async function getReviewDiff(
   try {
     const defaultBranch = await detectDefaultBranch(repoPath);
     const excludeArgs = (options.excludePaths ?? []).map((path) => `:(exclude)${path}`);
-    const diffArgs = ["--merge-base", defaultBranch.remoteRef, options.headRef, "--", ...excludeArgs];
+    const comparisonRef = `${defaultBranch.remoteRef}...${options.headRef}`;
+    const diffArgs = [comparisonRef, "--", ...excludeArgs];
     const [changedFilesResult, diffResult, headSha] = await Promise.all([
       runGitWithOutput(["diff", "--name-only", ...diffArgs], { cwd: repoPath }),
       runGitDiffWithOverflowFallback(["diff", ...diffArgs], repoPath),

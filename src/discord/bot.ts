@@ -500,6 +500,9 @@ export class ActuariusBot {
       case "model-current":
         await this.handleModelCurrent(interaction);
         return;
+      case "review-rounds":
+        await this.handleReviewRounds(interaction);
+        return;
       case "gemini-auth":
         await this.handleGeminiAuth(interaction);
         return;
@@ -1092,6 +1095,43 @@ export class ActuariusBot {
     });
   }
 
+  private async handleReviewRounds(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    const requestedRounds = interaction.options.getInteger("rounds");
+    if (requestedRounds === null) {
+      const config = this.db.getGuildReviewConfig(interaction.guildId);
+      const rounds = config?.rounds ?? 2;
+      const ts = config ? new Date(config.updated_at).getTime() : Number.NaN;
+      const timeStr = config ? (Number.isNaN(ts) ? config.updated_at : `<t:${Math.floor(ts / 1000)}:R>`) : null;
+      await interaction.reply({
+        content: config
+          ? `Current adversarial review round limit: \`${rounds}\` (set ${timeStr}).`
+          : "Current adversarial review round limit: `2` (default).",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to change the adversarial review round limit.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    this.db.upsertGuild(interaction.guild.id, interaction.guild.name);
+    this.db.setGuildReviewConfig(interaction.guildId, requestedRounds, interaction.user.id);
+    await interaction.reply({
+      content: `Adversarial review round limit set to \`${requestedRounds}\`. Future \`/review\` runs in this server will use this value.`,
+      ephemeral: true
+    });
+  }
+
   private async handleGeminiAuth(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guild || !interaction.guildId) {
       await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
@@ -1632,6 +1672,7 @@ Output the result of the command or the link to the created issue.`;
   private buildReviewRunners(guildId: string): {
     analyzer: ReviewModelRunner;
     reviewers: ReviewModelRunner[];
+    judge: ReviewModelRunner;
     summarizer: ReviewModelRunner;
   } {
     const modelConfig = this.db.getGuildModelConfig(guildId);
@@ -1682,8 +1723,13 @@ Output the result of the command or the link to the created issue.`;
     }
 
     const analyzer = reviewers[0]!;
+    const judge = reviewers[0]!;
     const summarizer = reviewers.find((reviewer) => reviewer.provider !== analyzer.provider || reviewer.model !== analyzer.model) ?? analyzer;
-    return { analyzer, reviewers, summarizer };
+    return { analyzer, reviewers, judge, summarizer };
+  }
+
+  private getReviewRounds(guildId: string): number {
+    return Math.max(1, this.db.getGuildReviewConfig(guildId)?.rounds ?? 2);
   }
 
   private async runProviderText(input: {
@@ -1744,6 +1790,7 @@ Output the result of the command or the link to the created issue.`;
       blockingIssues: Array<{ title: string }>;
       nonBlockingIssues: Array<{ title: string }>;
       missingTests: string[];
+      outstandingConcerns: string[];
       verdict: "ready_for_pr" | "revise";
     };
   }): string {
@@ -1773,6 +1820,11 @@ Output the result of the command or the link to the created issue.`;
         `Missing tests (${input.summary.missingTests.length}):`,
         ...(input.summary.missingTests.length > 0
           ? input.summary.missingTests.map((item) => `- ${item}`)
+          : ["- None"]),
+        "",
+        `Outstanding concerns (${input.summary.outstandingConcerns.length}):`,
+        ...(input.summary.outstandingConcerns.length > 0
+          ? input.summary.outstandingConcerns.map((item) => `- ${item}`)
           : ["- None"])
       ],
       "...(truncated to fit Discord's 2000 character limit)"
@@ -1859,9 +1911,11 @@ Output the result of the command or the link to the created issue.`;
               artifactRootPath: this.config.reposRootPath,
               analyzer: runners.analyzer,
               reviewers: runners.reviewers,
+              judge: runners.judge,
               summarizer: runners.summarizer,
               stageTimeoutMs: this.config.askExecutionTimeoutMs,
-              totalTimeoutMs: this.config.askExecutionTimeoutMs * 2
+              totalTimeoutMs: this.config.askExecutionTimeoutMs * 2,
+              maxConsensusRounds: this.getReviewRounds(interaction.guildId!)
             }));
           } catch (error) {
             reject(error);

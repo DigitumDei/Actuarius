@@ -153,7 +153,7 @@ describe("gitWorkspaceService", () => {
     expect(mockSpawnCollect).toHaveBeenNthCalledWith(
       3,
       "git",
-      ["diff", "--name-only", "--merge-base", "origin/main", "ask/1-123", "--", ":(exclude)docs/reviews/**"],
+      ["diff", "--name-only", "origin/main...ask/1-123", "--", ":(exclude)docs/reviews/**"],
       expect.any(Object)
     );
   });

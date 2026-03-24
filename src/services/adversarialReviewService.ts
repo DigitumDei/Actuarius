@@ -20,10 +20,30 @@ interface AnalyzerStageResult {
 }
 
 interface ReviewerStageResult {
+  round: number;
   reviewer: string;
   provider: AiProvider;
   model?: string;
   text: string;
+}
+
+interface ReviewCritiqueResult {
+  round: number;
+  reviewer: string;
+  provider: AiProvider;
+  model?: string;
+  text: string;
+}
+
+interface JudgeStageResult {
+  round: number;
+  text: string;
+  consensusReached: boolean;
+  consensusSummary: string;
+  reviewerGuidance: Array<{
+    reviewer: string;
+    feedback: string;
+  }>;
 }
 
 export interface ReviewIssue {
@@ -39,6 +59,7 @@ export interface ReviewSummary {
   nonBlockingIssues: ReviewIssue[];
   missingTests: string[];
   disputedIssues: string[];
+  outstandingConcerns: string[];
   verdict: ReviewVerdict;
 }
 
@@ -56,6 +77,8 @@ export interface AdversarialReviewResult {
   rawResult: {
     analyzer: AnalyzerStageResult;
     reviewers: ReviewerStageResult[];
+    critiques: ReviewCritiqueResult[];
+    judgeRounds: JudgeStageResult[];
     summarizerRawText: string;
   };
 }
@@ -123,10 +146,15 @@ export function parseStructuredSummary(rawText: string): ReviewSummary {
         ...(typeof issue.file === "string" ? { file: issue.file } : {})
       }));
     const missingTests = Array.isArray(parsed.missingTests)
-      ? parsed.missingTests.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      ? [...new Set(parsed.missingTests.filter((item): item is string => typeof item === "string" && item.trim().length > 0))]
       : [];
     const disputedIssues = Array.isArray(parsed.disputedIssues)
-      ? parsed.disputedIssues.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      ? [...new Set(parsed.disputedIssues.filter((item): item is string => typeof item === "string" && item.trim().length > 0))]
+      : [];
+    const outstandingConcerns = Array.isArray((parsed as { outstandingConcerns?: unknown }).outstandingConcerns)
+      ? [...new Set((parsed as { outstandingConcerns: unknown[] }).outstandingConcerns.filter(
+        (item): item is string => typeof item === "string" && item.trim().length > 0
+      ))]
       : [];
     const verdict = parsed.verdict === "ready_for_pr" ? "ready_for_pr" : "revise";
     const executiveSummary = typeof parsed.executiveSummary === "string" && parsed.executiveSummary.trim().length > 0
@@ -139,6 +167,7 @@ export function parseStructuredSummary(rawText: string): ReviewSummary {
       nonBlockingIssues,
       missingTests,
       disputedIssues,
+      outstandingConcerns,
       verdict
     };
   } catch {
@@ -149,7 +178,44 @@ export function parseStructuredSummary(rawText: string): ReviewSummary {
       nonBlockingIssues: [],
       missingTests: [],
       disputedIssues: [],
+      outstandingConcerns: [],
       verdict
+    };
+  }
+}
+
+function parseJudgeDecision(rawText: string): Omit<JudgeStageResult, "round" | "text"> {
+  const cleaned = stripCodeFence(rawText);
+
+  try {
+    const parsed = JSON.parse(cleaned) as Partial<{
+      consensusReached: boolean;
+      consensusSummary: string;
+      reviewerGuidance: Array<Partial<{ reviewer: string; feedback: string }>>;
+    }>;
+
+    const reviewerGuidance = Array.isArray(parsed.reviewerGuidance)
+      ? parsed.reviewerGuidance
+        .filter((item) => typeof item?.reviewer === "string" && typeof item?.feedback === "string")
+        .map((item) => ({
+          reviewer: item.reviewer!.trim(),
+          feedback: item.feedback!.trim()
+        }))
+      : [];
+
+    return {
+      consensusReached: parsed.consensusReached === true,
+      consensusSummary:
+        typeof parsed.consensusSummary === "string" && parsed.consensusSummary.trim().length > 0
+          ? parsed.consensusSummary.trim()
+          : "Judge returned unstructured output.",
+      reviewerGuidance
+    };
+  } catch {
+    return {
+      consensusReached: /\bconsensus(?:\s+has)?\s+been\s+reached\b/i.test(cleaned) || /\bconsensusReached\"\s*:\s*true/i.test(cleaned),
+      consensusSummary: summarizeMalformedSummary(cleaned),
+      reviewerGuidance: []
     };
   }
 }
@@ -173,6 +239,8 @@ export function renderReviewMarkdown(input: {
   changedFiles: string[];
   analyzerText: string;
   reviewers: ReviewerStageResult[];
+  critiques: ReviewCritiqueResult[];
+  judgeRounds: JudgeStageResult[];
   summary: ReviewSummary;
 }): string {
   const lines = [
@@ -208,6 +276,12 @@ export function renderReviewMarkdown(input: {
     "",
     ...(input.summary.disputedIssues.length > 0 ? input.summary.disputedIssues.map((item) => `- ${item}`) : ["- None"]),
     "",
+    "## Outstanding Concerns",
+    "",
+    ...(input.summary.outstandingConcerns.length > 0
+      ? input.summary.outstandingConcerns.map((item) => `- ${item}`)
+      : ["- None"]),
+    "",
     "## Analyzer Output",
     "",
     "```text",
@@ -223,6 +297,39 @@ export function renderReviewMarkdown(input: {
     lines.push("");
     lines.push("```text");
     lines.push(reviewer.text.trim() || "(no reviewer output)");
+    lines.push("```");
+    lines.push("");
+  }
+
+  lines.push("## Critique Outputs");
+  lines.push("");
+
+  for (const critique of input.critiques) {
+    lines.push(`### Round ${critique.round}: ${critique.reviewer} (${critique.provider}${critique.model ? ` / ${critique.model}` : ""})`);
+    lines.push("");
+    lines.push("```text");
+    lines.push(critique.text.trim() || "(no critique output)");
+    lines.push("```");
+    lines.push("");
+  }
+
+  lines.push("## Judge Outputs");
+  lines.push("");
+
+  for (const judgeRound of input.judgeRounds) {
+    lines.push(`### Round ${judgeRound.round}`);
+    lines.push("");
+    lines.push(`- Consensus reached: ${judgeRound.consensusReached ? "yes" : "no"}`);
+    lines.push(`- Summary: ${judgeRound.consensusSummary}`);
+    if (judgeRound.reviewerGuidance.length > 0) {
+      lines.push("- Reviewer guidance:");
+      for (const guidance of judgeRound.reviewerGuidance) {
+        lines.push(`- ${guidance.reviewer}: ${guidance.feedback}`);
+      }
+    }
+    lines.push("");
+    lines.push("```text");
+    lines.push(judgeRound.text.trim() || "(no judge output)");
     lines.push("```");
     lines.push("");
   }
@@ -262,14 +369,19 @@ function buildReviewerPrompt(input: {
   changedFiles: string[];
   diffText: string;
   reviewerLabel: string;
+  round: number;
+  previousReview?: string;
+  critiqueFeedback?: string[];
+  judgeSummary?: string;
 }): string {
-  return [
+  const lines = [
     `You are ${input.reviewerLabel}, an adversarial reviewer for ${input.repoFullName}.`,
     `Review branch: ${input.branchName}`,
     `Diff base: ${input.baseBranch}`,
+    `Review round: ${input.round}`,
     "Be skeptical. Do not assume the implementation is correct. Look for bugs, regressions, missing tests, and weak reasoning.",
     "Do not soften criticism to agree with prior analysis. If a concern is weak, say so plainly. If the change looks solid, say that too.",
-    "Return plain text with these headings: Blocking Issues, Non-Blocking Issues, Missing Tests, Confidence.",
+    "Return plain text with these headings: Blocking Issues, Non-Blocking Issues, Missing Tests, Strong Concerns, Confidence.",
     "",
     "Analyzer notes:",
     "```text",
@@ -283,7 +395,101 @@ function buildReviewerPrompt(input: {
     "```diff",
     clip(input.diffText, 120_000),
     "```"
-  ].join("\n");
+  ];
+
+  if (input.previousReview) {
+    lines.push("", "Your previous round review:", "```text", clip(input.previousReview, 20_000), "```");
+  }
+
+  if ((input.critiqueFeedback?.length ?? 0) > 0) {
+    lines.push("", "Critiques of your previous review:");
+    for (const feedback of input.critiqueFeedback ?? []) {
+      lines.push("```text", clip(feedback, 10_000), "```");
+    }
+  }
+
+  if (input.judgeSummary) {
+    lines.push("", "Judge guidance from the previous round:", "```text", clip(input.judgeSummary, 10_000), "```");
+  }
+
+  return lines.join("\n");
+}
+
+function buildCritiquePrompt(input: {
+  repoFullName: string;
+  branchName: string;
+  baseBranch: string;
+  reviewerLabel: string;
+  round: number;
+  ownReview: string;
+  peerReviews: ReviewerStageResult[];
+}): string {
+  return [
+    `You are ${input.reviewerLabel}, critically reviewing peer code reviews for ${input.repoFullName}.`,
+    `Review branch: ${input.branchName}`,
+    `Diff base: ${input.baseBranch}`,
+    `Critique round: ${input.round}`,
+    "Assess whether each peer review comment is valid, overstated, unsupported, or missing evidence.",
+    "Do not defend your own review by default; be rigorous and specific.",
+    "Return plain text with these headings: Valid Comments, Invalid Or Weak Comments, Missing Context, Feedback To Peers.",
+    "",
+    "Your review for this round:",
+    "```text",
+    clip(input.ownReview, 20_000),
+    "```",
+    "",
+    "Peer reviews:"
+  ].concat(
+    input.peerReviews.flatMap((review) => [
+      "",
+      `Reviewer: ${review.reviewer} (${review.provider}${review.model ? ` / ${review.model}` : ""})`,
+      "```text",
+      clip(review.text, 20_000),
+      "```"
+    ])
+  ).join("\n");
+}
+
+function buildJudgePrompt(input: {
+  repoFullName: string;
+  branchName: string;
+  baseBranch: string;
+  round: number;
+  reviewerOutputs: ReviewerStageResult[];
+  critiqueOutputs: ReviewCritiqueResult[];
+}): string {
+  return [
+    `You are the judge for an adversarial code review of ${input.repoFullName}.`,
+    `Review branch: ${input.branchName}`,
+    `Diff base: ${input.baseBranch}`,
+    `Consensus round: ${input.round}`,
+    "Decide whether the reviewers have reached practical consensus on the important issues.",
+    "Return JSON only with this exact shape:",
+    "{",
+    '  "consensusReached": true | false,',
+    '  "consensusSummary": "string",',
+    '  "reviewerGuidance": [{"reviewer":"string","feedback":"string"}]',
+    "}",
+    "Set `consensusReached` to true only when the remaining disagreements are minor or clearly resolved.",
+    "",
+    "Reviewer outputs:"
+  ].concat(
+    input.reviewerOutputs.flatMap((reviewer) => [
+      "",
+      `Reviewer: ${reviewer.reviewer} (${reviewer.provider}${reviewer.model ? ` / ${reviewer.model}` : ""})`,
+      "```text",
+      clip(reviewer.text, 20_000),
+      "```"
+    ]),
+    ["", "Critique outputs:"],
+    input.critiqueOutputs.flatMap((critique) => [
+      "",
+      `Reviewer: ${critique.reviewer} (${critique.provider}${critique.model ? ` / ${critique.model}` : ""})`,
+      "```text",
+      clip(critique.text, 20_000),
+      "```"
+    ])
+  ).join("\n");
 }
 
 function buildSummarizerPrompt(input: {
@@ -292,6 +498,8 @@ function buildSummarizerPrompt(input: {
   baseBranch: string;
   analyzerText: string;
   reviewerOutputs: ReviewerStageResult[];
+  critiqueOutputs: ReviewCritiqueResult[];
+  judgeRounds: JudgeStageResult[];
 }): string {
   return [
     `You are the neutral summarizer for an adversarial code review of ${input.repoFullName}.`,
@@ -305,9 +513,12 @@ function buildSummarizerPrompt(input: {
     '  "nonBlockingIssues": [{"title":"string","rationale":"string","file":"optional path"}],',
     '  "missingTests": ["string"],',
     '  "disputedIssues": ["string"],',
+    '  "outstandingConcerns": ["string"],',
     '  "verdict": "ready_for_pr" | "revise"',
     "}",
     "Use `ready_for_pr` only if there are no unresolved blocking issues.",
+    "Include only consensus issues in `blockingIssues` and `nonBlockingIssues`.",
+    "Put unresolved but strongly-held reviewer concerns in `outstandingConcerns`.",
     "",
     "Analyzer output:",
     "```text",
@@ -321,6 +532,22 @@ function buildSummarizerPrompt(input: {
       `Reviewer: ${reviewer.reviewer} (${reviewer.provider}${reviewer.model ? ` / ${reviewer.model}` : ""})`,
       "```text",
       clip(reviewer.text, 20_000),
+      "```"
+    ]),
+    ["", "Critique outputs:"],
+    input.critiqueOutputs.flatMap((critique) => [
+      "",
+      `Round ${critique.round} critique: ${critique.reviewer} (${critique.provider}${critique.model ? ` / ${critique.model}` : ""})`,
+      "```text",
+      clip(critique.text, 20_000),
+      "```"
+    ]),
+    ["", "Judge outputs:"],
+    input.judgeRounds.flatMap((judgeRound) => [
+      "",
+      `Round ${judgeRound.round} consensus: ${judgeRound.consensusReached ? "reached" : "not reached"}`,
+      "```text",
+      clip(judgeRound.text, 20_000),
       "```"
     ])
   ).join("\n");
@@ -345,13 +572,27 @@ function getStageTimeout(startTime: number, stageTimeoutMs: number, totalTimeout
     throw new AdversarialReviewError("PIPELINE_FAILED", `Review pipeline exceeded ${totalTimeoutMs}ms.`);
   }
 
-  const reservedForLaterStages = Math.max(0, remainingStages - 1);
-  const availableForCurrentStage = remainingBudget - reservedForLaterStages;
+  const normalizedRemainingStages = Math.max(1, remainingStages);
+  const availableForCurrentStage = Math.floor(remainingBudget / normalizedRemainingStages);
   if (availableForCurrentStage <= 0) {
     throw new AdversarialReviewError("PIPELINE_FAILED", `Review pipeline exceeded ${totalTimeoutMs}ms.`);
   }
 
   return Math.min(stageTimeoutMs, availableForCurrentStage);
+}
+
+function findLatestReviewerOutput(
+  outputs: ReviewerStageResult[],
+  reviewerLabel: string
+): ReviewerStageResult | undefined {
+  for (let index = outputs.length - 1; index >= 0; index -= 1) {
+    const candidate = outputs[index];
+    if (candidate?.reviewer === reviewerLabel) {
+      return candidate;
+    }
+  }
+
+  return undefined;
 }
 
 export async function runAdversarialReview(input: {
@@ -365,15 +606,18 @@ export async function runAdversarialReview(input: {
   artifactRootPath: string;
   analyzer: ReviewModelRunner;
   reviewers: ReviewModelRunner[];
+  judge: ReviewModelRunner;
   summarizer: ReviewModelRunner;
   stageTimeoutMs: number;
   totalTimeoutMs: number;
+  maxConsensusRounds?: number;
 }): Promise<AdversarialReviewResult> {
   if (input.reviewers.length < 2) {
     throw new AdversarialReviewError("INSUFFICIENT_REVIEWERS", "Review requires at least 2 configured reviewers.");
   }
 
   const startTime = Date.now();
+  const maxConsensusRounds = Math.max(1, input.maxConsensusRounds ?? 2);
   const checkBudget = (): void => {
     if (Date.now() - startTime > input.totalTimeoutMs) {
       throw new AdversarialReviewError("PIPELINE_FAILED", `Review pipeline exceeded ${input.totalTimeoutMs}ms.`);
@@ -400,9 +644,11 @@ export async function runAdversarialReview(input: {
         model: reviewer.model ?? null,
         label: reviewer.label
       })),
+      judge: { provider: input.judge.provider, model: input.judge.model ?? null, label: input.judge.label },
       summarizer: { provider: input.summarizer.provider, model: input.summarizer.model ?? null },
       stageTimeoutMs: input.stageTimeoutMs,
-      totalTimeoutMs: input.totalTimeoutMs
+      totalTimeoutMs: input.totalTimeoutMs,
+      maxConsensusRounds
     }),
     diffBase: diff.baseRef,
     diffHead: diff.headSha
@@ -424,44 +670,128 @@ export async function runAdversarialReview(input: {
       ...(input.analyzer.model ? { model: input.analyzer.model } : {})
     });
 
-    checkBudget();
-    const reviewerResults = await Promise.allSettled(
-      input.reviewers.map(async (reviewer) => {
-        const reviewerText = await reviewer.run({
-          prompt: buildReviewerPrompt({
-            repoFullName: input.repoFullName,
-            branchName: input.branchName,
-            baseBranch: diff.baseBranch,
-            analyzerText,
-            changedFiles: diff.changedFiles,
-            diffText: diff.diffText,
-            reviewerLabel: reviewer.label
-          }),
-          cwd: input.worktreePath,
-          timeoutMs: getStageTimeout(startTime, input.stageTimeoutMs, input.totalTimeoutMs, 2),
-          ...(reviewer.model ? { model: reviewer.model } : {})
-        });
+    const allReviewerOutputs: ReviewerStageResult[] = [];
+    const allCritiqueOutputs: ReviewCritiqueResult[] = [];
+    const judgeRounds: JudgeStageResult[] = [];
+    let activeReviewers = input.reviewers;
+    let latestRoundReviews: ReviewerStageResult[] = [];
 
-        return {
-          reviewer: reviewer.label,
-          provider: reviewer.provider,
-          ...(reviewer.model ? { model: reviewer.model } : {}),
-          text: reviewerText
-        } satisfies ReviewerStageResult;
-      })
-    );
+    for (let round = 1; round <= maxConsensusRounds; round += 1) {
+      checkBudget();
+      const reviewerResults = await Promise.allSettled(
+        activeReviewers.map(async (reviewer) => {
+          const priorReview = findLatestReviewerOutput(allReviewerOutputs, reviewer.label);
+          const critiqueFeedback = allCritiqueOutputs
+            .filter((critique) => critique.round === round - 1 && critique.reviewer !== reviewer.label)
+            .map((critique) => `${critique.reviewer}: ${critique.text}`);
+          const priorJudge = judgeRounds.at(-1);
+          const reviewerGuidance = priorJudge?.reviewerGuidance
+            .filter((guidance) => guidance.reviewer === reviewer.label)
+            .map((guidance) => guidance.feedback)
+            .join("\n");
+          const reviewerText = await reviewer.run({
+            prompt: buildReviewerPrompt({
+              repoFullName: input.repoFullName,
+              branchName: input.branchName,
+              baseBranch: diff.baseBranch,
+              analyzerText,
+              changedFiles: diff.changedFiles,
+              diffText: diff.diffText,
+              reviewerLabel: reviewer.label,
+              round,
+              ...(priorReview ? { previousReview: priorReview.text } : {}),
+              ...(critiqueFeedback.length > 0 ? { critiqueFeedback } : {}),
+              ...(priorJudge ? { judgeSummary: [priorJudge.consensusSummary, reviewerGuidance].filter(Boolean).join("\n") } : {})
+            }),
+            cwd: input.worktreePath,
+            timeoutMs: getStageTimeout(startTime, input.stageTimeoutMs, input.totalTimeoutMs, (maxConsensusRounds - round + 1) * 3 + 1),
+            ...(reviewer.model ? { model: reviewer.model } : {})
+          });
 
-    const successfulReviewers = reviewerResults
-      .filter((result): result is PromiseFulfilledResult<ReviewerStageResult> => result.status === "fulfilled")
-      .map((result) => result.value);
-    if (successfulReviewers.length < 2) {
-      const rejectedMessages = reviewerResults
-        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-        .map((result) => (result.reason instanceof Error ? result.reason.message : String(result.reason)));
-      throw new AdversarialReviewError(
-        "INSUFFICIENT_REVIEWERS",
-        `Review requires at least 2 successful reviewers. Failures: ${rejectedMessages.join(" | ") || "unknown reviewer failure"}`
+          return {
+            round,
+            reviewer: reviewer.label,
+            provider: reviewer.provider,
+            ...(reviewer.model ? { model: reviewer.model } : {}),
+            text: reviewerText
+          } satisfies ReviewerStageResult;
+        })
       );
+
+      const successfulReviewers = reviewerResults
+        .filter((result): result is PromiseFulfilledResult<ReviewerStageResult> => result.status === "fulfilled")
+        .map((result) => result.value);
+      if (successfulReviewers.length < 2) {
+        const rejectedMessages = reviewerResults
+          .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+          .map((result) => (result.reason instanceof Error ? result.reason.message : String(result.reason)));
+        throw new AdversarialReviewError(
+          "INSUFFICIENT_REVIEWERS",
+          `Review requires at least 2 successful reviewers. Failures: ${rejectedMessages.join(" | ") || "unknown reviewer failure"}`
+        );
+      }
+
+      allReviewerOutputs.push(...successfulReviewers);
+      latestRoundReviews = successfulReviewers;
+      activeReviewers = input.reviewers.filter((reviewer) => successfulReviewers.some((result) => result.reviewer === reviewer.label));
+
+      checkBudget();
+      const critiqueResults = await Promise.all(
+        activeReviewers.map(async (reviewer) => {
+          const ownReview = successfulReviewers.find((result) => result.reviewer === reviewer.label);
+          const peerReviews = successfulReviewers.filter((result) => result.reviewer !== reviewer.label);
+          const critiqueText = await reviewer.run({
+            prompt: buildCritiquePrompt({
+              repoFullName: input.repoFullName,
+              branchName: input.branchName,
+              baseBranch: diff.baseBranch,
+              reviewerLabel: reviewer.label,
+              round,
+              ownReview: ownReview?.text ?? "",
+              peerReviews
+            }),
+            cwd: input.worktreePath,
+            timeoutMs: getStageTimeout(startTime, input.stageTimeoutMs, input.totalTimeoutMs, (maxConsensusRounds - round + 1) * 2 + 1),
+            ...(reviewer.model ? { model: reviewer.model } : {})
+          });
+
+          return {
+            round,
+            reviewer: reviewer.label,
+            provider: reviewer.provider,
+            ...(reviewer.model ? { model: reviewer.model } : {}),
+            text: critiqueText
+          } satisfies ReviewCritiqueResult;
+        })
+      );
+      allCritiqueOutputs.push(...critiqueResults);
+
+      checkBudget();
+      const judgeRawText = await input.judge.run({
+        prompt: buildJudgePrompt({
+          repoFullName: input.repoFullName,
+          branchName: input.branchName,
+          baseBranch: diff.baseBranch,
+          round,
+          reviewerOutputs: successfulReviewers,
+          critiqueOutputs: critiqueResults
+        }),
+        cwd: input.worktreePath,
+        timeoutMs: getStageTimeout(startTime, input.stageTimeoutMs, input.totalTimeoutMs, (maxConsensusRounds - round + 1) + 1),
+        ...(input.judge.model ? { model: input.judge.model } : {})
+      });
+      const judgeDecision = parseJudgeDecision(judgeRawText);
+      judgeRounds.push({
+        round,
+        text: judgeRawText,
+        consensusReached: judgeDecision.consensusReached,
+        consensusSummary: judgeDecision.consensusSummary,
+        reviewerGuidance: judgeDecision.reviewerGuidance
+      });
+
+      if (judgeDecision.consensusReached) {
+        break;
+      }
     }
 
     checkBudget();
@@ -471,7 +801,9 @@ export async function runAdversarialReview(input: {
         branchName: input.branchName,
         baseBranch: diff.baseBranch,
         analyzerText,
-        reviewerOutputs: successfulReviewers
+        reviewerOutputs: allReviewerOutputs,
+        critiqueOutputs: allCritiqueOutputs,
+        judgeRounds
       }),
       cwd: input.worktreePath,
       timeoutMs: getStageTimeout(startTime, input.stageTimeoutMs, input.totalTimeoutMs, 1),
@@ -485,7 +817,9 @@ export async function runAdversarialReview(input: {
       diffHeadSha: diff.headSha,
       changedFiles: diff.changedFiles,
       analyzerText,
-      reviewers: successfulReviewers,
+      reviewers: allReviewerOutputs,
+      critiques: allCritiqueOutputs,
+      judgeRounds,
       summary
     });
     const artifactPath = buildArtifactPath(input.artifactRootPath, input.requestId);
@@ -494,7 +828,9 @@ export async function runAdversarialReview(input: {
 
     const rawResult = {
       analyzer: { text: analyzerText },
-      reviewers: successfulReviewers,
+      reviewers: allReviewerOutputs,
+      critiques: allCritiqueOutputs,
+      judgeRounds,
       summarizerRawText
     };
     input.db.completeReviewRun({
@@ -512,7 +848,7 @@ export async function runAdversarialReview(input: {
       diffBaseRef: diff.baseRef,
       diffHeadSha: diff.headSha,
       changedFiles: diff.changedFiles,
-      reviewersSucceeded: successfulReviewers.length,
+      reviewersSucceeded: latestRoundReviews.length,
       reviewersAttempted: input.reviewers.length,
       summary,
       summaryMarkdown,
