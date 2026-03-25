@@ -3,6 +3,7 @@ param(
   [string]$ImageName = "actuarius:latest",
   [string]$EnvFile = ".env",
   [string]$DataVolume = "actuarius_data",
+  [Alias("HomeVolume")]
   [string]$LegacyHomeVolume = "actuarius_home",
   [string]$CredentialsPath = ".\.claude.credentials.json",
   [switch]$SkipBuild,
