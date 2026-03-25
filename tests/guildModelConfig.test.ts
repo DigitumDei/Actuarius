@@ -55,3 +55,39 @@ describe("AppDatabase guild model config", () => {
     expect(db.getGuildModelConfig("guild-1")).toBeUndefined();
   });
 });
+
+describe("AppDatabase guild review config", () => {
+  let db: AppDatabase;
+
+  beforeEach(() => {
+    db = createInMemoryDb();
+    db.upsertGuild("guild-1", "Test Guild");
+  });
+
+  it("returns undefined when no review config is set", () => {
+    expect(db.getGuildReviewConfig("guild-1")).toBeUndefined();
+  });
+
+  it("sets and retrieves review rounds", () => {
+    db.setGuildReviewConfig("guild-1", 4, "user-1");
+    const config = db.getGuildReviewConfig("guild-1");
+    expect(config).toBeDefined();
+    expect(config!.guild_id).toBe("guild-1");
+    expect(config!.rounds).toBe(4);
+    expect(config!.updated_by_user_id).toBe("user-1");
+  });
+
+  it("overwrites existing review config on second set", () => {
+    db.setGuildReviewConfig("guild-1", 2, "user-1");
+    db.setGuildReviewConfig("guild-1", 5, "user-2");
+    const config = db.getGuildReviewConfig("guild-1");
+    expect(config!.rounds).toBe(5);
+    expect(config!.updated_by_user_id).toBe("user-2");
+  });
+
+  it("cascades review config delete when guild is removed", () => {
+    db.setGuildReviewConfig("guild-1", 3, "user-1");
+    db.removeGuild("guild-1");
+    expect(db.getGuildReviewConfig("guild-1")).toBeUndefined();
+  });
+});

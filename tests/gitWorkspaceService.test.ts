@@ -8,7 +8,10 @@ const mockSpawnCollect = vi.mocked(spawnCollect);
 const {
   buildRepoCheckoutPath,
   cleanupDeletedRemoteBranches,
+  detectDefaultBranch,
   GitWorkspaceError,
+  getHeadSha,
+  getReviewDiff,
   listBranches
 } = await import("../src/services/gitWorkspaceService.js");
 
@@ -111,5 +114,79 @@ describe("gitWorkspaceService", () => {
       removedWorktrees: [],
       skippedDirtyWorktrees: [{ branchName: "feature/stale", path: "/tmp/worktree-1" }]
     });
+  });
+
+  it("detects the default branch from origin/HEAD", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({
+      stdout: "refs/remotes/origin/main\n",
+      stderr: ""
+    });
+
+    await expect(detectDefaultBranch("/tmp/repo")).resolves.toEqual({
+      branchName: "main",
+      remoteRef: "origin/main"
+    });
+  });
+
+  it("computes review diff and excludes review artifacts", async () => {
+    mockSpawnCollect
+      .mockRejectedValueOnce(new Error("no origin head"))
+      .mockResolvedValueOnce({ stdout: "abc123\n", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "src/index.ts\ndocs/guide.md\n", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "diff --git a/src/index.ts b/src/index.ts\n", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "deadbeef\n", stderr: "" });
+
+    await expect(
+      getReviewDiff("/tmp/repo", {
+        headRef: "ask/1-123",
+        excludePaths: ["docs/reviews/**"]
+      })
+    ).resolves.toEqual({
+      baseBranch: "main",
+      baseRef: "origin/main",
+      headRef: "ask/1-123",
+      headSha: "deadbeef",
+      changedFiles: ["src/index.ts", "docs/guide.md"],
+      diffText: "diff --git a/src/index.ts b/src/index.ts\n"
+    });
+
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(
+      3,
+      "git",
+      ["diff", "--name-only", "origin/main...ask/1-123", "--", ":(exclude)docs/reviews/**"],
+      expect.any(Object)
+    );
+  });
+
+  it("falls back to a truncated diff when git diff exceeds maxBuffer", async () => {
+    const overflowError = new Error("Process output exceeded maxBuffer") as Error & { code: string; stdout: string };
+    overflowError.code = "EMSGSIZE";
+    overflowError.stdout = "diff --git a/src/index.ts b/src/index.ts\n+very large output";
+
+    mockSpawnCollect
+      .mockRejectedValueOnce(new Error("no origin head"))
+      .mockResolvedValueOnce({ stdout: "abc123\n", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "src/index.ts\n", stderr: "" })
+      .mockRejectedValueOnce(overflowError)
+      .mockResolvedValueOnce({ stdout: "deadbeef\n", stderr: "" });
+
+    await expect(
+      getReviewDiff("/tmp/repo", {
+        headRef: "ask/1-123",
+        excludePaths: ["docs/reviews/**"]
+      })
+    ).resolves.toEqual({
+      baseBranch: "main",
+      baseRef: "origin/main",
+      headRef: "ask/1-123",
+      headSha: "deadbeef",
+      changedFiles: ["src/index.ts"],
+      diffText: "diff --git a/src/index.ts b/src/index.ts\n+very large output\n...(truncated after git diff exceeded maxBuffer)"
+    });
+  });
+
+  it("resolves an arbitrary git ref to a sha", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "feedface\n", stderr: "" });
+    await expect(getHeadSha("/tmp/repo", "feature/x")).resolves.toBe("feedface");
   });
 });

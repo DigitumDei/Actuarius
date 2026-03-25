@@ -22,10 +22,11 @@ export class GitWorkspaceError extends Error {
     | "CLONE_FAILED"
     | "MASTER_BRANCH_MISSING"
     | "CHECKOUT_FAILED"
-    | "CLEANUP_FAILED";
+    | "CLEANUP_FAILED"
+    | "DIFF_FAILED";
 
   public constructor(
-    code: "GIT_UNAVAILABLE" | "CLONE_FAILED" | "MASTER_BRANCH_MISSING" | "CHECKOUT_FAILED" | "CLEANUP_FAILED",
+    code: "GIT_UNAVAILABLE" | "CLONE_FAILED" | "MASTER_BRANCH_MISSING" | "CHECKOUT_FAILED" | "CLEANUP_FAILED" | "DIFF_FAILED",
     message: string
   ) {
     super(message);
@@ -43,6 +44,15 @@ export interface CleanupDeletedBranchesResult {
   deleted: string[];
   removedWorktrees: string[];
   skippedDirtyWorktrees: Array<{ branchName: string; path: string }>;
+}
+
+export interface ReviewDiffResult {
+  baseBranch: string;
+  baseRef: string;
+  headRef: string;
+  headSha: string;
+  changedFiles: string[];
+  diffText: string;
 }
 
 interface GitWorktreeEntry {
@@ -96,7 +106,7 @@ async function runGit(args: string[], options?: { useCredentialHelper?: boolean 
 
 async function runGitWithOutput(
   args: string[],
-  options?: { cwd?: string; useCredentialHelper?: boolean }
+  options?: { cwd?: string; useCredentialHelper?: boolean; maxBuffer?: number }
 ): Promise<{ stdout: string; stderr: string }> {
   try {
     const gitArgs = options?.useCredentialHelper
@@ -107,10 +117,10 @@ async function runGitWithOutput(
       cwd: options?.cwd ?? process.cwd(),
       env: getGitHubCommandEnvironment(),
       timeoutMs: 60_000,
-      maxBuffer: 4 * 1024 * 1024
+      maxBuffer: options?.maxBuffer ?? 4 * 1024 * 1024
     });
   } catch (error) {
-    const spawnError = error as { message?: string; stderr?: string; code?: string };
+    const spawnError = error as { message?: string; stdout?: string; stderr?: string; code?: string };
     const message = spawnError.message ?? "Git command failed.";
     const stderr = spawnError.stderr ?? "";
     if (message.includes("ENOENT") || spawnError.code === "ENOENT") {
@@ -119,8 +129,31 @@ async function runGitWithOutput(
 
     const fullMessage = stderr ? `${message}\n${stderr}`.trim() : message;
     const enriched = new Error(fullMessage);
-    Object.assign(enriched, { stderr, code: spawnError.code });
+    Object.assign(enriched, { stdout: spawnError.stdout ?? "", stderr, code: spawnError.code });
     throw enriched;
+  }
+}
+
+function clipOverflowedDiff(stdout: string): string {
+  const trimmed = stdout.trimEnd();
+  if (trimmed.length === 0) {
+    return "";
+  }
+
+  return `${trimmed}\n...(truncated after git diff exceeded maxBuffer)`;
+}
+
+async function runGitDiffWithOverflowFallback(args: string[], cwd: string): Promise<string> {
+  try {
+    const result = await runGitWithOutput(args, { cwd });
+    return result.stdout;
+  } catch (error) {
+    const spawnError = error as { code?: string; stdout?: string };
+    if (spawnError.code === "EMSGSIZE") {
+      return clipOverflowedDiff(spawnError.stdout ?? "");
+    }
+
+    throw error;
   }
 }
 
@@ -357,4 +390,86 @@ async function listWorktrees(repoPath: string): Promise<GitWorktreeEntry[]> {
 async function isWorktreeClean(worktreePath: string): Promise<boolean> {
   const result = await runGitWithOutput(["status", "--porcelain"], { cwd: worktreePath });
   return result.stdout.trim().length === 0;
+}
+
+export async function detectDefaultBranch(repoPath: string): Promise<{ branchName: string; remoteRef: string }> {
+  const candidates = ["main", "master"] as const;
+
+  try {
+    const symbolicRef = await runGitWithOutput(["symbolic-ref", "refs/remotes/origin/HEAD"], { cwd: repoPath });
+    const ref = symbolicRef.stdout.trim();
+    const prefix = "refs/remotes/origin/";
+    if (ref.startsWith(prefix)) {
+      const branchName = ref.slice(prefix.length);
+      if (branchName) {
+        return { branchName, remoteRef: `origin/${branchName}` };
+      }
+    }
+  } catch {
+    // Fall back to probing the common default branches below.
+  }
+
+  for (const branchName of candidates) {
+    try {
+      await runGitWithOutput(["rev-parse", "--verify", `refs/remotes/origin/${branchName}`], { cwd: repoPath });
+      return { branchName, remoteRef: `origin/${branchName}` };
+    } catch {
+      // Probe the next candidate.
+    }
+  }
+
+  throw new GitWorkspaceError("MASTER_BRANCH_MISSING", "Could not determine the repository default branch from origin/main or origin/master.");
+}
+
+export async function getHeadSha(repoPath: string, ref: string = "HEAD"): Promise<string> {
+  try {
+    const result = await runGitWithOutput(["rev-parse", ref], { cwd: repoPath });
+    return result.stdout.trim();
+  } catch (error) {
+    if (error instanceof GitWorkspaceError) {
+      throw error;
+    }
+
+    const message = error instanceof Error ? error.message : `Could not resolve git ref ${ref}.`;
+    throw new GitWorkspaceError("DIFF_FAILED", message);
+  }
+}
+
+export async function getReviewDiff(
+  repoPath: string,
+  options: {
+    headRef: string;
+    excludePaths?: string[];
+  }
+): Promise<ReviewDiffResult> {
+  try {
+    const defaultBranch = await detectDefaultBranch(repoPath);
+    const excludeArgs = (options.excludePaths ?? []).map((path) => `:(exclude)${path}`);
+    const comparisonRef = `${defaultBranch.remoteRef}...${options.headRef}`;
+    const diffArgs = [comparisonRef, "--", ...excludeArgs];
+    const [changedFilesResult, diffResult, headSha] = await Promise.all([
+      runGitWithOutput(["diff", "--name-only", ...diffArgs], { cwd: repoPath }),
+      runGitDiffWithOverflowFallback(["diff", ...diffArgs], repoPath),
+      getHeadSha(repoPath, options.headRef)
+    ]);
+
+    return {
+      baseBranch: defaultBranch.branchName,
+      baseRef: defaultBranch.remoteRef,
+      headRef: options.headRef,
+      headSha,
+      changedFiles: changedFilesResult.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean),
+      diffText: diffResult
+    };
+  } catch (error) {
+    if (error instanceof GitWorkspaceError) {
+      throw error;
+    }
+
+    const message = error instanceof Error ? error.message : "Could not compute review diff.";
+    throw new GitWorkspaceError("DIFF_FAILED", message);
+  }
 }

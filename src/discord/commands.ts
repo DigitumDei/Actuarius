@@ -96,6 +96,16 @@ export const commandBuilders = [
     .setName("model-current")
     .setDescription("Show the active AI provider and model for /ask in this server."),
   new SlashCommandBuilder()
+    .setName("review-rounds")
+    .setDescription("Show or set the maximum adversarial review consensus rounds for this server.")
+    .addIntegerOption((option) =>
+      option
+        .setName("rounds")
+        .setDescription("Set the max review rounds. Omit to show the current value.")
+        .setRequired(false)
+        .setMinValue(1)
+    ),
+  new SlashCommandBuilder()
     .setName("gemini-auth")
     .setDescription("Start Google OAuth flow to authenticate the Gemini CLI. Requires Manage Server permission."),
   new SlashCommandBuilder()
@@ -118,7 +128,10 @@ export const commandBuilders = [
     ),
   new SlashCommandBuilder()
     .setName("delete")
-    .setDescription("Delete the worktree branch associated with this request thread.")
+    .setDescription("Delete the worktree branch associated with this request thread."),
+  new SlashCommandBuilder()
+    .setName("review")
+    .setDescription("Run adversarial code review for the current request thread.")
 ];
 
 export type CommandName =
@@ -134,10 +147,12 @@ export type CommandName =
   | "issue"
   | "model-select"
   | "model-current"
+  | "review-rounds"
   | "gemini-auth"
   | "gemini-auth-complete"
   | "codex-auth"
-  | "delete";
+  | "delete"
+  | "review";
 
 export async function registerSlashCommands(config: AppConfig, logger: pino.Logger): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(config.discordToken);
