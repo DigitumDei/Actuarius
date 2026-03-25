@@ -22,15 +22,20 @@ GUILD_ID=$(get_meta "env-discord-guild-id" || true)
 GH_TOKEN=$(get_meta "env-gh-token" || true)
 GITHUB_APP_ID=$(get_meta "env-github-app-id" || true)
 GITHUB_APP_INSTALLATION_ID=$(get_meta "env-github-app-installation-id" || true)
+GITHUB_APP_PRIVATE_KEY=$(get_meta "env-github-app-private-key" || true)
 GITHUB_APP_PRIVATE_KEY_B64=$(get_meta "env-github-app-private-key-b64" || true)
 CLAUDE_CODE_OAUTH_TOKEN=$(get_meta env-claude-oauth-token)
 ASK_CONCURRENCY=$(get_meta env-ask-concurrency)
 
 if [ -z "$DISCORD_TOKEN" ];          then echo "FATAL: env-discord-token is not set"      >&2; exit 1; fi
 if [ -z "$DISCORD_CLIENT_ID" ];      then echo "FATAL: env-discord-client-id is not set"  >&2; exit 1; fi
+if [ -n "$GITHUB_APP_PRIVATE_KEY" ] && [ -n "$GITHUB_APP_PRIVATE_KEY_B64" ]; then
+  echo "FATAL: set only one of env-github-app-private-key or env-github-app-private-key-b64" >&2; exit 1
+fi
 if [ -z "$GH_TOKEN" ] && \
-   ( [ -z "$GITHUB_APP_ID" ] || [ -z "$GITHUB_APP_INSTALLATION_ID" ] || [ -z "$GITHUB_APP_PRIVATE_KEY_B64" ] ); then
-  echo "FATAL: either env-gh-token or all GitHub App credentials (env-github-app-id, env-github-app-installation-id, env-github-app-private-key-b64) must be set" >&2; exit 1
+   ( [ -z "$GITHUB_APP_ID" ] || [ -z "$GITHUB_APP_INSTALLATION_ID" ] || \
+     ( [ -z "$GITHUB_APP_PRIVATE_KEY" ] && [ -z "$GITHUB_APP_PRIVATE_KEY_B64" ] ) ); then
+  echo "FATAL: either env-gh-token or all GitHub App credentials (env-github-app-id, env-github-app-installation-id, and exactly one of env-github-app-private-key or env-github-app-private-key-b64) must be set" >&2; exit 1
 fi
 if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ];then echo "FATAL: env-claude-oauth-token is not set" >&2; exit 1; fi
 if [ -z "$ASK_CONCURRENCY" ];        then echo "FATAL: env-ask-concurrency is not set"     >&2; exit 1; fi
@@ -46,10 +51,15 @@ fi
 if [ -n "$GH_TOKEN" ]; then
   EXTRA_ARGS+=(-e "GH_TOKEN=$GH_TOKEN")
 fi
-if [ -n "$GITHUB_APP_ID" ] && [ -n "$GITHUB_APP_INSTALLATION_ID" ] && [ -n "$GITHUB_APP_PRIVATE_KEY_B64" ]; then
+if [ -n "$GITHUB_APP_ID" ] && [ -n "$GITHUB_APP_INSTALLATION_ID" ] && \
+   { [ -n "$GITHUB_APP_PRIVATE_KEY" ] || [ -n "$GITHUB_APP_PRIVATE_KEY_B64" ]; }; then
   EXTRA_ARGS+=(-e "GITHUB_APP_ID=$GITHUB_APP_ID")
   EXTRA_ARGS+=(-e "GITHUB_APP_INSTALLATION_ID=$GITHUB_APP_INSTALLATION_ID")
-  EXTRA_ARGS+=(-e "GITHUB_APP_PRIVATE_KEY_B64=$GITHUB_APP_PRIVATE_KEY_B64")
+  if [ -n "$GITHUB_APP_PRIVATE_KEY" ]; then
+    EXTRA_ARGS+=(-e "GITHUB_APP_PRIVATE_KEY=$GITHUB_APP_PRIVATE_KEY")
+  else
+    EXTRA_ARGS+=(-e "GITHUB_APP_PRIVATE_KEY_B64=$GITHUB_APP_PRIVATE_KEY_B64")
+  fi
 fi
 if [ "$ENABLE_CODEX" = "true" ]; then
   EXTRA_ARGS+=(-e "ENABLE_CODEX_EXECUTION=true")

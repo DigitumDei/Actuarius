@@ -39,8 +39,17 @@ docker volume create $DataVolume | Out-Null
 
 $legacyHomeVolumeExists = docker volume ls --filter "name=^${LegacyHomeVolume}$" --format "{{.Name}}"
 if ($legacyHomeVolumeExists) {
-  Write-Host "Migrating persisted auth from legacy volume $LegacyHomeVolume into $DataVolume..."
-  docker run --rm -v "${DataVolume}:/target" -v "${LegacyHomeVolume}:/legacy:ro" alpine sh -lc "mkdir -p /target/home/appuser && cp -a /legacy/. /target/home/appuser/"
+  Write-Host "Ensuring one-time migration from legacy volume $LegacyHomeVolume into $DataVolume..."
+  docker run --rm -v "${DataVolume}:/target" -v "${LegacyHomeVolume}:/legacy:ro" alpine sh -lc @'
+set -eu
+sentinel=/target/home/.legacy-home-migrated
+mkdir -p /target/home/appuser
+if [ ! -f "$sentinel" ]; then
+  cp -a /legacy/. /target/home/appuser/
+  touch "$sentinel"
+fi
+chown -R 1001:1001 /target/home
+'@
 }
 
 $existing = docker ps -a --filter "name=^$ContainerName$" --format "{{.Names}}"

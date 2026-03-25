@@ -51,7 +51,7 @@ Copy `.env.example` to `.env` and set:
 - `DISCORD_TOKEN` (required)
 - `DISCORD_CLIENT_ID` (required)
 - `DISCORD_GUILD_ID` (optional, for fast guild-scoped command registration during development)
-- `GITHUB_APP_ID` + `GITHUB_APP_INSTALLATION_ID` + `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_B64` (preferred for GitHub bot identity)
+- `GITHUB_APP_ID` + `GITHUB_APP_INSTALLATION_ID` + exactly one of `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_B64` (preferred for GitHub bot identity)
 - `GH_TOKEN` (optional fallback for backward compatibility)
 - `GIT_USER_NAME` + `GIT_USER_EMAIL` (optional commit identity override)
 - `DATABASE_PATH` (default `/data/app.db`)
