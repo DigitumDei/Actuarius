@@ -106,24 +106,21 @@ export const commandBuilders = [
         .setMinValue(1)
     ),
   new SlashCommandBuilder()
-    .setName("gemini-auth")
-    .setDescription("Start Google OAuth flow to authenticate the Gemini CLI. Requires Manage Server permission."),
-  new SlashCommandBuilder()
-    .setName("gemini-auth-complete")
-    .setDescription("Complete Gemini OAuth by entering the authorization code from Google.")
-    .addStringOption((option) =>
-      option
-        .setName("code")
-        .setDescription("Authorization code from the Google OAuth page")
-        .setRequired(true)
-    ),
-  new SlashCommandBuilder()
     .setName("codex-auth")
     .setDescription("Upload Codex credentials file (~/.codex/auth.json). Requires Manage Server permission.")
     .addAttachmentOption((option) =>
       option
         .setName("credentials")
         .setDescription("The auth.json file from ~/.codex/ (or %USERPROFILE%\\.codex\\)")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("gemini-oauth-file")
+    .setDescription("Upload Gemini OAuth credentials (~/.gemini/oauth_creds.json). Requires Manage Server permission.")
+    .addAttachmentOption((option) =>
+      option
+        .setName("credentials")
+        .setDescription("The oauth_creds.json file from ~/.gemini/ (or %USERPROFILE%\\.gemini\\)")
         .setRequired(true)
     ),
   new SlashCommandBuilder()
@@ -148,9 +145,8 @@ export type CommandName =
   | "model-select"
   | "model-current"
   | "review-rounds"
-  | "gemini-auth"
-  | "gemini-auth-complete"
   | "codex-auth"
+  | "gemini-oauth-file"
   | "delete"
   | "review";
 
