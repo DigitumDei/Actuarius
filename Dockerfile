@@ -30,14 +30,19 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/data/app.db
+ENV HOME=/data/home/appuser
+ENV XDG_CONFIG_HOME=/data/home/appuser/.config
+ENV XDG_CACHE_HOME=/data/home/appuser/.cache
+ENV XDG_DATA_HOME=/data/home/appuser/.local/share
+ENV XDG_STATE_HOME=/data/home/appuser/.local/state
 
 COPY --from=deps /app/package.json ./package.json
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY docker/entrypoint.sh /app/entrypoint.sh
 
-RUN useradd --create-home --shell /usr/sbin/nologin appuser \
-  && mkdir -p /data \
+RUN useradd --uid 1001 --home-dir /data/home/appuser --no-create-home --shell /usr/sbin/nologin appuser \
+  && mkdir -p /data/home/appuser \
   && chmod +x /app/entrypoint.sh \
   && chown -R appuser:appuser /app /data
 
