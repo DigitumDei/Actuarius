@@ -12,6 +12,7 @@ IMAGE_TAG="${1:-latest}"
 BASE_IMAGE=$(get_meta "env-docker-image")
 BASE_IMAGE="${BASE_IMAGE%:*}"  # strip existing tag
 IMAGE="$BASE_IMAGE:$IMAGE_TAG"
+DATA_ROOT="/mnt/disks/data"
 
 echo "Deploying $IMAGE ..."
 
@@ -30,7 +31,6 @@ if [ -z "$DISCORD_CLIENT_ID" ];      then echo "FATAL: env-discord-client-id is 
 if [ -z "$GH_TOKEN" ] && \
    ( [ -z "$GITHUB_APP_ID" ] && [ -z "$GITHUB_APP_INSTALLATION_ID" ] && [ -z "$GITHUB_APP_PRIVATE_KEY_B64" ] ); then
   echo "FATAL: either env-gh-token or all GitHub App credentials (env-github-app-id, env-github-app-installation-id, env-github-app-private-key-b64) must be set" >&2; exit 1
-fi
 fi
 if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ];then echo "FATAL: env-claude-oauth-token is not set" >&2; exit 1; fi
 if [ -z "$ASK_CONCURRENCY" ];        then echo "FATAL: env-ask-concurrency is not set"     >&2; exit 1; fi
@@ -63,11 +63,12 @@ fi
 
 docker pull "$IMAGE"
 docker rm -f actuarius 2>/dev/null || true
+mkdir -p "$DATA_ROOT/home/appuser"
 
 docker run -d \
   --name actuarius \
   --restart unless-stopped \
-  -v /mnt/disks/data:/data \
+  -v "$DATA_ROOT:/data" \
   -e DISCORD_TOKEN="$DISCORD_TOKEN" \
   -e DISCORD_CLIENT_ID="$DISCORD_CLIENT_ID" \
   "${EXTRA_ARGS[@]}" \

@@ -63,6 +63,8 @@ Copy `.env.example` to `.env` and set:
 - `CLAUDE_CREDENTIALS_FILE` (optional, path to mounted Claude `.credentials.json`)
 - `CLAUDE_CREDENTIALS_B64` (optional, base64 payload of Claude `.credentials.json`)
 
+Provider CLI auth state is persisted under `/data/home/appuser` inside the container. That keeps Codex and Gemini authentication across container replacement, because production mounts `/data` from the persistent disk.
+
 ## Local development
 
 ### Dev bot setup
@@ -147,6 +149,8 @@ docker run --rm \
   -v /path/to/.credentials.json:/run/secrets/claude_credentials:ro \
   actuarius:latest
 ```
+
+Codex and Gemini CLI auth are also stored under `/data/home/appuser`, so redeploying the container does not require re-authentication.
 
 ## Production operations (GCP VM)
 
