@@ -105,7 +105,10 @@ export async function runProviderRequest(
       throw config.makeError(config.timeoutCode, `${config.logLabel} execution timed out after ${input.timeoutMs}ms.`);
     }
 
-    throw config.makeError(config.failedCode, message);
+    const stderrLines = nodeError.stderr?.trim().split("\n") ?? [];
+    const stderrHint = [...stderrLines].reverse().find((line: string) => line.trim().length > 0);
+    const detail = stderrHint ? `${message}: ${stderrHint}` : message;
+    throw config.makeError(config.failedCode, detail);
   }
 
   if (stderr) {
