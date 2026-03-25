@@ -1270,7 +1270,14 @@ export class ActuariusBot {
         let output = "";
         const checkSuccess = (text: string) => {
           output += text;
+          // Text-based success patterns
           if (/loaded cached credentials|credentials saved|authenticated/i.test(output)) {
+            child.kill();
+            resolve(true);
+            return;
+          }
+          // TUI closing escape sequence — CLI has finished the interactive auth flow
+          if (output.includes("\u001b[?1049l")) {
             child.kill();
             resolve(true);
           }
