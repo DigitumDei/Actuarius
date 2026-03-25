@@ -629,7 +629,7 @@ export async function runAdversarialReview(input: {
     excludePaths: ["docs/reviews/**"]
   });
   if (diff.changedFiles.length === 0 || diff.diffText.trim().length === 0) {
-    throw new AdversarialReviewError("EMPTY_DIFF", "No reviewable diff found between the request branch and the default branch.");
+    throw new AdversarialReviewError("EMPTY_DIFF", `No committed changes found on branch \`${input.branchName}\` compared to the default branch. Ask Claude to commit its changes first, then run /review again.`);
   }
 
   const reviewRun = input.db.createReviewRun({

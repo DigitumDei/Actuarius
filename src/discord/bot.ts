@@ -1908,7 +1908,7 @@ Output the result of the command or the link to the created issue.`;
               repoFullName: repo.full_name,
               branchName: latestRequest.branch_name!,
               worktreePath: latestRequest.worktree_path!,
-              artifactRootPath: this.config.reposRootPath,
+              artifactRootPath: latestRequest.worktree_path!,
               analyzer: runners.analyzer,
               reviewers: runners.reviewers,
               judge: runners.judge,
