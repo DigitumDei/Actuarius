@@ -27,14 +27,32 @@ GITHUB_APP_PRIVATE_KEY_B64=$(get_meta "env-github-app-private-key-b64" || true)
 CLAUDE_CODE_OAUTH_TOKEN=$(get_meta env-claude-oauth-token)
 ASK_CONCURRENCY=$(get_meta env-ask-concurrency)
 
+HAS_GITHUB_APP_ID=false
+HAS_GITHUB_APP_INSTALLATION_ID=false
+HAS_GITHUB_APP_PRIVATE_KEY=false
+HAS_GITHUB_APP_PRIVATE_KEY_B64=false
+if [ -n "$GITHUB_APP_ID" ]; then HAS_GITHUB_APP_ID=true; fi
+if [ -n "$GITHUB_APP_INSTALLATION_ID" ]; then HAS_GITHUB_APP_INSTALLATION_ID=true; fi
+if [ -n "$GITHUB_APP_PRIVATE_KEY" ]; then HAS_GITHUB_APP_PRIVATE_KEY=true; fi
+if [ -n "$GITHUB_APP_PRIVATE_KEY_B64" ]; then HAS_GITHUB_APP_PRIVATE_KEY_B64=true; fi
+HAS_ANY_GITHUB_APP_CONFIG=false
+if $HAS_GITHUB_APP_ID || $HAS_GITHUB_APP_INSTALLATION_ID || $HAS_GITHUB_APP_PRIVATE_KEY || $HAS_GITHUB_APP_PRIVATE_KEY_B64; then
+  HAS_ANY_GITHUB_APP_CONFIG=true
+fi
+HAS_COMPLETE_GITHUB_APP_CONFIG=false
+if $HAS_GITHUB_APP_ID && $HAS_GITHUB_APP_INSTALLATION_ID && { $HAS_GITHUB_APP_PRIVATE_KEY || $HAS_GITHUB_APP_PRIVATE_KEY_B64; }; then
+  HAS_COMPLETE_GITHUB_APP_CONFIG=true
+fi
+
 if [ -z "$DISCORD_TOKEN" ];          then echo "FATAL: env-discord-token is not set"      >&2; exit 1; fi
 if [ -z "$DISCORD_CLIENT_ID" ];      then echo "FATAL: env-discord-client-id is not set"  >&2; exit 1; fi
-if [ -n "$GITHUB_APP_PRIVATE_KEY" ] && [ -n "$GITHUB_APP_PRIVATE_KEY_B64" ]; then
+if $HAS_GITHUB_APP_PRIVATE_KEY && $HAS_GITHUB_APP_PRIVATE_KEY_B64; then
   echo "FATAL: set only one of env-github-app-private-key or env-github-app-private-key-b64" >&2; exit 1
 fi
-if [ -z "$GH_TOKEN" ] && \
-   ( [ -z "$GITHUB_APP_ID" ] || [ -z "$GITHUB_APP_INSTALLATION_ID" ] || \
-     ( [ -z "$GITHUB_APP_PRIVATE_KEY" ] && [ -z "$GITHUB_APP_PRIVATE_KEY_B64" ] ) ); then
+if $HAS_ANY_GITHUB_APP_CONFIG && ! $HAS_COMPLETE_GITHUB_APP_CONFIG; then
+  echo "FATAL: GitHub App credentials must include env-github-app-id, env-github-app-installation-id, and exactly one of env-github-app-private-key or env-github-app-private-key-b64" >&2; exit 1
+fi
+if [ -z "$GH_TOKEN" ] && ! $HAS_COMPLETE_GITHUB_APP_CONFIG; then
   echo "FATAL: either env-gh-token or all GitHub App credentials (env-github-app-id, env-github-app-installation-id, and exactly one of env-github-app-private-key or env-github-app-private-key-b64) must be set" >&2; exit 1
 fi
 if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ];then echo "FATAL: env-claude-oauth-token is not set" >&2; exit 1; fi
@@ -51,11 +69,10 @@ fi
 if [ -n "$GH_TOKEN" ]; then
   EXTRA_ARGS+=(-e "GH_TOKEN=$GH_TOKEN")
 fi
-if [ -n "$GITHUB_APP_ID" ] && [ -n "$GITHUB_APP_INSTALLATION_ID" ] && \
-   { [ -n "$GITHUB_APP_PRIVATE_KEY" ] || [ -n "$GITHUB_APP_PRIVATE_KEY_B64" ]; }; then
+if $HAS_COMPLETE_GITHUB_APP_CONFIG; then
   EXTRA_ARGS+=(-e "GITHUB_APP_ID=$GITHUB_APP_ID")
   EXTRA_ARGS+=(-e "GITHUB_APP_INSTALLATION_ID=$GITHUB_APP_INSTALLATION_ID")
-  if [ -n "$GITHUB_APP_PRIVATE_KEY" ]; then
+  if $HAS_GITHUB_APP_PRIVATE_KEY; then
     EXTRA_ARGS+=(-e "GITHUB_APP_PRIVATE_KEY=$GITHUB_APP_PRIVATE_KEY")
   else
     EXTRA_ARGS+=(-e "GITHUB_APP_PRIVATE_KEY_B64=$GITHUB_APP_PRIVATE_KEY_B64")

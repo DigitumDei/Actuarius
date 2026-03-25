@@ -65,7 +65,7 @@ if ($resolvedCredPath) {
   Write-Host "Copying Claude credentials from $resolvedCredPath..."
   docker exec -u 0 $ContainerName sh -lc "mkdir -p /data/home/appuser/.claude"
   docker cp $resolvedCredPath "${ContainerName}:/data/home/appuser/.claude/.credentials.json"
-  docker exec -u 0 $ContainerName sh -lc "chown appuser:appuser /data/home/appuser/.claude/.credentials.json && chmod 600 /data/home/appuser/.claude/.credentials.json"
+  docker exec -u 0 $ContainerName sh -lc "chown -R appuser:appuser /data/home/appuser/.claude && chmod 700 /data/home/appuser/.claude && chmod 600 /data/home/appuser/.claude/.credentials.json"
 } else {
   Write-Host "Credentials file not found at $CredentialsPath. Skipping credential bootstrap."
 }

@@ -60,10 +60,9 @@ Copy `.env.example` to `.env` and set:
 - `THREAD_AUTO_ARCHIVE_MINUTES` (`60`, `1440`, `4320`, or `10080`)
 - `ASK_CONCURRENCY_PER_GUILD` (default `3`)
 - `ASK_EXECUTION_TIMEOUT_MS` (default `1200000`)
-- `CLAUDE_CREDENTIALS_FILE` (optional, path to mounted Claude `.credentials.json`)
-- `CLAUDE_CREDENTIALS_B64` (optional, base64 payload of Claude `.credentials.json`)
+- `CLAUDE_CODE_OAUTH_TOKEN` (optional for local/manual runs, required by the production redeploy helper for non-interactive Claude auth)
 
-Provider CLI auth state is persisted under `/data/home/appuser` inside the container. That keeps Codex and Gemini authentication across container replacement, because production mounts `/data` from the persistent disk.
+Provider CLI auth state is persisted under `/data/home/appuser` inside the container. That keeps Claude, Codex, and Gemini authentication across container replacement, because production mounts `/data` from the persistent disk.
 
 ## Local development
 
@@ -118,7 +117,7 @@ Useful flags:
 
 - `-SkipBuild` to skip `docker build`
 - `-Logs` to stream container logs after startup
-- `-CredentialsPath .\.claude.credentials.json` to override credential file path
+- `-CredentialsPath .\.claude.credentials.json` to override the optional local bootstrap path for an existing Claude credentials file
 
 ### Manual Docker commands
 
@@ -131,26 +130,22 @@ docker run --rm \
   actuarius:latest
 ```
 
-### Claude login persistence in Docker
+### Claude auth in Docker
 
-Avoid baking Claude credentials into the image at build time. Use runtime injection:
+Production uses `CLAUDE_CODE_OAUTH_TOKEN` for non-interactive Claude authentication. For local Docker usage, Claude auth state also persists under `/data/home/appuser/.claude`, so you can either reuse that persisted state or pass the OAuth token explicitly.
 
-- Mount a credentials file and set `CLAUDE_CREDENTIALS_FILE`.
-- Or pass `CLAUDE_CREDENTIALS_B64` from a secret manager.
-
-Example (mounted file):
+Example:
 
 ```bash
 docker run --rm \
   --name actuarius \
   --env-file .env \
-  -e CLAUDE_CREDENTIALS_FILE=/run/secrets/claude_credentials \
+  -e CLAUDE_CODE_OAUTH_TOKEN=<your-oauth-token> \
   -v actuarius_data:/data \
-  -v /path/to/.credentials.json:/run/secrets/claude_credentials:ro \
   actuarius:latest
 ```
 
-Codex and Gemini CLI auth are also stored under `/data/home/appuser`, so redeploying the container does not require re-authentication.
+If you authenticate Claude interactively once inside a container with the `/data` volume mounted, that persisted state is also reused on later starts. Codex and Gemini CLI auth are stored under the same persisted home tree.
 
 ## Production operations (GCP VM)
 
