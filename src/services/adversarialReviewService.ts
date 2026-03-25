@@ -340,23 +340,20 @@ export function renderReviewMarkdown(input: {
 function buildAnalyzerPrompt(input: {
   repoFullName: string;
   branchName: string;
-  baseBranch: string;
-  changedFiles: string[];
-  diffText: string;
+  threadHistory: string;
 }): string {
   return [
     `You are the analyzer for an adversarial code review of ${input.repoFullName}.`,
     `Review branch: ${input.branchName}`,
-    `Diff base: ${input.baseBranch}`,
-    "Focus on what changed, risk areas, and the code paths most likely to hide regressions.",
-    "Return plain text with these headings: Summary, Risk Areas, Suggested Review Focus.",
+    "Your job is to read the conversation history below and determine what this change is trying to accomplish.",
+    "Do not look at code. Do not suggest where reviewers should focus. Just describe the intent.",
+    "Return plain text with these headings: Intent, Success Criteria.",
+    "- Intent: what problem is being solved and what the change is trying to achieve",
+    "- Success Criteria: what a correct implementation should accomplish from the requester's perspective",
     "",
-    "Changed files:",
-    ...(input.changedFiles.length > 0 ? input.changedFiles.map((file) => `- ${file}`) : ["- (none)"]),
-    "",
-    "Diff:",
-    "```diff",
-    clip(input.diffText, 120_000),
+    "Conversation history:",
+    "```text",
+    clip(input.threadHistory, 20_000),
     "```"
   ].join("\n");
 }
@@ -383,7 +380,7 @@ function buildReviewerPrompt(input: {
     "Do not soften criticism to agree with prior analysis. If a concern is weak, say so plainly. If the change looks solid, say that too.",
     "Return plain text with these headings: Blocking Issues, Non-Blocking Issues, Missing Tests, Strong Concerns, Confidence.",
     "",
-    "Analyzer notes:",
+    "Change intent (what this change is trying to achieve — evaluate the code against this):",
     "```text",
     clip(input.analyzerText, 20_000),
     "```",
@@ -604,6 +601,7 @@ export async function runAdversarialReview(input: {
   branchName: string;
   worktreePath: string;
   artifactRootPath: string;
+  threadHistory: string;
   analyzer: ReviewModelRunner;
   reviewers: ReviewModelRunner[];
   judge: ReviewModelRunner;
@@ -659,9 +657,7 @@ export async function runAdversarialReview(input: {
     const analyzerPrompt = buildAnalyzerPrompt({
       repoFullName: input.repoFullName,
       branchName: input.branchName,
-      baseBranch: diff.baseBranch,
-      changedFiles: diff.changedFiles,
-      diffText: diff.diffText
+      threadHistory: input.threadHistory
     });
     const analyzerText = await input.analyzer.run({
       prompt: analyzerPrompt,

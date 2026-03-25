@@ -899,7 +899,7 @@ describe("ActuariusBot review command", () => {
       memberPermissions: { has: vi.fn().mockReturnValue(true) },
       deferReply: vi.fn().mockResolvedValue(undefined),
       editReply: vi.fn().mockResolvedValue(undefined),
-      channel: { isThread: () => true, parentId: "channel-1", send: vi.fn().mockResolvedValue(undefined) }
+      channel: { isThread: () => true, parentId: "channel-1", send: vi.fn().mockResolvedValue(undefined), messages: { fetch: vi.fn().mockResolvedValue(new Map()) } }
     });
 
     await (bot as any).handleReview(interaction);

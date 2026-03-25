@@ -1895,6 +1895,7 @@ Output the result of the command or the link to the created issue.`;
 
     try {
       const runners = this.buildReviewRunners(interaction.guildId);
+      const threadHistory = await this.buildThreadHistory(interaction.channel);
       const result = await new Promise<Awaited<ReturnType<typeof runAdversarialReview>>>((resolve, reject) => {
         this.requestQueue.enqueue(interaction.guildId!, async () => {
           try {
@@ -1907,6 +1908,7 @@ Output the result of the command or the link to the created issue.`;
               branchName: latestRequest.branch_name!,
               worktreePath: latestRequest.worktree_path!,
               artifactRootPath: latestRequest.worktree_path!,
+              threadHistory,
               analyzer: runners.analyzer,
               reviewers: runners.reviewers,
               judge: runners.judge,
@@ -2147,6 +2149,21 @@ Output the result of the command or the link to the created issue.`;
       ""
     ];
     for (const entry of history) {
+      lines.push(`[${entry.role === "user" ? "User" : "Assistant"}]: ${entry.text}`);
+      lines.push("");
+    }
+    return lines.join("\n").trim();
+  }
+
+  private async buildThreadHistory(channel: AnyThreadChannel): Promise<string> {
+    const fetched = await channel.messages.fetch({ limit: 50 });
+    const sorted = [...fetched.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+    const lines: string[] = [];
+    for (const msg of sorted) {
+      const isBot = msg.author.id === this.client.user?.id;
+      const entry = parseThreadEntry(msg.content, isBot);
+      if (!entry) continue;
       lines.push(`[${entry.role === "user" ? "User" : "Assistant"}]: ${entry.text}`);
       lines.push("");
     }
