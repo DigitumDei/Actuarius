@@ -40,7 +40,7 @@ COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY docker/entrypoint.sh /app/entrypoint.sh
 
-RUN useradd --create-home --shell /usr/sbin/nologin appuser \
+RUN useradd --home-dir /data/home/appuser --no-create-home --shell /usr/sbin/nologin appuser \
   && mkdir -p /data/home/appuser \
   && chmod +x /app/entrypoint.sh \
   && chown -R appuser:appuser /app /data

@@ -29,7 +29,7 @@ ASK_CONCURRENCY=$(get_meta env-ask-concurrency)
 if [ -z "$DISCORD_TOKEN" ];          then echo "FATAL: env-discord-token is not set"      >&2; exit 1; fi
 if [ -z "$DISCORD_CLIENT_ID" ];      then echo "FATAL: env-discord-client-id is not set"  >&2; exit 1; fi
 if [ -z "$GH_TOKEN" ] && \
-   ( [ -z "$GITHUB_APP_ID" ] && [ -z "$GITHUB_APP_INSTALLATION_ID" ] && [ -z "$GITHUB_APP_PRIVATE_KEY_B64" ] ); then
+   ( [ -z "$GITHUB_APP_ID" ] || [ -z "$GITHUB_APP_INSTALLATION_ID" ] || [ -z "$GITHUB_APP_PRIVATE_KEY_B64" ] ); then
   echo "FATAL: either env-gh-token or all GitHub App credentials (env-github-app-id, env-github-app-installation-id, env-github-app-private-key-b64) must be set" >&2; exit 1
 fi
 if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ];then echo "FATAL: env-claude-oauth-token is not set" >&2; exit 1; fi
@@ -46,7 +46,7 @@ fi
 if [ -n "$GH_TOKEN" ]; then
   EXTRA_ARGS+=(-e "GH_TOKEN=$GH_TOKEN")
 fi
-if [ -n "$GITHUB_APP_ID" ]; then
+if [ -n "$GITHUB_APP_ID" ] && [ -n "$GITHUB_APP_INSTALLATION_ID" ] && [ -n "$GITHUB_APP_PRIVATE_KEY_B64" ]; then
   EXTRA_ARGS+=(-e "GITHUB_APP_ID=$GITHUB_APP_ID")
   EXTRA_ARGS+=(-e "GITHUB_APP_INSTALLATION_ID=$GITHUB_APP_INSTALLATION_ID")
   EXTRA_ARGS+=(-e "GITHUB_APP_PRIVATE_KEY_B64=$GITHUB_APP_PRIVATE_KEY_B64")
@@ -64,6 +64,7 @@ fi
 docker pull "$IMAGE"
 docker rm -f actuarius 2>/dev/null || true
 mkdir -p "$DATA_ROOT/home/appuser"
+chown -R 1001:1001 "$DATA_ROOT/home"
 
 docker run -d \
   --name actuarius \

@@ -3,6 +3,7 @@ param(
   [string]$ImageName = "actuarius:latest",
   [string]$EnvFile = ".env",
   [string]$DataVolume = "actuarius_data",
+  [string]$LegacyHomeVolume = "actuarius_home",
   [string]$CredentialsPath = ".\.claude.credentials.json",
   [switch]$SkipBuild,
   [switch]$Logs
@@ -35,6 +36,12 @@ if (-not $SkipBuild) {
 
 Write-Host "Ensuring volumes exist..."
 docker volume create $DataVolume | Out-Null
+
+$legacyHomeVolumeExists = docker volume ls --filter "name=^${LegacyHomeVolume}$" --format "{{.Name}}"
+if ($legacyHomeVolumeExists) {
+  Write-Host "Migrating persisted auth from legacy volume $LegacyHomeVolume into $DataVolume..."
+  docker run --rm -v "${DataVolume}:/target" -v "${LegacyHomeVolume}:/legacy:ro" alpine sh -lc "mkdir -p /target/home/appuser && cp -a /legacy/. /target/home/appuser/"
+}
 
 $existing = docker ps -a --filter "name=^$ContainerName$" --format "{{.Names}}"
 if ($existing) {
