@@ -512,6 +512,9 @@ export class ActuariusBot {
       case "codex-auth":
         await this.handleCodexAuth(interaction);
         return;
+      case "gemini-oauth-file":
+        await this.handleGeminiOauthFile(interaction);
+        return;
       case "delete":
         await this.handleDelete(interaction);
         return;
@@ -1368,6 +1371,64 @@ export class ActuariusBot {
     } catch (error) {
       this.logger.error({ error, guildId: interaction.guildId }, "codex-auth failed");
       await interaction.editReply(`Failed to save Codex credentials: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  }
+
+  private async handleGeminiOauthFile(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to configure Gemini auth.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!this.config.enableGeminiExecution) {
+      await interaction.reply({
+        content: "Gemini execution is not enabled on this instance. Set `ENABLE_GEMINI_EXECUTION=true` to enable it.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const attachment = interaction.options.getAttachment("credentials", true);
+
+    if (!attachment.name.endsWith(".json")) {
+      await interaction.reply({ content: "Credentials file must be a `.json` file.", ephemeral: true });
+      return;
+    }
+
+    if (attachment.size > 10_000) {
+      await interaction.reply({ content: "Credentials file is too large. Expected a small JSON file.", ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const response = await fetch(attachment.url);
+      if (!response.ok) {
+        await interaction.editReply("Failed to download the attached file from Discord.");
+        return;
+      }
+
+      const content = await response.text();
+      JSON.parse(content);
+
+      const credPath = join(homedir(), ".gemini", "oauth_creds.json");
+      mkdirSync(dirname(credPath), { recursive: true });
+      writeFileSync(credPath, content, { mode: 0o600 });
+
+      this.logger.info({ guildId: interaction.guildId, credPath }, "Gemini OAuth credentials written");
+      await interaction.editReply("Gemini OAuth credentials saved. `/ask` requests with the Gemini provider should now work.");
+    } catch (error) {
+      this.logger.error({ error, guildId: interaction.guildId }, "gemini-oauth-file failed");
+      await interaction.editReply(`Failed to save Gemini credentials: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   }
 
