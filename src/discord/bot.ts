@@ -1,4 +1,3 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -286,18 +285,12 @@ function parseThreadEntry(
   return text ? { role: "user", text } : null;
 }
 
-interface PendingGeminiAuth {
-  child: ChildProcess;
-  timeoutHandle: NodeJS.Timeout;
-}
-
 export class ActuariusBot {
   private readonly client: Client;
   private readonly config: AppConfig;
   private readonly logger: pino.Logger;
   private readonly db: AppDatabase;
   private readonly requestQueue: RequestExecutionQueue;
-  private readonly pendingGeminiAuth = new Map<string, PendingGeminiAuth>();
 
   public constructor(config: AppConfig, logger: pino.Logger, db: AppDatabase) {
     this.config = config;
@@ -502,12 +495,6 @@ export class ActuariusBot {
         return;
       case "review-rounds":
         await this.handleReviewRounds(interaction);
-        return;
-      case "gemini-auth":
-        await this.handleGeminiAuth(interaction);
-        return;
-      case "gemini-auth-complete":
-        await this.handleGeminiAuthComplete(interaction);
         return;
       case "codex-auth":
         await this.handleCodexAuth(interaction);
@@ -1135,184 +1122,6 @@ export class ActuariusBot {
     });
   }
 
-  private async handleGeminiAuth(interaction: ChatInputCommandInteraction): Promise<void> {
-    if (!interaction.guild || !interaction.guildId) {
-      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
-      return;
-    }
-
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-      await interaction.reply({
-        content: "You need the `Manage Server` permission to configure Gemini auth.",
-        ephemeral: true
-      });
-      return;
-    }
-
-    if (!this.config.enableGeminiExecution) {
-      await interaction.reply({
-        content: "Gemini execution is not enabled on this instance. Set `ENABLE_GEMINI_EXECUTION=true` to enable it.",
-        ephemeral: true
-      });
-      return;
-    }
-
-    if (this.pendingGeminiAuth.has(interaction.guildId)) {
-      await interaction.reply({
-        content: "A Gemini auth flow is already in progress. Use `/gemini-auth-complete` or wait 5 minutes for it to expire.",
-        ephemeral: true
-      });
-      return;
-    }
-
-    await interaction.deferReply({ ephemeral: true });
-
-    const guildId = interaction.guildId;
-
-    try {
-      const url = await new Promise<string>((resolve, reject) => {
-        const child = spawn("gemini", [], {
-          stdio: ["pipe", "pipe", "pipe"]
-        });
-
-        let output = "";
-        const urlRegex = /https:\/\/accounts\.google\.com\/[^\s\r\n\x1b]*/;
-
-        const onData = (chunk: Buffer) => {
-          const text = chunk.toString();
-          this.logger.debug({ text, source: "gemini-auth" }, "Gemini auth output chunk");
-          output += text;
-          const match = urlRegex.exec(output);
-          if (match && !this.pendingGeminiAuth.has(guildId)) {
-            const timeoutHandle = setTimeout(() => {
-              const pending = this.pendingGeminiAuth.get(guildId);
-              if (pending) {
-                pending.child.kill();
-                this.pendingGeminiAuth.delete(guildId);
-                this.logger.info({ guildId }, "Gemini auth flow timed out");
-              }
-            }, 5 * 60 * 1000);
-
-            this.pendingGeminiAuth.set(guildId, { child, timeoutHandle });
-            resolve(match[0]);
-          }
-        };
-
-        child.stdout!.on("data", onData);
-        child.stderr!.on("data", onData);
-
-        child.on("error", reject);
-
-        child.on("close", (code) => {
-          if (!this.pendingGeminiAuth.has(guildId)) {
-            reject(new Error(`gemini auth login exited with code ${String(code)} before URL was found`));
-          }
-        });
-
-        setTimeout(() => {
-          if (!this.pendingGeminiAuth.has(guildId)) {
-            child.kill();
-            reject(new Error("Timed out waiting for Gemini auth URL"));
-          }
-        }, 30_000);
-      });
-
-      await interaction.editReply(
-        `Visit this URL to authorize Gemini:\n\n${url}\n\nThen run \`/gemini-auth-complete code:<paste code here>\`.`
-      );
-    } catch (error) {
-      this.logger.error({ error, guildId }, "gemini-auth failed");
-      await interaction.editReply(`Failed to start Gemini auth: ${error instanceof Error ? error.message : "Unknown error"}`);
-    }
-  }
-
-  private async handleGeminiAuthComplete(interaction: ChatInputCommandInteraction): Promise<void> {
-    if (!interaction.guildId) {
-      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
-      return;
-    }
-
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-      await interaction.reply({
-        content: "You need the `Manage Server` permission to configure Gemini auth.",
-        ephemeral: true
-      });
-      return;
-    }
-
-    const pending = this.pendingGeminiAuth.get(interaction.guildId);
-    if (!pending) {
-      await interaction.reply({
-        content: "No pending Gemini auth flow. Run `/gemini-auth` first.",
-        ephemeral: true
-      });
-      return;
-    }
-
-    const code = interaction.options.getString("code", true).trim();
-    await interaction.deferReply({ ephemeral: true });
-
-    const { child, timeoutHandle } = pending;
-    this.pendingGeminiAuth.delete(interaction.guildId);
-    clearTimeout(timeoutHandle);
-
-    this.logger.info({
-      guildId: interaction.guildId,
-      exitCode: child.exitCode,
-      killed: child.killed,
-      pid: child.pid
-    }, "gemini-auth-complete: child process state");
-
-    if (child.exitCode !== null || child.killed) {
-      await interaction.editReply("The Gemini auth session expired. Run `/gemini-auth` to start again.");
-      return;
-    }
-
-    try {
-      const success = await new Promise<boolean>((resolve, reject) => {
-        let output = "";
-        const checkSuccess = (text: string) => {
-          output += text;
-          // Text-based success patterns
-          if (/loaded cached credentials|credentials saved|authenticated/i.test(output)) {
-            child.kill();
-            resolve(true);
-            return;
-          }
-          // TUI closing escape sequence — CLI has finished the interactive auth flow
-          if (output.includes("\u001b[?1049l")) {
-            child.kill();
-            resolve(true);
-          }
-        };
-
-        child.stdout!.on("data", (chunk: Buffer) => checkSuccess(chunk.toString()));
-        child.stderr!.on("data", (chunk: Buffer) => checkSuccess(chunk.toString()));
-        child.on("close", () => {
-          resolve(/loaded cached credentials|credentials saved|authenticated/i.test(output));
-        });
-        child.on("error", reject);
-        child.stdin!.on("error", reject);
-        child.stdin!.write(code + "\n");
-        child.stdin!.end();
-        setTimeout(() => {
-          child.kill();
-          reject(new Error("Timed out waiting for Gemini auth to complete"));
-        }, 30_000);
-      });
-
-      if (success) {
-        await interaction.editReply("Gemini auth complete. `/ask` requests will now use your Google account.");
-      } else {
-        await interaction.editReply("Gemini auth may have failed — no confirmation received. Try `/gemini-auth` again or run an `/ask` to test.");
-      }
-    } catch (error) {
-      child.kill();
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.error({ error, guildId: interaction.guildId }, "gemini-auth-complete failed");
-      await interaction.editReply(`Auth failed: ${message}`);
-    }
-  }
 
   private async handleCodexAuth(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guild || !interaction.guildId) {
