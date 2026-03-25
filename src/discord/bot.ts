@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import {
@@ -1124,66 +1125,41 @@ export class ActuariusBot {
 
 
   private async handleCodexAuth(interaction: ChatInputCommandInteraction): Promise<void> {
-    if (!interaction.guild || !interaction.guildId) {
-      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
-      return;
-    }
-
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-      await interaction.reply({
-        content: "You need the `Manage Server` permission to configure Codex auth.",
-        ephemeral: true
-      });
-      return;
-    }
-
-    if (!this.config.enableCodexExecution) {
-      await interaction.reply({
-        content: "Codex execution is not enabled on this instance. Set `ENABLE_CODEX_EXECUTION=true` to enable it.",
-        ephemeral: true
-      });
-      return;
-    }
-
-    const attachment = interaction.options.getAttachment("credentials", true);
-
-    if (!attachment.name.endsWith(".json")) {
-      await interaction.reply({ content: "Credentials file must be a `.json` file.", ephemeral: true });
-      return;
-    }
-
-    if (attachment.size > 10_000) {
-      await interaction.reply({ content: "Credentials file is too large. Expected a small JSON file.", ephemeral: true });
-      return;
-    }
-
-    await interaction.deferReply({ ephemeral: true });
-
-    try {
-      const response = await fetch(attachment.url);
-      if (!response.ok) {
-        await interaction.editReply("Failed to download the attached file from Discord.");
-        return;
-      }
-
-      const content = await response.text();
-
-      // Basic validation that it's JSON
-      JSON.parse(content);
-
-      const credPath = join(homedir(), ".codex", "auth.json");
-      mkdirSync(dirname(credPath), { recursive: true });
-      writeFileSync(credPath, content, { mode: 0o600 });
-
-      this.logger.info({ guildId: interaction.guildId, credPath }, "Codex credentials written");
-      await interaction.editReply("Codex credentials saved. `/ask` requests with the Codex provider should now work.");
-    } catch (error) {
-      this.logger.error({ error, guildId: interaction.guildId }, "codex-auth failed");
-      await interaction.editReply(`Failed to save Codex credentials: ${error instanceof Error ? error.message : "Unknown error"}`);
-    }
+    await this.handleCredentialFileUpload(interaction, {
+      enabledFlag: this.config.enableCodexExecution,
+      disabledMessage: "Codex execution is not enabled on this instance. Set `ENABLE_CODEX_EXECUTION=true` to enable it.",
+      permissionLabel: "Codex",
+      credPath: join(homedir(), ".codex", "auth.json"),
+      logLabel: "Codex credentials written",
+      logCommand: "codex-auth",
+      successMessage: "Codex credentials saved. `/ask` requests with the Codex provider should now work."
+    });
   }
 
   private async handleGeminiOauthFile(interaction: ChatInputCommandInteraction): Promise<void> {
+    await this.handleCredentialFileUpload(interaction, {
+      enabledFlag: this.config.enableGeminiExecution,
+      disabledMessage: "Gemini execution is not enabled on this instance. Set `ENABLE_GEMINI_EXECUTION=true` to enable it.",
+      permissionLabel: "Gemini",
+      credPath: join(homedir(), ".gemini", "oauth_creds.json"),
+      logLabel: "Gemini OAuth credentials written",
+      logCommand: "gemini-oauth-file",
+      successMessage: "Gemini OAuth credentials saved. `/ask` requests with the Gemini provider should now work."
+    });
+  }
+
+  private async handleCredentialFileUpload(
+    interaction: ChatInputCommandInteraction,
+    options: {
+      enabledFlag: boolean;
+      disabledMessage: string;
+      permissionLabel: string;
+      credPath: string;
+      logLabel: string;
+      logCommand: string;
+      successMessage: string;
+    }
+  ): Promise<void> {
     if (!interaction.guild || !interaction.guildId) {
       await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
       return;
@@ -1191,17 +1167,14 @@ export class ActuariusBot {
 
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
       await interaction.reply({
-        content: "You need the `Manage Server` permission to configure Gemini auth.",
+        content: `You need the \`Manage Server\` permission to configure ${options.permissionLabel} auth.`,
         ephemeral: true
       });
       return;
     }
 
-    if (!this.config.enableGeminiExecution) {
-      await interaction.reply({
-        content: "Gemini execution is not enabled on this instance. Set `ENABLE_GEMINI_EXECUTION=true` to enable it.",
-        ephemeral: true
-      });
+    if (!options.enabledFlag) {
+      await interaction.reply({ content: options.disabledMessage, ephemeral: true });
       return;
     }
 
@@ -1229,15 +1202,14 @@ export class ActuariusBot {
       const content = await response.text();
       JSON.parse(content);
 
-      const credPath = join(homedir(), ".gemini", "oauth_creds.json");
-      mkdirSync(dirname(credPath), { recursive: true });
-      writeFileSync(credPath, content, { mode: 0o600 });
+      await mkdir(dirname(options.credPath), { recursive: true });
+      await writeFile(options.credPath, content, { mode: 0o600 });
 
-      this.logger.info({ guildId: interaction.guildId, credPath }, "Gemini OAuth credentials written");
-      await interaction.editReply("Gemini OAuth credentials saved. `/ask` requests with the Gemini provider should now work.");
+      this.logger.info({ guildId: interaction.guildId, credPath: options.credPath }, options.logLabel);
+      await interaction.editReply(options.successMessage);
     } catch (error) {
-      this.logger.error({ error, guildId: interaction.guildId }, "gemini-oauth-file failed");
-      await interaction.editReply(`Failed to save Gemini credentials: ${error instanceof Error ? error.message : "Unknown error"}`);
+      this.logger.error({ error, guildId: interaction.guildId }, `${options.logCommand} failed`);
+      await interaction.editReply(`Failed to save credentials: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   }
 
