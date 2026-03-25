@@ -331,7 +331,7 @@ describe("adversarialReviewService", () => {
     expect(result.summary.outstandingConcerns).toEqual([
       "Gemini still wants a thread-level integration test for the queue interaction."
     ]);
-    expect(result.artifactPath).toMatch(/^docs\/reviews\/51\/.+-review\.md$/);
+    expect(result.artifactPath).toMatch(/docs[\\/]reviews[\\/]ask-51-123[\\/].+-review\.md$/);
     const artifact = await readFile(join(tempRoot, "artifacts", result.artifactPath), "utf8");
     expect(artifact).toContain("# Adversarial Review");
     expect(artifact).toContain("## Critique Outputs");

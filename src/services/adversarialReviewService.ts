@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Logger } from "pino";
 import type { AppDatabase } from "../db/database.js";
 import type { AiProvider, ReviewVerdict } from "../db/types.js";
@@ -550,9 +550,10 @@ function buildSummarizerPrompt(input: {
   ).join("\n");
 }
 
-function buildArtifactPath(artifactRootPath: string, requestId: number): { absolutePath: string; relativePath: string } {
+function buildArtifactPath(artifactRootPath: string, branchName: string): { absolutePath: string; relativePath: string } {
   const timestamp = new Date().toISOString().replaceAll(":", "-");
-  const relativePath = join("docs", "reviews", String(requestId), `${timestamp}-review.md`);
+  const safeBranch = branchName.replaceAll("/", "-");
+  const relativePath = join("docs", "reviews", safeBranch, `${timestamp}-review.md`);
   return {
     absolutePath: join(artifactRootPath, relativePath),
     relativePath
@@ -818,8 +819,8 @@ export async function runAdversarialReview(input: {
       judgeRounds,
       summary
     });
-    const artifactPath = buildArtifactPath(input.artifactRootPath, input.requestId);
-    await mkdir(join(input.artifactRootPath, "docs", "reviews", String(input.requestId)), { recursive: true });
+    const artifactPath = buildArtifactPath(input.artifactRootPath, input.branchName);
+    await mkdir(dirname(artifactPath.absolutePath), { recursive: true });
     await writeFile(artifactPath.absolutePath, `${summaryMarkdown}\n`, "utf8");
 
     const rawResult = {
