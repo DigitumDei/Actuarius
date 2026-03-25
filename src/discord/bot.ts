@@ -1793,42 +1793,40 @@ Output the result of the command or the link to the created issue.`;
       outstandingConcerns: string[];
       verdict: "ready_for_pr" | "revise";
     };
-  }): string {
-    return fitDiscordMessage(
-      [
-        `**Adversarial review completed**`,
-        `Request: #${input.requestId}`,
-        `Review run: #${input.reviewRunId}`,
-        `Branch: \`${input.branchName}\``,
-        `Reviewed commit: \`${input.diffHeadSha}\``,
-        `Reviewers: ${input.reviewersSucceeded}/${input.reviewersAttempted} succeeded`,
-        `Verdict: \`${input.summary.verdict}\``,
-        `Artifact: \`${input.artifactPath}\``,
-        "",
-        input.summary.executiveSummary,
-        "",
-        `Blocking issues (${input.summary.blockingIssues.length}):`,
-        ...(input.summary.blockingIssues.length > 0
-          ? input.summary.blockingIssues.map((issue) => `- ${issue.title}`)
-          : ["- None"]),
-        "",
-        `Non-blocking issues (${input.summary.nonBlockingIssues.length}):`,
-        ...(input.summary.nonBlockingIssues.length > 0
-          ? input.summary.nonBlockingIssues.map((issue) => `- ${issue.title}`)
-          : ["- None"]),
-        "",
-        `Missing tests (${input.summary.missingTests.length}):`,
-        ...(input.summary.missingTests.length > 0
-          ? input.summary.missingTests.map((item) => `- ${item}`)
-          : ["- None"]),
-        "",
-        `Outstanding concerns (${input.summary.outstandingConcerns.length}):`,
-        ...(input.summary.outstandingConcerns.length > 0
-          ? input.summary.outstandingConcerns.map((item) => `- ${item}`)
-          : ["- None"])
-      ],
-      "...(truncated to fit Discord's 2000 character limit)"
-    );
+  }): string[] {
+    const header = `**Adversarial review completed**`;
+    const body = [
+      `Request: #${input.requestId}`,
+      `Review run: #${input.reviewRunId}`,
+      `Branch: \`${input.branchName}\``,
+      `Reviewed commit: \`${input.diffHeadSha}\``,
+      `Reviewers: ${input.reviewersSucceeded}/${input.reviewersAttempted} succeeded`,
+      `Verdict: \`${input.summary.verdict}\``,
+      `Artifact: \`${input.artifactPath}\``,
+      "",
+      input.summary.executiveSummary,
+      "",
+      `Blocking issues (${input.summary.blockingIssues.length}):`,
+      ...(input.summary.blockingIssues.length > 0
+        ? input.summary.blockingIssues.map((issue) => `- ${issue.title}`)
+        : ["- None"]),
+      "",
+      `Non-blocking issues (${input.summary.nonBlockingIssues.length}):`,
+      ...(input.summary.nonBlockingIssues.length > 0
+        ? input.summary.nonBlockingIssues.map((issue) => `- ${issue.title}`)
+        : ["- None"]),
+      "",
+      `Missing tests (${input.summary.missingTests.length}):`,
+      ...(input.summary.missingTests.length > 0
+        ? input.summary.missingTests.map((item) => `- ${item}`)
+        : ["- None"]),
+      "",
+      `Outstanding concerns (${input.summary.outstandingConcerns.length}):`,
+      ...(input.summary.outstandingConcerns.length > 0
+        ? input.summary.outstandingConcerns.map((item) => `- ${item}`)
+        : ["- None"])
+    ].join("\n");
+    return splitPlainTextForDiscord(body, header);
   }
 
   private async handleReview(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -1923,18 +1921,18 @@ Output the result of the command or the link to the created issue.`;
         });
       });
 
-      await interaction.channel.send(
-        this.formatReviewSummaryMessage({
-          requestId: latestRequest.id,
-          branchName: latestRequest.branch_name,
-          reviewRunId: result.reviewRunId,
-          diffHeadSha: result.diffHeadSha,
-          reviewersSucceeded: result.reviewersSucceeded,
-          reviewersAttempted: result.reviewersAttempted,
-          artifactPath: result.artifactPath,
-          summary: result.summary
-        })
-      );
+      for (const chunk of this.formatReviewSummaryMessage({
+        requestId: latestRequest.id,
+        branchName: latestRequest.branch_name,
+        reviewRunId: result.reviewRunId,
+        diffHeadSha: result.diffHeadSha,
+        reviewersSucceeded: result.reviewersSucceeded,
+        reviewersAttempted: result.reviewersAttempted,
+        artifactPath: result.artifactPath,
+        summary: result.summary
+      })) {
+        await interaction.channel.send(chunk);
+      }
       await interaction.editReply(
         `Review completed for \`${repo.full_name}\` at \`${result.diffHeadSha}\` with verdict \`${result.summary.verdict}\`.`
       );
