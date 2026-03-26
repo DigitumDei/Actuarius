@@ -505,7 +505,7 @@ function buildSummarizerPrompt(input: {
     "Synthesize the analyzer and reviewer outputs into a final verdict.",
     "Return JSON only with this exact shape:",
     "{",
-    '  "executiveSummary": "string",',
+    '  "executiveSummary": "2-4 sentences describing what the branch does, summarising the key consensus findings, and explaining why the verdict was reached. Must be substantive analysis — do NOT write meta-commentary such as \'I have reviewed the outputs\' or \'I now have sufficient context\'.",',
     '  "blockingIssues": [{"title":"string","rationale":"string","file":"optional path"}],',
     '  "nonBlockingIssues": [{"title":"string","rationale":"string","file":"optional path"}],',
     '  "missingTests": ["string"],',
