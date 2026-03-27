@@ -715,22 +715,26 @@ export async function runAdversarialReview(input: {
         })
       );
 
-      const successfulReviewers = reviewerResults
-        .filter((result): result is PromiseFulfilledResult<ReviewerStageResult> => result.status === "fulfilled")
-        .map((result) => result.value);
+      const successfulReviewers: ReviewerStageResult[] = [];
+      const failedReviewers: PromiseRejectedResult[] = [];
+      for (const result of reviewerResults) {
+        if (result.status === "fulfilled") {
+          successfulReviewers.push(result.value);
+        } else {
+          failedReviewers.push(result);
+        }
+      }
+
       if (successfulReviewers.length === 0) {
-        const rejectedMessages = reviewerResults
-          .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-          .map((result) => (result.reason instanceof Error ? result.reason.message : String(result.reason)));
+        const rejectedMessages = failedReviewers.map((result) =>
+          result.reason instanceof Error ? result.reason.message : String(result.reason)
+        );
         throw new AdversarialReviewError(
           "INSUFFICIENT_REVIEWERS",
           `All reviewers failed. Failures: ${rejectedMessages.join(" | ") || "unknown reviewer failure"}`
         );
       }
 
-      const failedReviewers = reviewerResults.filter(
-        (result): result is PromiseRejectedResult => result.status === "rejected"
-      );
       if (failedReviewers.length > 0) {
         input.logger.warn(
           {
