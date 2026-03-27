@@ -718,13 +718,28 @@ export async function runAdversarialReview(input: {
       const successfulReviewers = reviewerResults
         .filter((result): result is PromiseFulfilledResult<ReviewerStageResult> => result.status === "fulfilled")
         .map((result) => result.value);
-      if (successfulReviewers.length < 2) {
+      if (successfulReviewers.length === 0) {
         const rejectedMessages = reviewerResults
           .filter((result): result is PromiseRejectedResult => result.status === "rejected")
           .map((result) => (result.reason instanceof Error ? result.reason.message : String(result.reason)));
         throw new AdversarialReviewError(
           "INSUFFICIENT_REVIEWERS",
-          `Review requires at least 2 successful reviewers. Failures: ${rejectedMessages.join(" | ") || "unknown reviewer failure"}`
+          `All reviewers failed. Failures: ${rejectedMessages.join(" | ") || "unknown reviewer failure"}`
+        );
+      }
+
+      const failedReviewers = reviewerResults.filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected"
+      );
+      if (failedReviewers.length > 0) {
+        input.logger.warn(
+          {
+            round,
+            succeeded: successfulReviewers.length,
+            failed: failedReviewers.length,
+            failures: failedReviewers.map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason)))
+          },
+          "Some reviewers failed; continuing with successful reviewers"
         );
       }
 
@@ -733,7 +748,7 @@ export async function runAdversarialReview(input: {
       activeReviewers = input.reviewers.filter((reviewer) => successfulReviewers.some((result) => result.reviewer === reviewer.label));
 
       checkBudget();
-      const critiqueResults = await Promise.all(
+      const critiqueSettled = await Promise.allSettled(
         activeReviewers.map(async (reviewer) => {
           const ownReview = successfulReviewers.find((result) => result.reviewer === reviewer.label);
           const peerReviews = successfulReviewers.filter((result) => result.reviewer !== reviewer.label);
@@ -761,7 +776,26 @@ export async function runAdversarialReview(input: {
           } satisfies ReviewCritiqueResult;
         })
       );
+      const critiqueResults = critiqueSettled
+        .filter((result): result is PromiseFulfilledResult<ReviewCritiqueResult> => result.status === "fulfilled")
+        .map((result) => result.value);
+      const failedCritiques = critiqueSettled.filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected"
+      );
+      if (failedCritiques.length > 0) {
+        input.logger.warn(
+          {
+            round,
+            succeeded: critiqueResults.length,
+            failed: failedCritiques.length,
+            failures: failedCritiques.map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason)))
+          },
+          "Some critiques failed; continuing with successful critiques"
+        );
+      }
       allCritiqueOutputs.push(...critiqueResults);
+      const successfulCritiqueLabels = new Set(critiqueResults.map((c) => c.reviewer));
+      activeReviewers = activeReviewers.filter((reviewer) => successfulCritiqueLabels.has(reviewer.label));
 
       checkBudget();
       const judgeRawText = await input.judge.run({
