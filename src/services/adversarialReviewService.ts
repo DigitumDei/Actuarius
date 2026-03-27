@@ -715,33 +715,31 @@ export async function runAdversarialReview(input: {
         })
       );
 
-      const successfulReviewers: ReviewerStageResult[] = [];
-      const failedReviewers: PromiseRejectedResult[] = [];
-      for (const result of reviewerResults) {
-        if (result.status === "fulfilled") {
-          successfulReviewers.push(result.value);
-        } else {
-          failedReviewers.push(result);
-        }
-      }
-
-      if (successfulReviewers.length === 0) {
-        const rejectedMessages = failedReviewers.map((result) =>
-          result.reason instanceof Error ? result.reason.message : String(result.reason)
-        );
-        throw new AdversarialReviewError(
-          "INSUFFICIENT_REVIEWERS",
-          `All reviewers failed. Failures: ${rejectedMessages.join(" | ") || "unknown reviewer failure"}`
-        );
-      }
+      const successfulReviewers = reviewerResults
+        .filter((result): result is PromiseFulfilledResult<ReviewerStageResult> => result.status === "fulfilled")
+        .map((result) => result.value);
+      const failedReviewers = reviewerResults.filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected"
+      );
 
       if (failedReviewers.length > 0) {
+        const rejectedMessages = failedReviewers.map((r) =>
+          r.reason instanceof Error ? r.reason.message : String(r.reason)
+        );
+
+        if (successfulReviewers.length === 0) {
+          throw new AdversarialReviewError(
+            "INSUFFICIENT_REVIEWERS",
+            `All reviewers failed. Failures: ${rejectedMessages.join(" | ") || "unknown reviewer failure"}`
+          );
+        }
+
         input.logger.warn(
           {
             round,
             succeeded: successfulReviewers.length,
             failed: failedReviewers.length,
-            failures: failedReviewers.map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason)))
+            failures: rejectedMessages
           },
           "Some reviewers failed; continuing with successful reviewers"
         );
