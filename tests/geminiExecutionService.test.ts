@@ -42,21 +42,12 @@ describe("GeminiExecutionError", () => {
 });
 
 describe("runGeminiRequest", () => {
-  const originalGeminiApiKey = process.env.GEMINI_API_KEY;
-
   beforeEach(() => {
     vi.resetAllMocks();
-    if (originalGeminiApiKey === undefined) {
-      delete process.env.GEMINI_API_KEY;
-      return;
-    }
-
-    process.env.GEMINI_API_KEY = originalGeminiApiKey;
+    vi.unstubAllEnvs();
   });
 
   it("fails before spawning when GEMINI_API_KEY is not set", async () => {
-    delete process.env.GEMINI_API_KEY;
-
     await expect(runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
       code: "NOT_AUTHENTICATED",
       name: "GeminiExecutionError",
@@ -66,7 +57,7 @@ describe("runGeminiRequest", () => {
   });
 
   it("passes the prompt to the Gemini CLI when GEMINI_API_KEY is set", async () => {
-    process.env.GEMINI_API_KEY = "test-key";
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
     mockSpawnCollect.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
 
     await runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);

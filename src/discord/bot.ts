@@ -1045,7 +1045,7 @@ export class ActuariusBot {
       return;
     }
 
-    if (provider === "gemini" && !this.config.geminiApiKey) {
+    if (provider === "gemini" && !this.config.geminiApiKey?.trim()) {
       await interaction.reply({
         content: "Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.",
         ephemeral: true
