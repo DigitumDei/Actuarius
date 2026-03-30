@@ -23,6 +23,10 @@ export class GeminiExecutionError extends Error {
 }
 
 export async function runGeminiRequest(input: GeminiExecutionInput, logger: Logger): Promise<GeminiExecutionResult> {
+  if (!process.env.GEMINI_API_KEY?.trim()) {
+    throw new GeminiExecutionError("NOT_AUTHENTICATED", "Gemini requires `GEMINI_API_KEY` to be set for API-key-based authentication.");
+  }
+
   const text = await runProviderRequest(
     input,
     {
@@ -33,7 +37,7 @@ export async function runGeminiRequest(input: GeminiExecutionInput, logger: Logg
       unavailableCode: "GEMINI_UNAVAILABLE",
       notAuthenticatedCode: "NOT_AUTHENTICATED",
       authFailurePattern: /set an Auth method|authentication required|not authenticated|Enter the authorization code:/i,
-      authHint: "Use `/gemini-auth` to authenticate.",
+      authHint: "Set `GEMINI_API_KEY` to a valid Gemini API key.",
       timeoutCode: "TIMEOUT",
       failedCode: "FAILED",
       emptyOutputCode: "EMPTY_OUTPUT",

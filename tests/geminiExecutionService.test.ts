@@ -1,5 +1,14 @@
-import { describe, expect, it } from "vitest";
-import { GeminiExecutionError } from "../src/services/geminiExecutionService.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import pino from "pino";
+
+vi.mock("../src/utils/spawnCollect.js");
+
+const { spawnCollect } = await import("../src/utils/spawnCollect.js");
+const mockSpawnCollect = vi.mocked(spawnCollect);
+
+const { GeminiExecutionError, runGeminiRequest } = await import("../src/services/geminiExecutionService.js");
+
+const logger = pino({ level: "silent" });
 
 describe("GeminiExecutionError", () => {
   it("constructs with GEMINI_UNAVAILABLE code", () => {
@@ -29,5 +38,39 @@ describe("GeminiExecutionError", () => {
   it("constructs with EMPTY_OUTPUT code", () => {
     const error = new GeminiExecutionError("EMPTY_OUTPUT", "empty");
     expect(error.code).toBe("EMPTY_OUTPUT");
+  });
+});
+
+describe("runGeminiRequest", () => {
+  const originalGeminiApiKey = process.env.GEMINI_API_KEY;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    if (originalGeminiApiKey === undefined) {
+      delete process.env.GEMINI_API_KEY;
+      return;
+    }
+
+    process.env.GEMINI_API_KEY = originalGeminiApiKey;
+  });
+
+  it("fails before spawning when GEMINI_API_KEY is not set", async () => {
+    delete process.env.GEMINI_API_KEY;
+
+    await expect(runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
+      code: "NOT_AUTHENTICATED",
+      name: "GeminiExecutionError",
+      message: "Gemini requires `GEMINI_API_KEY` to be set for API-key-based authentication."
+    });
+    expect(mockSpawnCollect).not.toHaveBeenCalled();
+  });
+
+  it("passes the prompt to the Gemini CLI when GEMINI_API_KEY is set", async () => {
+    process.env.GEMINI_API_KEY = "test-key";
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+
+    await runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+
+    expect(mockSpawnCollect).toHaveBeenCalledWith("gemini", ["-p", "hello", "--yolo"], expect.any(Object));
   });
 });

@@ -115,15 +115,6 @@ export const commandBuilders = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
-    .setName("gemini-oauth-file")
-    .setDescription("Upload Gemini OAuth credentials (~/.gemini/oauth_creds.json). Requires Manage Server permission.")
-    .addAttachmentOption((option) =>
-      option
-        .setName("credentials")
-        .setDescription("The oauth_creds.json file from ~/.gemini/ (or %USERPROFILE%\\.gemini\\)")
-        .setRequired(true)
-    ),
-  new SlashCommandBuilder()
     .setName("delete")
     .setDescription("Delete the worktree branch associated with this request thread."),
   new SlashCommandBuilder()
@@ -146,7 +137,6 @@ export type CommandName =
   | "model-current"
   | "review-rounds"
   | "codex-auth"
-  | "gemini-oauth-file"
   | "delete"
   | "review";
 

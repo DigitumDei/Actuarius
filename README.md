@@ -60,9 +60,10 @@ Copy `.env.example` to `.env` and set:
 - `THREAD_AUTO_ARCHIVE_MINUTES` (`60`, `1440`, `4320`, or `10080`)
 - `ASK_CONCURRENCY_PER_GUILD` (default `3`)
 - `ASK_EXECUTION_TIMEOUT_MS` (default `1200000`)
+- `GEMINI_API_KEY` (required for Gemini execution)
 - `CLAUDE_CODE_OAUTH_TOKEN` (optional for local/manual runs, required by the production redeploy helper for non-interactive Claude auth)
 
-Provider CLI auth state is persisted under `/data/home/appuser` inside the container. That keeps Claude, Codex, and Gemini authentication across container replacement, because production mounts `/data` from the persistent disk.
+Provider CLI auth state is persisted under `/data/home/appuser` inside the container. That keeps Claude and Codex authentication across container replacement, because production mounts `/data` from the persistent disk. Gemini execution uses `GEMINI_API_KEY` instead of persisted OAuth state.
 
 ## Local development
 
@@ -145,7 +146,7 @@ docker run --rm \
   actuarius:latest
 ```
 
-If you authenticate Claude interactively once inside a container with the `/data` volume mounted, that persisted state is also reused on later starts. Codex and Gemini CLI auth are stored under the same persisted home tree.
+If you authenticate Claude interactively once inside a container with the `/data` volume mounted, that persisted state is also reused on later starts. Codex CLI auth is stored under the same persisted home tree. Gemini requires `GEMINI_API_KEY`.
 
 ## Production operations (GCP VM)
 
