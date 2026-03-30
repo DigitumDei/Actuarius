@@ -28,4 +28,4 @@ claude_oauth_token = "replace_me"
 # Enable Codex/Gemini CLI providers for /ask
 enable_codex_execution  = true
 enable_gemini_execution = true
-google_genai_use_gca    = true
+gemini_api_key          = "replace_me"

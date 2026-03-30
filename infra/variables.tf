@@ -87,8 +87,9 @@ variable "enable_gemini_execution" {
   description = "Enable Gemini CLI execution for /ask requests"
 }
 
-variable "google_genai_use_gca" {
-  type        = bool
-  default     = false
-  description = "Set GOOGLE_GENAI_USE_GCA=true for Gemini CLI authentication via GCA"
+variable "gemini_api_key" {
+  type        = string
+  sensitive   = true
+  default     = ""
+  description = "Gemini API key required when Gemini execution is enabled"
 }
