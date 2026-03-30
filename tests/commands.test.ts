@@ -8,6 +8,7 @@ describe("command registration", () => {
     expect(names).toContain("cleanup");
     expect(names).toContain("issues");
     expect(names).toContain("delete");
+    expect(names).not.toContain("gemini-oauth-file");
   });
 
   it("registers /issues with mode and issue options", () => {

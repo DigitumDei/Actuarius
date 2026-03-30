@@ -84,6 +84,7 @@ function createBot(dbOverrides: Record<string, unknown> = {}): ActuariusBot {
     githubAppInstallationId: undefined,
     gitUserName: undefined,
     gitUserEmail: undefined,
+    geminiApiKey: undefined,
     databasePath: ":memory:",
     reposRootPath: "/data/repos",
     githubCliConfigPath: "/data/.gh",
@@ -907,5 +908,47 @@ describe("ActuariusBot review command", () => {
     expect(runAdversarialReview).toHaveBeenCalledWith(expect.objectContaining({
       maxConsensusRounds: 4
     }));
+  });
+});
+
+describe("ActuariusBot model-select command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("rejects Gemini when GEMINI_API_KEY is whitespace only", async () => {
+    const bot = createBot({
+      setGuildModelConfig: vi.fn(),
+      addModelToHistory: vi.fn()
+    });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "provider") {
+            return "gemini";
+          }
+
+          if (name === "model") {
+            return null;
+          }
+
+          return null;
+        })
+      }
+    });
+
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true,
+      geminiApiKey: "   "
+    };
+
+    await (bot as any).handleModelSelect(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.",
+      ephemeral: true
+    });
   });
 });

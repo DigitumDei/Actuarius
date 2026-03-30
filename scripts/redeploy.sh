@@ -60,7 +60,7 @@ if [ -z "$ASK_CONCURRENCY" ];        then echo "FATAL: env-ask-concurrency is no
 
 ENABLE_CODEX=$(get_meta "env-enable-codex-execution" || true)
 ENABLE_GEMINI=$(get_meta "env-enable-gemini-execution" || true)
-GOOGLE_GENAI_USE_GCA=$(get_meta "env-google-genai-use-gca" || true)
+GEMINI_API_KEY=$(get_meta "env-gemini-api-key" || true)
 
 EXTRA_ARGS=()
 if [ -n "$GUILD_ID" ]; then
@@ -84,8 +84,8 @@ fi
 if [ "$ENABLE_GEMINI" = "true" ]; then
   EXTRA_ARGS+=(-e "ENABLE_GEMINI_EXECUTION=true")
 fi
-if [ "$GOOGLE_GENAI_USE_GCA" = "true" ]; then
-  EXTRA_ARGS+=(-e "GOOGLE_GENAI_USE_GCA=true")
+if [ -n "$GEMINI_API_KEY" ]; then
+  EXTRA_ARGS+=(-e "GEMINI_API_KEY=$GEMINI_API_KEY")
 fi
 
 docker pull "$IMAGE"

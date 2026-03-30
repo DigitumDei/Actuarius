@@ -500,9 +500,6 @@ export class ActuariusBot {
       case "codex-auth":
         await this.handleCodexAuth(interaction);
         return;
-      case "gemini-oauth-file":
-        await this.handleGeminiOauthFile(interaction);
-        return;
       case "delete":
         await this.handleDelete(interaction);
         return;
@@ -1048,6 +1045,14 @@ export class ActuariusBot {
       return;
     }
 
+    if (provider === "gemini" && !this.config.geminiApiKey?.trim()) {
+      await interaction.reply({
+        content: "Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.",
+        ephemeral: true
+      });
+      return;
+    }
+
     this.db.upsertGuild(interaction.guild.id, interaction.guild.name);
     this.db.setGuildModelConfig(interaction.guildId, provider, model, interaction.user.id);
 
@@ -1133,18 +1138,6 @@ export class ActuariusBot {
       logLabel: "Codex credentials written",
       logCommand: "codex-auth",
       successMessage: "Codex credentials saved. `/ask` requests with the Codex provider should now work."
-    });
-  }
-
-  private async handleGeminiOauthFile(interaction: ChatInputCommandInteraction): Promise<void> {
-    await this.handleCredentialFileUpload(interaction, {
-      enabledFlag: this.config.enableGeminiExecution,
-      disabledMessage: "Gemini execution is not enabled on this instance. Set `ENABLE_GEMINI_EXECUTION=true` to enable it.",
-      permissionLabel: "Gemini",
-      credPath: join(homedir(), ".gemini", "oauth_creds.json"),
-      logLabel: "Gemini OAuth credentials written",
-      logCommand: "gemini-oauth-file",
-      successMessage: "Gemini OAuth credentials saved. `/ask` requests with the Gemini provider should now work."
     });
   }
 
