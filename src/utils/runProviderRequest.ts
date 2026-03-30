@@ -106,7 +106,9 @@ export async function runProviderRequest(
     }
 
     const stderrLines = nodeError.stderr?.trim().split("\n") ?? [];
-    const stderrHint = [...stderrLines].reverse().find((line: string) => line.trim().length > 0);
+    const stderrHint = [...stderrLines].reverse().find(
+      (line: string) => line.trim().length > 0 && !line.includes("[object Object]")
+    );
     const detail = stderrHint ? `${message}: ${stderrHint}` : message;
     throw config.makeError(config.failedCode, detail);
   }
