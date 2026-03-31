@@ -799,6 +799,14 @@ export async function runAdversarialReview(input: {
       const successfulCritiqueLabels = new Set(critiqueResults.map((c) => c.reviewer));
       activeReviewers = activeReviewers.filter((reviewer) => successfulCritiqueLabels.has(reviewer.label));
 
+      if (activeReviewers.length === 0) {
+        input.logger.warn(
+          { round },
+          "All critiques failed; no active reviewers remain. Proceeding to summarizer with collected data."
+        );
+        break;
+      }
+
       checkBudget();
       const judgeRawText = await input.judge.run({
         prompt: buildJudgePrompt({

@@ -374,6 +374,98 @@ describe("adversarialReviewService", () => {
     ]);
     expect(result.rawResult.judgeRounds).toHaveLength(2);
   });
+
+  it("returns a partial result when all critiques fail in a round instead of throwing INSUFFICIENT_REVIEWERS", async () => {
+    mockGetReviewDiff.mockResolvedValue({
+      baseBranch: "main",
+      baseRef: "origin/main",
+      headRef: "ask/51-123",
+      headSha: "deadbeef",
+      changedFiles: ["src/discord/bot.ts"],
+      diffText: "diff --git a/src/discord/bot.ts b/src/discord/bot.ts\n"
+    });
+
+    const analyzer = {
+      provider: "claude" as const,
+      label: "Claude",
+      run: vi.fn(async () => "Summary\n- queue behavior")
+    };
+    const reviewers = [
+      {
+        provider: "claude" as const,
+        label: "Claude",
+        run: vi.fn(async () => "Blocking Issues\n- None")
+      },
+      {
+        provider: "gemini" as const,
+        label: "Gemini",
+        run: vi.fn(async () => "Missing Tests\n- Add coverage")
+      }
+    ];
+    const judge = {
+      provider: "codex" as const,
+      label: "Codex",
+      run: vi.fn(async () =>
+        JSON.stringify({ consensusReached: false, consensusSummary: "No consensus.", reviewerGuidance: [] })
+      )
+    };
+    const summarizer = {
+      provider: "gemini" as const,
+      label: "Gemini",
+      run: vi.fn(async () =>
+        JSON.stringify({
+          executiveSummary: "Partial review — critiques unavailable.",
+          blockingIssues: [],
+          nonBlockingIssues: [],
+          missingTests: [],
+          disputedIssues: [],
+          outstandingConcerns: [],
+          verdict: "ready_for_pr"
+        })
+      )
+    };
+
+    // Reviewer stage succeeds; critique stage always rejects for all reviewers
+    let reviewerCalls = 0;
+    for (const reviewer of reviewers) {
+      const original = reviewer.run;
+      reviewer.run = vi.fn(async (args: Parameters<typeof original>[0]) => {
+        reviewerCalls++;
+        if (reviewerCalls > reviewers.length) throw new Error("provider capacity exceeded");
+        return original(args);
+      });
+    }
+
+    const result = await runAdversarialReview({
+      db: {
+        createReviewRun: vi.fn().mockReturnValue({ id: 9 }),
+        completeReviewRun: vi.fn()
+      } as never,
+      logger: pino({ level: "silent" }),
+      requestId: 51,
+      threadId: "thread-51",
+      repoFullName: "digitumdei/actuarius",
+      branchName: "ask/51-123",
+      worktreePath: join(tempRoot, "worktree"),
+      artifactRootPath: join(tempRoot, "artifacts"),
+      threadHistory: "[User]: Add feature X\n\n[Assistant]: Done.",
+      analyzer,
+      reviewers,
+      judge,
+      summarizer,
+      stageTimeoutMs: 30_000,
+      totalTimeoutMs: 30_000,
+      maxConsensusRounds: 3
+    });
+
+    // Should succeed with partial result, not throw INSUFFICIENT_REVIEWERS
+    expect(result.rawResult.reviewers.length).toBeGreaterThan(0);
+    expect(result.rawResult.critiques).toEqual([]);
+    // Summarizer must have been called with the reviewer outputs collected before critiques failed
+    expect(summarizer.run).toHaveBeenCalledOnce();
+    // Judge should not have been called — we broke out before reaching it
+    expect(judge.run).not.toHaveBeenCalled();
+  });
 });
 
 describe("renderReviewMarkdown", () => {
