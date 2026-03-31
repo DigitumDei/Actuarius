@@ -89,6 +89,7 @@ export async function runProviderRequest(
       const combined = [nodeError.stderr, nodeError.stdout, message].filter(Boolean).join("\n");
       if (config.authFailurePattern.test(combined)) {
         const hint = config.authHint ? ` ${config.authHint}` : "";
+        logger.warn({ stderr: nodeError.stderr, stdout: nodeError.stdout?.slice(0, 1000) }, `${config.logLabel} auth failure pattern matched on process error — logging output to assist diagnosis`);
         throw config.makeError(config.notAuthenticatedCode, `${config.logLabel} is not authenticated.${hint}`);
       }
     }
@@ -123,6 +124,7 @@ export async function runProviderRequest(
     const combined = [stdout, stderr].join("\n");
     if (config.authFailurePattern.test(combined)) {
       const hint = config.authHint ? ` ${config.authHint}` : "";
+      logger.warn({ stdout: stdout.slice(0, 1000), stderr }, `${config.logLabel} auth failure pattern matched on clean exit — logging output to assist diagnosis`);
       throw config.makeError(config.notAuthenticatedCode, `${config.logLabel} is not authenticated.${hint}`);
     }
   }
