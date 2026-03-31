@@ -26,6 +26,18 @@ On Container-Optimized OS, `blkid` may return false on a freshly attached disk (
 
 **Rule:** Never use `blkid` as the sole guard before formatting a disk. Always try mount first.
 
+## Updating `scripts/redeploy.sh` requires a manual refresh on the VM
+
+`infra/startup.sh` fetches `scripts/redeploy.sh` from VM metadata at boot and saves it to `/var/redeploy.sh`. When Terraform updates the `env-redeploy-script` metadata key (e.g. adding a new env var), the VM is not rebooted, so `/var/redeploy.sh` stays stale.
+
+**Fix:** After a `terraform apply` that changes `scripts/redeploy.sh`, refresh the script on the VM before running it:
+```bash
+sudo bash -c "curl -sf -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/attributes/env-redeploy-script' > /var/redeploy.sh"
+sudo bash /var/redeploy.sh
+```
+
+**Rule:** Any new env var added to `scripts/redeploy.sh` won't be picked up by a running VM until the script is manually refreshed or the VM is rebooted.
+
 ## Single-guild deployment model
 
 Actuarius is one instance per Discord guild. Multi-guild from a single instance is not supported and would be a major architectural change. Do not add multi-guild abstractions or per-guild isolation for shared resources (credentials, toolchains, etc.).
