@@ -4,7 +4,12 @@ import type { Logger } from "pino";
 import type { AppConfig } from "../config.js";
 import type { AppDatabase } from "../db/database.js";
 import type { InstallRequestRow, InstallScope } from "../db/types.js";
-import { getInstallerPackage, listInstallerPackages } from "./installerRegistry.js";
+import { buildRepoCheckoutPath } from "./gitWorkspaceService.js";
+import {
+  getInstallerPackageDefinition,
+  listInstallerPackages,
+  resolveInstallerPackage
+} from "./installerRegistry.js";
 import { spawnCollect } from "../utils/spawnCollect.js";
 
 const INSTALL_BUFFER_LIMIT = 4 * 1024 * 1024;
@@ -14,6 +19,8 @@ export class InstallServiceError extends Error {
     | "UNKNOWN_PACKAGE"
     | "UNSUPPORTED_SCOPE"
     | "INVALID_SCOPE"
+    | "CONFIG_NOT_FOUND"
+    | "CONFIG_INVALID"
     | "INSTALL_FAILED"
     | "INSTALL_UNAVAILABLE"
     | "VERIFY_FAILED";
@@ -23,6 +30,8 @@ export class InstallServiceError extends Error {
       | "UNKNOWN_PACKAGE"
       | "UNSUPPORTED_SCOPE"
       | "INVALID_SCOPE"
+      | "CONFIG_NOT_FOUND"
+      | "CONFIG_INVALID"
       | "INSTALL_FAILED"
       | "INSTALL_UNAVAILABLE"
       | "VERIFY_FAILED",
@@ -68,7 +77,20 @@ export class InstallService {
     requestedByUserId: string;
     approvedByUserId: string;
   }): InstallRequestRow {
-    const pkg = getInstallerPackage(input.packageId);
+    const sourceRoot = this.getInstallSourceRoot({
+      repoId: input.repoId,
+      scope: input.scope,
+      requestId: input.requestId ?? null
+    });
+
+    let pkg: ReturnType<typeof resolveInstallerPackage>;
+    try {
+      pkg = resolveInstallerPackage(input.packageId, sourceRoot);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Install config could not be resolved.";
+      throw new InstallServiceError(message.startsWith("No supported") ? "CONFIG_NOT_FOUND" : "CONFIG_INVALID", message);
+    }
+
     if (!pkg) {
       throw new InstallServiceError("UNKNOWN_PACKAGE", `Package \`${input.packageId}\` is not allowlisted.`);
     }
@@ -92,7 +114,7 @@ export class InstallService {
       requestId: input.requestId ?? null,
       threadId: input.threadId ?? null,
       packageId: input.packageId,
-      packageVersion: pkg.version,
+      packageVersion: pkg.packageVersion,
       scope: input.scope,
       status: "approved",
       requestedByUserId: input.requestedByUserId,
@@ -113,12 +135,12 @@ export class InstallService {
       throw new InstallServiceError("INSTALL_FAILED", `Install request #${installRequestId} was not found.`);
     }
 
-    const pkg = getInstallerPackage(installRequest.package_id);
+    const pkg = getInstallerPackageDefinition(installRequest.package_id);
     if (!pkg) {
       throw new InstallServiceError("UNKNOWN_PACKAGE", `Package \`${installRequest.package_id}\` is not allowlisted.`);
     }
 
-    const plan = pkg.buildPlan(installRequest.install_root);
+    const plan = pkg.buildPlan(installRequest.install_root, installRequest.package_version);
     const binDir = join(plan.installRoot, "bin");
     const env = this.mergeInstallEnvironment(plan.envVars, [binDir]);
     const logs: string[] = [];
@@ -278,6 +300,29 @@ export class InstallService {
     }
 
     return join(this.config.installsRootPath, "request", input.threadId, input.packageId);
+  }
+
+  private getInstallSourceRoot(input: { repoId: number; scope: InstallScope; requestId?: number | null }): string {
+    if (input.scope === "request") {
+      const requestId = input.requestId;
+      if (!requestId) {
+        throw new InstallServiceError("INVALID_SCOPE", "Request-scoped installs require an active request.");
+      }
+
+      const request = this.db.getRequestById(requestId);
+      if (!request?.worktree_path) {
+        throw new InstallServiceError("INVALID_SCOPE", "Request-scoped installs require a tracked worktree.");
+      }
+
+      return request.worktree_path;
+    }
+
+    const repo = this.db.getRepoById(input.repoId);
+    if (!repo) {
+      throw new InstallServiceError("INSTALL_FAILED", `Repository #${input.repoId} was not found.`);
+    }
+
+    return buildRepoCheckoutPath(this.config.reposRootPath, repo.owner, repo.repo);
   }
 
   private mergeInstallEnvironment(envVars: Record<string, string>, pathEntries: string[]): NodeJS.ProcessEnv {

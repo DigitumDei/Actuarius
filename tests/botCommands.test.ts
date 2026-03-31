@@ -1050,6 +1050,7 @@ describe("ActuariusBot install command", () => {
     const runInstall = vi.fn().mockResolvedValue({
       id: 55,
       package_id: "npm-prettier",
+      package_version: "3",
       bin_path: "/data/tool-installs/request/thread-1/npm-prettier/bin"
     });
     (bot as any).installService = {
@@ -1082,7 +1083,7 @@ describe("ActuariusBot install command", () => {
     });
     expect(runInstall).toHaveBeenCalledWith(55);
     expect(interaction.editReply).toHaveBeenCalledWith(
-      "Installed `npm-prettier` in `request` scope.\nInstall request: #55\nPATH prefix: `/data/tool-installs/request/thread-1/npm-prettier/bin`"
+      "Installed `npm-prettier@3` in `request` scope.\nInstall request: #55\nPATH prefix: `/data/tool-installs/request/thread-1/npm-prettier/bin`"
     );
   });
 });

@@ -1405,7 +1405,7 @@ export class ActuariusBot {
 
       await interaction.editReply(
         [
-          `Installed \`${completedInstall.package_id}\` in \`${scope}\` scope.`,
+          `Installed \`${completedInstall.package_id}@${completedInstall.package_version}\` in \`${scope}\` scope.`,
           `Install request: #${completedInstall.id}`,
           completedInstall.bin_path ? `PATH prefix: \`${completedInstall.bin_path}\`` : "PATH prefix: (none)"
         ].join("\n")

@@ -248,6 +248,19 @@ export class AppDatabase {
     };
   }
 
+  public getRepoById(repoId: number): RepoRow | undefined {
+    const row = this.db.prepare("SELECT * FROM repos WHERE id = ?").get(repoId) as (RepoRow & { id: number | bigint }) | undefined;
+
+    if (!row) {
+      return undefined;
+    }
+
+    return {
+      ...row,
+      id: toNumber(row.id)
+    };
+  }
+
   public listReposByGuild(guildId: string): RepoRow[] {
     const rows = this.db.prepare("SELECT * FROM repos WHERE guild_id = ? ORDER BY created_at ASC").all(guildId) as unknown as Array<
       RepoRow & { id: number | bigint }
@@ -401,6 +414,14 @@ export class AppDatabase {
     const row = this.db
       .prepare("SELECT * FROM requests WHERE thread_id = ? ORDER BY id DESC LIMIT 1")
       .get(threadId) as (RequestRow & { id: number | bigint; repo_id: number | bigint }) | undefined;
+
+    return this.mapRequestRow(row);
+  }
+
+  public getRequestById(requestId: number): RequestRow | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM requests WHERE id = ?")
+      .get(requestId) as (RequestRow & { id: number | bigint; repo_id: number | bigint }) | undefined;
 
     return this.mapRequestRow(row);
   }

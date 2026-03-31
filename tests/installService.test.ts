@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import pino from "pino";
 import { AppDatabase } from "../src/db/database.js";
@@ -27,10 +30,15 @@ function createInMemoryDb(): AppDatabase {
 describe("InstallService", () => {
   let db: AppDatabase;
   let service: InstallService;
+  let reposRootPath: string;
+  let repoCheckoutPath: string;
 
   beforeEach(() => {
     vi.resetAllMocks();
     db = createInMemoryDb();
+    reposRootPath = mkdtempSync(join(tmpdir(), "actuarius-install-repos-"));
+    repoCheckoutPath = join(reposRootPath, "octocat", "hello-world");
+    mkdirSync(repoCheckoutPath, { recursive: true });
     service = new InstallService(
       {
         discordToken: "token",
@@ -45,7 +53,7 @@ describe("InstallService", () => {
         gitUserEmail: undefined,
         geminiApiKey: undefined,
         databasePath: ":memory:",
-        reposRootPath: "/data/repos",
+        reposRootPath,
         installsRootPath: "/data/tool-installs",
         githubCliConfigPath: "/data/.gh",
         logLevel: "info",
@@ -60,6 +68,12 @@ describe("InstallService", () => {
     );
   });
 
+  function writeRepoFile(relativePath: string, content: string): void {
+    const filePath = join(repoCheckoutPath, relativePath);
+    mkdirSync(join(filePath, ".."), { recursive: true });
+    writeFileSync(filePath, content, "utf8");
+  }
+
   it("creates approved install requests in scoped directories", () => {
     const request = db.createRequest({
       guildId: "guild-1",
@@ -70,6 +84,7 @@ describe("InstallService", () => {
       prompt: "install rust",
       status: "queued"
     });
+    db.updateRequestWorkspace(request.id, "/tmp/worktree-thread-1", "ask/1-123");
 
     const install = service.createApprovedInstallRequest({
       guildId: "guild-1",
@@ -164,6 +179,7 @@ describe("InstallService", () => {
       prompt: "install prettier",
       status: "queued"
     });
+    db.updateRequestWorkspace(request.id, "/tmp/worktree-thread-run", "ask/2-123");
 
     const install = service.createApprovedInstallRequest({
       guildId: "guild-1",
@@ -264,5 +280,95 @@ describe("InstallService", () => {
         approvedByUserId: "admin-1"
       })
     ).toThrowError(expect.objectContaining({ code: "INVALID_SCOPE" }));
+  });
+
+  it("resolves java-temurin from .tool-versions before .java-version", () => {
+    writeRepoFile(".tool-versions", "java temurin-21.0.3+9\n");
+    writeRepoFile(".java-version", "17\n");
+
+    const install = service.createApprovedInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "java-temurin",
+      scope: "repo",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1"
+    });
+
+    expect(install.package_version).toBe("21.0.3+9");
+  });
+
+  it("resolves gradle from wrapper metadata when .tool-versions is absent", () => {
+    writeRepoFile(
+      "gradle/wrapper/gradle-wrapper.properties",
+      "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n"
+    );
+
+    const install = service.createApprovedInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "gradle",
+      scope: "repo",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1"
+    });
+
+    expect(install.package_version).toBe("8.10");
+  });
+
+  it("resolves request-scoped Kotlin installs from the tracked worktree", () => {
+    const request = db.createRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      channelId: "channel-1",
+      threadId: "thread-kotlin",
+      userId: "user-1",
+      prompt: "install kotlin",
+      status: "queued"
+    });
+    const worktreePath = mkdtempSync(join(tmpdir(), "actuarius-install-worktree-"));
+    writeFileSync(join(worktreePath, "gradle.properties"), "actuarius.kotlin.version=2.1.21\n", "utf8");
+    db.updateRequestWorkspace(request.id, worktreePath, "ask/1-123");
+
+    const install = service.createApprovedInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      requestId: request.id,
+      threadId: "thread-kotlin",
+      packageId: "kotlin-compiler",
+      scope: "request",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1"
+    });
+
+    expect(install.package_version).toBe("2.1.21");
+  });
+
+  it("fails with CONFIG_NOT_FOUND when repo-config-backed packages have no supported version source", () => {
+    expect(() =>
+      service.createApprovedInstallRequest({
+        guildId: "guild-1",
+        repoId: 1,
+        packageId: "java-temurin",
+        scope: "repo",
+        requestedByUserId: "user-1",
+        approvedByUserId: "admin-1"
+      })
+    ).toThrowError(expect.objectContaining({ code: "CONFIG_NOT_FOUND" }));
+  });
+
+  it("fails with CONFIG_INVALID when repo config contains an unsupported version shape", () => {
+    writeRepoFile(".java-version", "latest\n");
+
+    expect(() =>
+      service.createApprovedInstallRequest({
+        guildId: "guild-1",
+        repoId: 1,
+        packageId: "java-temurin",
+        scope: "repo",
+        requestedByUserId: "user-1",
+        approvedByUserId: "admin-1"
+      })
+    ).toThrowError(expect.objectContaining({ code: "CONFIG_INVALID" }));
   });
 });

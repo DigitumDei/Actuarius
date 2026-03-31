@@ -46,7 +46,10 @@ describe("command registration", () => {
         required: true,
         choices: expect.arrayContaining([
           { name: "rustup-default-stable", value: "rustup-default-stable" },
-          { name: "npm-prettier", value: "npm-prettier" }
+          { name: "npm-prettier", value: "npm-prettier" },
+          { name: "java-temurin", value: "java-temurin" },
+          { name: "gradle", value: "gradle" },
+          { name: "kotlin-compiler", value: "kotlin-compiler" }
         ])
       }),
       expect.objectContaining({
