@@ -87,6 +87,7 @@ function createBot(dbOverrides: Record<string, unknown> = {}): ActuariusBot {
     geminiApiKey: undefined,
     databasePath: ":memory:",
     reposRootPath: "/data/repos",
+    installsRootPath: "/data/tool-installs",
     githubCliConfigPath: "/data/.gh",
     logLevel: "info",
     threadAutoArchiveMinutes: 1440,

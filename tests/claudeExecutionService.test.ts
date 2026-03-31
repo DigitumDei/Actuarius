@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { extractTextFromClaudeJson } from "../src/services/claudeExecutionService.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import pino from "pino";
+
+vi.mock("../src/utils/spawnCollect.js");
+
+const { spawnCollect } = await import("../src/utils/spawnCollect.js");
+const mockSpawnCollect = vi.mocked(spawnCollect);
+const { extractTextFromClaudeJson, runClaudeRequest } = await import("../src/services/claudeExecutionService.js");
+
+const logger = pino({ level: "silent" });
 
 describe("extractTextFromClaudeJson", () => {
   it("extracts direct result field", () => {
@@ -18,3 +26,22 @@ describe("extractTextFromClaudeJson", () => {
   });
 });
 
+describe("runClaudeRequest", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("passes scoped env vars to the Claude CLI", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "{\"result\":\"ok\"}", stderr: "" });
+
+    await runClaudeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, env: { PATH: "/scoped/bin" } }, logger);
+
+    expect(mockSpawnCollect).toHaveBeenCalledWith(
+      "claude",
+      ["-p", "hello", "--output-format", "json", "--permission-mode", "bypassPermissions"],
+      expect.objectContaining({
+        env: { PATH: "/scoped/bin" }
+      })
+    );
+  });
+});

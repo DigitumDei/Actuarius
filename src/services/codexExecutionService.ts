@@ -6,6 +6,7 @@ export interface CodexExecutionInput {
   cwd: string;
   timeoutMs: number;
   model?: string;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface CodexExecutionResult {

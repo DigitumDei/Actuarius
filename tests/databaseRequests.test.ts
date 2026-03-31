@@ -144,4 +144,71 @@ describe("AppDatabase request workspace state", () => {
       artifact_path: "docs/reviews/1/review.md"
     });
   });
+
+  it("persists install requests and resolves scoped successful installs", () => {
+    const request = db.createRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      channelId: "channel-1",
+      threadId: "thread-install",
+      userId: "user-1",
+      prompt: "install tool",
+      status: "install_requested"
+    });
+    db.updateRequestWorkspace(request.id, "/tmp/worktree-install", "ask/71-123");
+
+    const repoInstall = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "npm-prettier",
+      packageVersion: "3",
+      scope: "repo",
+      status: "approved",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1",
+      installRoot: "/data/tool-installs/repo/1/npm-prettier"
+    });
+    db.updateInstallRequest({
+      installRequestId: repoInstall.id,
+      status: "succeeded",
+      binPath: "/data/tool-installs/repo/1/npm-prettier/bin",
+      envJson: "{}",
+      logs: "ok",
+      completedAt: "2026-03-31T00:00:00.000Z"
+    });
+
+    const requestInstall = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      requestId: request.id,
+      threadId: "thread-install",
+      packageId: "rustup-default-stable",
+      packageVersion: "stable",
+      scope: "request",
+      status: "approved",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1",
+      installRoot: "/data/tool-installs/request/thread-install/rustup-default-stable"
+    });
+    db.updateInstallRequest({
+      installRequestId: requestInstall.id,
+      status: "succeeded",
+      binPath: "/data/tool-installs/request/thread-install/rustup-default-stable/bin",
+      envJson: "{\"RUSTUP_TOOLCHAIN\":\"stable\"}",
+      logs: "ok",
+      completedAt: "2026-03-31T00:00:00.000Z"
+    });
+
+    expect(db.getInstallRequestById(requestInstall.id)).toMatchObject({
+      request_id: request.id,
+      thread_id: "thread-install",
+      package_id: "rustup-default-stable",
+      status: "succeeded"
+    });
+
+    expect(db.listSuccessfulInstallRequestsForScope({ repoId: 1, threadId: "thread-install" })).toMatchObject([
+      expect.objectContaining({ id: repoInstall.id, scope: "repo", package_id: "npm-prettier" }),
+      expect.objectContaining({ id: requestInstall.id, scope: "request", package_id: "rustup-default-stable" })
+    ]);
+  });
 });

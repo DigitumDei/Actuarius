@@ -6,6 +6,7 @@ export interface ClaudeExecutionInput {
   cwd: string;
   timeoutMs: number;
   model?: string;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface ClaudeExecutionResult {
@@ -71,6 +72,7 @@ export async function runClaudeRequest(input: ClaudeExecutionInput, logger: Logg
   try {
     const { stdout, stderr } = await spawnCollect("claude", args, {
       cwd: input.cwd,
+      ...(input.env ? { env: input.env } : {}),
       timeoutMs: input.timeoutMs,
       maxBuffer: 4 * 1024 * 1024,
     });

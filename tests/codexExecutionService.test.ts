@@ -72,6 +72,18 @@ describe("runCodexRequest", () => {
     );
   });
 
+  it("passes a scoped environment through to the subprocess", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, env: { PATH: "/scoped/bin" } }, logger);
+    expect(mockSpawnCollect).toHaveBeenCalledWith(
+      "codex",
+      ["exec", "hello", "--dangerously-bypass-approvals-and-sandbox"],
+      expect.objectContaining({
+        env: { PATH: "/scoped/bin" }
+      })
+    );
+  });
+
   it("throws CODEX_UNAVAILABLE when binary is not found (ENOENT)", async () => {
     const err = Object.assign(new Error("spawn codex ENOENT"), { code: "ENOENT" });
     mockSpawnCollect.mockRejectedValueOnce(err);

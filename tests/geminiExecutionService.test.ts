@@ -48,6 +48,7 @@ describe("runGeminiRequest", () => {
   });
 
   it("fails before spawning when GEMINI_API_KEY is not set", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "");
     await expect(runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
       code: "NOT_AUTHENTICATED",
       name: "GeminiExecutionError",
@@ -63,5 +64,20 @@ describe("runGeminiRequest", () => {
     await runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
 
     expect(mockSpawnCollect).toHaveBeenCalledWith("gemini", ["-p", "hello", "--yolo"], expect.any(Object));
+  });
+
+  it("passes scoped env vars to the Gemini CLI", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+
+    await runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, env: { PATH: "/scoped/bin" } }, logger);
+
+    expect(mockSpawnCollect).toHaveBeenCalledWith(
+      "gemini",
+      ["-p", "hello", "--yolo"],
+      expect.objectContaining({
+        env: { PATH: "/scoped/bin" }
+      })
+    );
   });
 });

@@ -53,6 +53,7 @@ import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecut
 import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
 import { GeminiExecutionError, runGeminiRequest } from "../services/geminiExecutionService.js";
 import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
+import { InstallService, InstallServiceError } from "../services/installService.js";
 import { createRequestWorktree, deleteRequestBranch, RequestWorktreeError } from "../services/requestWorktreeService.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
@@ -292,6 +293,7 @@ export class ActuariusBot {
   private readonly logger: pino.Logger;
   private readonly db: AppDatabase;
   private readonly requestQueue: RequestExecutionQueue;
+  private readonly installService: InstallService;
 
   public constructor(config: AppConfig, logger: pino.Logger, db: AppDatabase) {
     this.config = config;
@@ -306,6 +308,7 @@ export class ActuariusBot {
         this.logger.debug({ guildId, event, running, pending }, "Request queue state changed");
       }
     );
+    this.installService = new InstallService(config, logger, db);
     this.client = new Client({
       // MessageContent is a privileged intent — must be enabled in the Discord Developer Portal
       intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
@@ -446,6 +449,7 @@ export class ActuariusBot {
       await this.runQueuedRequest({
         requestId: request.id,
         threadId: message.channelId,
+        repoId: repo.id,
         repo: { owner: repo.owner, repo: repo.repo, fullName: repo.full_name },
         prompt,
         provider,
@@ -481,6 +485,9 @@ export class ActuariusBot {
         return;
       case "ask":
         await this.handleAsk(interaction);
+        return;
+      case "install":
+        await this.handleInstall(interaction);
         return;
       case "bug":
         await this.handleIssueCreate(interaction, "bug");
@@ -1319,6 +1326,104 @@ export class ActuariusBot {
     await this.handleRepoCommand(interaction, { label: "request" });
   }
 
+  private async handleInstall(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to install tools.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const packageId = interaction.options.getString("package", true);
+    const scope = interaction.options.getString("scope", true);
+    if (scope !== "repo" && scope !== "request") {
+      await interaction.reply({ content: "Invalid install scope.", ephemeral: true });
+      return;
+    }
+
+    const repo = this.resolveRepoFromInteraction(interaction);
+    if (!repo) {
+      await interaction.reply({
+        content: "No connected repo could be resolved. Run this in a mapped repo channel or thread.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    let threadId: string | null = null;
+    let requestId: number | null = null;
+
+    if (scope === "request") {
+      if (!interaction.channel?.isThread()) {
+        await interaction.reply({
+          content: "Request-scoped installs must be run inside the request thread that should receive the tool.",
+          ephemeral: true
+        });
+        return;
+      }
+
+      const latestRequest = this.db.getLatestRequestWithWorkspaceByThreadId(interaction.channelId);
+      if (!latestRequest?.worktree_path) {
+        await interaction.reply({
+          content: "This thread does not have an active tracked worktree. Run `/ask` first before using request scope.",
+          ephemeral: true
+        });
+        return;
+      }
+
+      threadId = interaction.channelId;
+      requestId = latestRequest.id;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const installRequest = this.installService.createApprovedInstallRequest({
+        guildId: interaction.guildId,
+        repoId: repo.id,
+        requestId,
+        threadId,
+        packageId,
+        scope,
+        requestedByUserId: interaction.user.id,
+        approvedByUserId: interaction.user.id
+      });
+
+      const completedInstall = await this.runQueuedGuildTask(interaction.guildId, async () =>
+        this.installService.runInstall(installRequest.id)
+      );
+
+      await interaction.editReply(
+        [
+          `Installed \`${completedInstall.package_id}\` in \`${scope}\` scope.`,
+          `Install request: #${completedInstall.id}`,
+          completedInstall.bin_path ? `PATH prefix: \`${completedInstall.bin_path}\`` : "PATH prefix: (none)"
+        ].join("\n")
+      );
+    } catch (error) {
+      const message = this.describeExecutionError(error);
+      await interaction.editReply(`Install failed: ${message}`);
+    }
+  }
+
+  private async runQueuedGuildTask<T>(guildId: string, task: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.requestQueue.enqueue(guildId, async () => {
+        try {
+          resolve(await task());
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+  }
+
   private async handleRepoCommand(
     interaction: ChatInputCommandInteraction,
     options: {
@@ -1405,6 +1510,7 @@ export class ActuariusBot {
       await this.runQueuedRequest({
         requestId: request.id,
         threadId: thread.id,
+        repoId: repo.id,
         repo: {
           owner: repo.owner,
           repo: repo.repo,
@@ -1580,12 +1686,14 @@ Output the result of the command or the link to the created issue.`;
     cwd: string;
     timeoutMs?: number;
     model?: string;
+    env?: NodeJS.ProcessEnv;
   }): Promise<string> {
     const request = {
       prompt: input.prompt,
       cwd: input.cwd,
       timeoutMs: input.timeoutMs ?? this.config.askExecutionTimeoutMs,
-      ...(input.model ? { model: input.model } : {})
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.env ? { env: input.env } : {})
     };
 
     switch (input.provider) {
@@ -1790,6 +1898,7 @@ Output the result of the command or the link to the created issue.`;
   private async runQueuedRequest(input: {
     requestId: number;
     threadId: string;
+    repoId: number;
     repo: {
       owner: string;
       repo: string;
@@ -1896,6 +2005,10 @@ Output the result of the command or the link to the created issue.`;
         provider: input.provider,
         prompt: effectivePrompt,
         cwd: worktreePath,
+        env: this.installService.buildExecutionEnvironment({
+          repoId: input.repoId,
+          threadId: input.threadId
+        }).env,
         ...(input.model ? { model: input.model } : {})
       });
 
@@ -1954,6 +2067,10 @@ Output the result of the command or the link to the created issue.`;
     }
 
     if (error instanceof AdversarialReviewError) {
+      return error.message;
+    }
+
+    if (error instanceof InstallServiceError) {
       return error.message;
     }
 
