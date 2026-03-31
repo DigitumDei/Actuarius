@@ -175,23 +175,28 @@ export class AppDatabase {
       );
     `);
 
-    const installRequestColumns = [
-      "thread_id TEXT",
-      "package_version TEXT NOT NULL DEFAULT ''",
-      "approved_by_user_id TEXT",
-      "install_root TEXT NOT NULL DEFAULT ''",
-      "bin_path TEXT",
-      "env_json TEXT",
-      "logs TEXT",
-      "error_message TEXT",
-      "completed_at TEXT"
-    ];
+    const installRequestColumns = new Map([
+      ["thread_id", "TEXT"],
+      ["package_version", "TEXT NOT NULL DEFAULT ''"],
+      ["approved_by_user_id", "TEXT"],
+      ["install_root", "TEXT NOT NULL DEFAULT ''"],
+      ["bin_path", "TEXT"],
+      ["env_json", "TEXT"],
+      ["logs", "TEXT"],
+      ["error_message", "TEXT"],
+      ["completed_at", "TEXT"]
+    ]);
+    const existingInstallRequestColumns = new Set(
+      (
+        this.db.prepare("PRAGMA table_info(install_requests)").all() as Array<{
+          name: string;
+        }>
+      ).map((column) => column.name)
+    );
 
-    for (const column of installRequestColumns) {
-      try {
-        this.db.exec(`ALTER TABLE install_requests ADD COLUMN ${column}`);
-      } catch {
-        // Column already exists
+    for (const [columnName, columnDefinition] of installRequestColumns) {
+      if (!existingInstallRequestColumns.has(columnName)) {
+        this.db.exec(`ALTER TABLE install_requests ADD COLUMN ${columnName} ${columnDefinition}`);
       }
     }
   }
@@ -609,11 +614,11 @@ export class AppDatabase {
         `UPDATE install_requests
          SET status = ?,
              approved_by_user_id = COALESCE(?, approved_by_user_id),
-             bin_path = ?,
-             env_json = ?,
-             logs = ?,
-             error_message = ?,
-             completed_at = ?,
+             bin_path = COALESCE(?, bin_path),
+             env_json = COALESCE(?, env_json),
+             logs = COALESCE(?, logs),
+             error_message = COALESCE(?, error_message),
+             completed_at = COALESCE(?, completed_at),
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`
       )

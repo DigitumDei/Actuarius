@@ -68,7 +68,7 @@ describe("InstallService", () => {
       threadId: "thread-1",
       userId: "user-1",
       prompt: "install rust",
-      status: "install_requested"
+      status: "queued"
     });
 
     const install = service.createApprovedInstallRequest({
@@ -100,7 +100,7 @@ describe("InstallService", () => {
       threadId: "thread-1",
       userId: "user-1",
       prompt: "install rust",
-      status: "install_requested"
+      status: "queued"
     });
 
     const repoInstall = db.createInstallRequest({
@@ -162,7 +162,7 @@ describe("InstallService", () => {
       threadId: "thread-run",
       userId: "user-1",
       prompt: "install prettier",
-      status: "install_requested"
+      status: "queued"
     });
 
     const install = service.createApprovedInstallRequest({
@@ -186,5 +186,83 @@ describe("InstallService", () => {
       ["--version"],
       expect.any(Object)
     );
+  });
+
+  it("marks the install as failed when the install step process rejects", async () => {
+    const install = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "npm-prettier",
+      packageVersion: "3",
+      scope: "repo",
+      status: "approved",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1",
+      installRoot: "/data/tool-installs/repo/1/npm-prettier"
+    });
+
+    mockSpawnCollect.mockRejectedValueOnce(new Error("npm exploded"));
+
+    await expect(service.runInstall(install.id)).rejects.toMatchObject({
+      code: "INSTALL_FAILED",
+      message: expect.stringContaining("npm exploded")
+    });
+    expect(db.getInstallRequestById(install.id)).toMatchObject({
+      status: "failed",
+      error_message: expect.stringContaining("npm exploded")
+    });
+  });
+
+  it("wraps wrapper verification failures with VERIFY_FAILED and records the failure", async () => {
+    const install = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "npm-prettier",
+      packageVersion: "3",
+      scope: "repo",
+      status: "approved",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1",
+      installRoot: "/data/tool-installs/repo/1/npm-prettier"
+    });
+
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "installed", stderr: "" })
+      .mockRejectedValueOnce(new Error("wrapper verify exploded"));
+
+    await expect(service.runInstall(install.id)).rejects.toMatchObject({
+      code: "VERIFY_FAILED",
+      message: expect.stringContaining("wrapper verify exploded")
+    });
+    expect(db.getInstallRequestById(install.id)).toMatchObject({
+      status: "failed",
+      error_message: expect.stringContaining("wrapper verify exploded")
+    });
+  });
+
+  it("rejects unknown packages before creating an install request", () => {
+    expect(() =>
+      service.createApprovedInstallRequest({
+        guildId: "guild-1",
+        repoId: 1,
+        packageId: "unknown-tool",
+        scope: "repo",
+        requestedByUserId: "user-1",
+        approvedByUserId: "admin-1"
+      })
+    ).toThrowError(expect.objectContaining({ code: "UNKNOWN_PACKAGE" }));
+  });
+
+  it("rejects request-scoped installs without a thread id", () => {
+    expect(() =>
+      service.createApprovedInstallRequest({
+        guildId: "guild-1",
+        repoId: 1,
+        packageId: "npm-prettier",
+        scope: "request",
+        requestedByUserId: "user-1",
+        approvedByUserId: "admin-1"
+      })
+    ).toThrowError(expect.objectContaining({ code: "INVALID_SCOPE" }));
   });
 });

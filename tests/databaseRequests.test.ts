@@ -153,7 +153,7 @@ describe("AppDatabase request workspace state", () => {
       threadId: "thread-install",
       userId: "user-1",
       prompt: "install tool",
-      status: "install_requested"
+      status: "queued"
     });
     db.updateRequestWorkspace(request.id, "/tmp/worktree-install", "ask/71-123");
 
@@ -210,5 +210,42 @@ describe("AppDatabase request workspace state", () => {
       expect.objectContaining({ id: repoInstall.id, scope: "repo", package_id: "npm-prettier" }),
       expect.objectContaining({ id: requestInstall.id, scope: "request", package_id: "rustup-default-stable" })
     ]);
+  });
+
+  it("preserves nullable install request fields on partial updates", () => {
+    const install = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "npm-prettier",
+      packageVersion: "3",
+      scope: "repo",
+      status: "approved",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1",
+      installRoot: "/data/tool-installs/repo/1/npm-prettier"
+    });
+
+    db.updateInstallRequest({
+      installRequestId: install.id,
+      status: "succeeded",
+      binPath: "/data/tool-installs/repo/1/npm-prettier/bin",
+      envJson: "{}",
+      logs: "install ok",
+      errorMessage: "old error",
+      completedAt: "2026-03-31T00:00:00.000Z"
+    });
+    db.updateInstallRequest({
+      installRequestId: install.id,
+      status: "failed"
+    });
+
+    expect(db.getInstallRequestById(install.id)).toMatchObject({
+      status: "failed",
+      bin_path: "/data/tool-installs/repo/1/npm-prettier/bin",
+      env_json: "{}",
+      logs: "install ok",
+      error_message: "old error",
+      completed_at: "2026-03-31T00:00:00.000Z"
+    });
   });
 });

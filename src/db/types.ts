@@ -39,7 +39,6 @@ export type RequestStatus =
   | "running"
   | "succeeded"
   | "failed"
-  | "install_requested"
   | "install_approved"
   | "install_running"
   | "install_succeeded"

@@ -72,6 +72,9 @@ export class InstallService {
     if (!pkg) {
       throw new InstallServiceError("UNKNOWN_PACKAGE", `Package \`${input.packageId}\` is not allowlisted.`);
     }
+    if (input.scope !== "repo" && input.scope !== "request") {
+      throw new InstallServiceError("INVALID_SCOPE", `Install scope \`${input.scope}\` is not supported.`);
+    }
     if (!pkg.supportedScopes.includes(input.scope)) {
       throw new InstallServiceError("UNSUPPORTED_SCOPE", `Package \`${input.packageId}\` does not support \`${input.scope}\` scope.`);
     }
@@ -166,12 +169,22 @@ export class InstallService {
         await writeFile(wrapperPath, wrapper.scriptBody, "utf8");
         await chmod(wrapperPath, 0o755);
 
-        const { stdout, stderr } = await spawnCollect(wrapperPath, wrapper.verifyArgs, {
-          cwd: plan.installRoot,
-          env,
-          timeoutMs: this.config.askExecutionTimeoutMs,
-          maxBuffer: INSTALL_BUFFER_LIMIT
-        });
+        let stdout = "";
+        let stderr = "";
+        try {
+          ({ stdout, stderr } = await spawnCollect(wrapperPath, wrapper.verifyArgs, {
+            cwd: plan.installRoot,
+            env,
+            timeoutMs: this.config.askExecutionTimeoutMs,
+            maxBuffer: INSTALL_BUFFER_LIMIT
+          }));
+        } catch (error) {
+          const message = this.describeProcessError(wrapper.binaryName, error);
+          logs.push(`$ ${wrapper.binaryName} ${wrapper.verifyArgs.join(" ")}`);
+          logs.push(message);
+          throw new InstallServiceError("VERIFY_FAILED", message);
+        }
+
         logs.push(`$ ${wrapper.binaryName} ${wrapper.verifyArgs.join(" ")}`);
         if (stdout.trim()) {
           logs.push(stdout.trim());

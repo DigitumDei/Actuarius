@@ -64,6 +64,10 @@ const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
   gemini: "Gemini"
 };
 
+function isActiveRequestStatus(status: string): boolean {
+  return status === "queued" || status === "running" || status === "install_approved" || status === "install_running";
+}
+
 function clipForDiscord(input: string, maxLength: number): string {
   const text = input.trim();
   if (text.length <= maxLength) {
@@ -1240,7 +1244,7 @@ export class ActuariusBot {
       return;
     }
 
-    if (request.status === "queued" || request.status === "running") {
+    if (isActiveRequestStatus(request.status)) {
       await interaction.reply({ content: "This request is still running. Wait for it to finish before deleting the branch.", ephemeral: true });
       return;
     }
@@ -1815,7 +1819,7 @@ Output the result of the command or the link to the created issue.`;
       return;
     }
 
-    if (latestRequest.status === "running" || latestRequest.status === "queued") {
+    if (isActiveRequestStatus(latestRequest.status)) {
       await interaction.reply({
         content: "The latest request in this thread is still queued or running. Wait for it to finish before reviewing.",
         ephemeral: true
@@ -2001,14 +2005,16 @@ Output the result of the command or the link to the created issue.`;
         "Starting AI execution"
       );
 
+      const executionEnvironment = this.installService.buildExecutionEnvironment({
+        repoId: input.repoId,
+        threadId: input.threadId
+      });
+
       const resultText = await this.runProviderText({
         provider: input.provider,
         prompt: effectivePrompt,
         cwd: worktreePath,
-        env: this.installService.buildExecutionEnvironment({
-          repoId: input.repoId,
-          threadId: input.threadId
-        }).env,
+        ...(executionEnvironment.packages.length > 0 ? { env: executionEnvironment.env } : {}),
         ...(input.model ? { model: input.model } : {})
       });
 
