@@ -51,7 +51,8 @@ import zipfile
 url, archive_path, destination = sys.argv[1:4]
 os.makedirs(os.path.dirname(archive_path), exist_ok=True)
 tmp_archive = archive_path + ".tmp"
-with urllib.request.urlopen(url) as response, open(tmp_archive, "wb") as output:
+req = urllib.request.Request(url, headers={"User-Agent": "curl/8.0"})
+with urllib.request.urlopen(req) as response, open(tmp_archive, "wb") as output:
     shutil.copyfileobj(response, output)
 os.replace(tmp_archive, archive_path)
 
@@ -203,7 +204,8 @@ function resolveJavaVersion(repoRoot: string): string {
   }
 
   throw new Error(
-    "No supported Java version config was found. Checked `.tool-versions`, `.java-version`, and `gradle.properties` (`actuarius.java.version`)."
+    "No supported Java version config was found. Checked `.tool-versions`, `.java-version`, and `gradle.properties` (`actuarius.java.version`)." +
+      " To fix: add a `.java-version` file containing a major version (e.g. `21`), or add `actuarius.java.version=21` to `gradle.properties`."
   );
 }
 
@@ -246,7 +248,8 @@ function resolveGradleVersion(repoRoot: string): string {
   }
 
   throw new Error(
-    "No supported Gradle version config was found. Checked `.tool-versions`, `gradle/wrapper/gradle-wrapper.properties`, and `gradle.properties` (`actuarius.gradle.version`)."
+    "No supported Gradle version config was found. Checked `.tool-versions`, `gradle/wrapper/gradle-wrapper.properties`, and `gradle.properties` (`actuarius.gradle.version`)." +
+      " To fix: add `actuarius.gradle.version=8.7` to `gradle.properties`, or create a Gradle wrapper with `gradle wrapper`."
   );
 }
 
@@ -277,7 +280,8 @@ function resolveKotlinVersion(repoRoot: string): string {
   }
 
   throw new Error(
-    "No supported Kotlin version config was found. Checked `.tool-versions` and `gradle.properties` (`actuarius.kotlin.version` or `kotlin.version`)."
+    "No supported Kotlin version config was found. Checked `.tool-versions` and `gradle.properties` (`actuarius.kotlin.version` or `kotlin.version`)." +
+      " To fix: add `actuarius.kotlin.version=2.0.0` to `gradle.properties`, or add a `kotlin` entry to `.tool-versions`."
   );
 }
 
