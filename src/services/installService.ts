@@ -148,7 +148,6 @@ export class InstallService {
     this.db.updateInstallRequest({
       installRequestId,
       status: "running",
-      approvedByUserId: installRequest.approved_by_user_id,
       binPath: binDir
     });
     if (installRequest.request_id !== null) {

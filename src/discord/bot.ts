@@ -23,7 +23,7 @@ import {
 import type pino from "pino";
 import type { AppConfig } from "../config.js";
 import { AppDatabase } from "../db/database.js";
-import type { AiProvider, RepoRow } from "../db/types.js";
+import type { AiProvider, RepoRow, RequestStatus } from "../db/types.js";
 import { commandBuilders } from "./commands.js";
 import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
@@ -64,7 +64,7 @@ const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
   gemini: "Gemini"
 };
 
-function isActiveRequestStatus(status: string): boolean {
+function isActiveRequestStatus(status: RequestStatus): boolean {
   return status === "queued" || status === "running" || status === "install_approved" || status === "install_running";
 }
 

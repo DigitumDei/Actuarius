@@ -45,7 +45,7 @@ export type RequestStatus =
   | "install_failed";
 
 export type InstallScope = "repo" | "request";
-export type InstallRequestStatus = "requested" | "approved" | "running" | "succeeded" | "failed";
+export type InstallRequestStatus = "approved" | "running" | "succeeded" | "failed";
 
 export type ReviewRunStatus = "running" | "completed" | "failed";
 export type ReviewVerdict = "ready_for_pr" | "revise";
