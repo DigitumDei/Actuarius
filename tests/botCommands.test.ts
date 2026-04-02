@@ -87,6 +87,7 @@ function createBot(dbOverrides: Record<string, unknown> = {}): ActuariusBot {
     geminiApiKey: undefined,
     databasePath: ":memory:",
     reposRootPath: "/data/repos",
+    installsRootPath: "/data/tool-installs",
     githubCliConfigPath: "/data/.gh",
     logLevel: "info",
     threadAutoArchiveMinutes: 1440,
@@ -121,7 +122,13 @@ function createInteraction(overrides: Record<string, unknown> = {}) {
     guildId: "guild-1",
     id: "interaction-1",
     channelId: "thread-1",
-    channel: { isThread: () => true, parentId: "channel-1", send: vi.fn().mockResolvedValue(undefined) },
+    channel: {
+      isThread: () => true,
+      isTextBased: () => true,
+      isDMBased: () => false,
+      parentId: "channel-1",
+      send: vi.fn().mockResolvedValue(undefined)
+    },
     user: { id: "user-1" },
     memberPermissions: { has: vi.fn().mockReturnValue(false) },
     options: {
@@ -177,6 +184,28 @@ describe("ActuariusBot delete command", () => {
         thread_id: "thread-1",
         user_id: "user-1",
         status: "running",
+        branch_name: "ask/35-123",
+        worktree_path: "/tmp/worktree"
+      })
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleDelete(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "This request is still running. Wait for it to finish before deleting the branch.",
+      ephemeral: true
+    });
+  });
+
+  it("rejects delete while an install is actively using the worktree", async () => {
+    const bot = createBot({
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 35,
+        channel_id: "channel-1",
+        thread_id: "thread-1",
+        user_id: "user-1",
+        status: "install_running",
         branch_name: "ask/35-123",
         worktree_path: "/tmp/worktree"
       })
@@ -843,6 +872,29 @@ describe("ActuariusBot review command", () => {
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
+  it("rejects review while an install is actively using the worktree", async () => {
+    const bot = createBot({
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "user-1",
+        worktree_path: "/tmp/worktree-review",
+        branch_name: "ask/41-123",
+        status: "install_running"
+      })
+    });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+
+    await (bot as any).handleReview(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "The latest request in this thread is still queued or running. Wait for it to finish before reviewing.",
+      ephemeral: true
+    });
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
   it("passes the configured review round limit into the review service", async () => {
     vi.mocked(runAdversarialReview).mockResolvedValue({
       reviewRunId: 12,
@@ -908,6 +960,151 @@ describe("ActuariusBot review command", () => {
     expect(runAdversarialReview).toHaveBeenCalledWith(expect.objectContaining({
       maxConsensusRounds: 4
     }));
+  });
+});
+
+describe("ActuariusBot install command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("rejects users without manage server permission", async () => {
+    const bot = createBot();
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(false) }
+    });
+
+    await (bot as any).handleInstall(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "You need the `Manage Server` permission to install tools.",
+      ephemeral: true
+    });
+  });
+
+  it("rejects invalid install scopes", async () => {
+    const bot = createBot();
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "package") return "npm-prettier";
+          if (name === "scope") return "invalid-scope";
+          return null;
+        }),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleInstall(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Invalid install scope.",
+      ephemeral: true
+    });
+  });
+
+  it("rejects request-scoped installs outside a thread", async () => {
+    const bot = createBot({
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      })
+    });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      channel: { isThread: () => false },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "package") return "npm-prettier";
+          if (name === "scope") return "request";
+          return null;
+        }),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleInstall(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Request-scoped installs must be run inside the request thread that should receive the tool.",
+      ephemeral: true
+    });
+  });
+
+  it("creates and runs the install when the request is valid", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot({
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        worktree_path: "/tmp/worktree-review"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      })
+    });
+    const createApprovedInstallRequest = vi.fn().mockReturnValue({
+      id: 55,
+      package_id: "npm-prettier"
+    });
+    const runInstall = vi.fn().mockResolvedValue({
+      id: 55,
+      package_id: "npm-prettier",
+      package_version: "3",
+      bin_path: "/data/tool-installs/request/thread-1/npm-prettier/bin"
+    });
+    (bot as any).installService = {
+      createApprovedInstallRequest,
+      runInstall
+    };
+    const interaction = createInteraction({
+      channel: {
+        isThread: () => true,
+        isTextBased: () => true,
+        isDMBased: () => false,
+        parentId: "channel-1",
+        send
+      },
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "package") return "npm-prettier";
+          if (name === "scope") return "request";
+          return null;
+        }),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleInstall(interaction);
+
+    expect(createApprovedInstallRequest).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      repoId: 1,
+      requestId: 41,
+      threadId: "thread-1",
+      packageId: "npm-prettier",
+      scope: "request",
+      requestedByUserId: "user-1",
+      approvedByUserId: "user-1"
+    });
+    expect(runInstall).toHaveBeenCalledWith(55);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Installing `npm-prettier` in `request` scope. I'll post here when it's done.",
+      ephemeral: true
+    });
+    await vi.waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        "<@user-1> Installed `npm-prettier@3` in `request` scope.\nInstall request: #55\nPATH prefix: `/data/tool-installs/request/thread-1/npm-prettier/bin`"
+      )
+    );
   });
 });
 

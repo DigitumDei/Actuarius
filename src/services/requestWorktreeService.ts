@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { configureRepositoryGitAuth } from "./githubAuthService.js";
 import { buildRepoCheckoutPath, type RepoIdentity } from "./gitWorkspaceService.js";
 
 const execFileAsync = promisify(execFile);
@@ -96,6 +97,7 @@ export async function createRequestWorktree(
       addArgs.push("--detach", worktreePath, "master");
     }
     await runGit(addArgs);
+    await configureRepositoryGitAuth(worktreePath);
     return {
       branchName,
       path: worktreePath

@@ -36,6 +36,7 @@ const envSchema = z.object({
   GEMINI_API_KEY: optionalNonEmpty,
   DATABASE_PATH: z.string().default("/data/app.db"),
   REPOS_ROOT_PATH: z.string().default("/data/repos"),
+  INSTALLS_ROOT_PATH: z.string().default("/data/tool-installs"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   THREAD_AUTO_ARCHIVE_MINUTES: z
     .string()
@@ -52,6 +53,11 @@ const envSchema = z.object({
     .default("1200000")
     .transform((value) => Number.parseInt(value, 10))
     .refine((value) => Number.isFinite(value) && value > 0, "ASK_EXECUTION_TIMEOUT_MS must be a positive number"),
+  INSTALL_STEP_TIMEOUT_MS: z
+    .string()
+    .default("3600000")
+    .transform((value) => Number.parseInt(value, 10))
+    .refine((value) => Number.isFinite(value) && value > 0, "INSTALL_STEP_TIMEOUT_MS must be a positive number"),
   ENABLE_CODEX_EXECUTION: z
     .string()
     .default("false")
@@ -96,6 +102,7 @@ if ((rawConfig.GIT_USER_NAME && !rawConfig.GIT_USER_EMAIL) || (!rawConfig.GIT_US
 const databaseDirectory = dirname(rawConfig.DATABASE_PATH);
 mkdirSync(databaseDirectory, { recursive: true });
 mkdirSync(rawConfig.REPOS_ROOT_PATH, { recursive: true });
+mkdirSync(rawConfig.INSTALLS_ROOT_PATH, { recursive: true });
 const githubCliConfigPath = resolve(rawConfig.REPOS_ROOT_PATH, "..", ".gh");
 mkdirSync(githubCliConfigPath, { recursive: true });
 
@@ -113,11 +120,13 @@ export const appConfig = {
   geminiApiKey: rawConfig.GEMINI_API_KEY,
   databasePath: rawConfig.DATABASE_PATH,
   reposRootPath: rawConfig.REPOS_ROOT_PATH,
+  installsRootPath: rawConfig.INSTALLS_ROOT_PATH,
   githubCliConfigPath,
   logLevel: rawConfig.LOG_LEVEL,
   threadAutoArchiveMinutes: normalizeArchiveDuration(rawConfig.THREAD_AUTO_ARCHIVE_MINUTES),
   askConcurrencyPerGuild: rawConfig.ASK_CONCURRENCY_PER_GUILD,
   askExecutionTimeoutMs: rawConfig.ASK_EXECUTION_TIMEOUT_MS,
+  installStepTimeoutMs: rawConfig.INSTALL_STEP_TIMEOUT_MS,
   enableCodexExecution: rawConfig.ENABLE_CODEX_EXECUTION,
   enableGeminiExecution: rawConfig.ENABLE_GEMINI_EXECUTION
 };

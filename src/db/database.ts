@@ -3,6 +3,9 @@ import type {
   AiProvider,
   GuildModelConfigRow,
   GuildReviewConfigRow,
+  InstallRequestRow,
+  InstallRequestStatus,
+  InstallScope,
   RepoRow,
   RequestRow,
   RequestStatus,
@@ -101,6 +104,31 @@ export class AppDatabase {
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (request_id) REFERENCES requests(id) ON DELETE CASCADE
       );
+
+      CREATE TABLE IF NOT EXISTS install_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        repo_id INTEGER NOT NULL,
+        request_id INTEGER,
+        thread_id TEXT,
+        package_id TEXT NOT NULL,
+        package_version TEXT NOT NULL DEFAULT '',
+        scope TEXT NOT NULL,
+        status TEXT NOT NULL,
+        requested_by_user_id TEXT NOT NULL,
+        approved_by_user_id TEXT,
+        install_root TEXT NOT NULL DEFAULT '',
+        bin_path TEXT,
+        env_json TEXT,
+        logs TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT,
+        FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE,
+        FOREIGN KEY (repo_id) REFERENCES repos(id) ON DELETE CASCADE,
+        FOREIGN KEY (request_id) REFERENCES requests(id) ON DELETE SET NULL
+      );
     `);
 
     // Incremental migrations
@@ -146,6 +174,32 @@ export class AppDatabase {
         UNIQUE (provider, model)
       );
     `);
+
+    // Keep additive migrations for deployments that already had install_requests before these later columns existed.
+    const installRequestColumns = new Map([
+      ["thread_id", "TEXT"],
+      ["package_version", "TEXT NOT NULL DEFAULT ''"],
+      ["approved_by_user_id", "TEXT"],
+      ["install_root", "TEXT NOT NULL DEFAULT ''"],
+      ["bin_path", "TEXT"],
+      ["env_json", "TEXT"],
+      ["logs", "TEXT"],
+      ["error_message", "TEXT"],
+      ["completed_at", "TEXT"]
+    ]);
+    const existingInstallRequestColumns = new Set(
+      (
+        this.db.prepare("PRAGMA table_info(install_requests)").all() as Array<{
+          name: string;
+        }>
+      ).map((column) => column.name)
+    );
+
+    for (const [columnName, columnDefinition] of installRequestColumns) {
+      if (!existingInstallRequestColumns.has(columnName)) {
+        this.db.exec(`ALTER TABLE install_requests ADD COLUMN ${columnName} ${columnDefinition}`);
+      }
+    }
   }
 
   public upsertGuild(id: string, name: string): void {
@@ -184,6 +238,19 @@ export class AppDatabase {
     const row = this.db
       .prepare("SELECT * FROM repos WHERE guild_id = ? AND channel_id = ?")
       .get(guildId, channelId) as (RepoRow & { id: number | bigint }) | undefined;
+
+    if (!row) {
+      return undefined;
+    }
+
+    return {
+      ...row,
+      id: toNumber(row.id)
+    };
+  }
+
+  public getRepoById(repoId: number): RepoRow | undefined {
+    const row = this.db.prepare("SELECT * FROM repos WHERE id = ?").get(repoId) as (RepoRow & { id: number | bigint }) | undefined;
 
     if (!row) {
       return undefined;
@@ -300,6 +367,27 @@ export class AppDatabase {
     };
   }
 
+  private mapInstallRequestRow(
+    row:
+      | (InstallRequestRow & {
+        id: number | bigint;
+        repo_id: number | bigint;
+        request_id: number | bigint | null;
+      })
+      | undefined
+  ): InstallRequestRow | undefined {
+    if (!row) {
+      return undefined;
+    }
+
+    return {
+      ...row,
+      id: toNumber(row.id),
+      repo_id: toNumber(row.repo_id),
+      request_id: row.request_id === null ? null : toNumber(row.request_id)
+    };
+  }
+
   public updateRequestStatus(requestId: number, status: RequestStatus): void {
     this.db.prepare("UPDATE requests SET status = ? WHERE id = ?").run(status, requestId);
   }
@@ -327,6 +415,14 @@ export class AppDatabase {
     const row = this.db
       .prepare("SELECT * FROM requests WHERE thread_id = ? ORDER BY id DESC LIMIT 1")
       .get(threadId) as (RequestRow & { id: number | bigint; repo_id: number | bigint }) | undefined;
+
+    return this.mapRequestRow(row);
+  }
+
+  public getRequestById(requestId: number): RequestRow | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM requests WHERE id = ?")
+      .get(requestId) as (RequestRow & { id: number | bigint; repo_id: number | bigint }) | undefined;
 
     return this.mapRequestRow(row);
   }
@@ -471,6 +567,150 @@ export class AppDatabase {
       .get(requestId) as (ReviewRunRow & { id: number | bigint; request_id: number | bigint }) | undefined;
 
     return this.mapReviewRunRow(row);
+  }
+
+  public createInstallRequest(input: {
+    guildId: string;
+    repoId: number;
+    requestId?: number | null;
+    threadId?: string | null;
+    packageId: string;
+    packageVersion: string;
+    scope: InstallScope;
+    status: InstallRequestStatus;
+    requestedByUserId: string;
+    approvedByUserId?: string | null;
+    installRoot: string;
+  }): InstallRequestRow {
+    const row = this.db
+      .prepare(
+        `INSERT INTO install_requests (
+          guild_id,
+          repo_id,
+          request_id,
+          thread_id,
+          package_id,
+          package_version,
+          scope,
+          status,
+          requested_by_user_id,
+          approved_by_user_id,
+          install_root
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        RETURNING *`
+      )
+      .get(
+        input.guildId,
+        input.repoId,
+        input.requestId ?? null,
+        input.threadId ?? null,
+        input.packageId,
+        input.packageVersion,
+        input.scope,
+        input.status,
+        input.requestedByUserId,
+        input.approvedByUserId ?? null,
+        input.installRoot
+      ) as unknown as InstallRequestRow & {
+        id: number | bigint;
+        repo_id: number | bigint;
+        request_id: number | bigint | null;
+      };
+
+    return this.mapInstallRequestRow(row)!;
+  }
+
+  public updateInstallRequest(input: {
+    installRequestId: number;
+    status: InstallRequestStatus;
+    approvedByUserId?: string | null;
+    binPath?: string | null;
+    envJson?: string | null;
+    logs?: string | null;
+    errorMessage?: string | null;
+    completedAt?: string | null;
+  }): void {
+    this.db
+      .prepare(
+        `UPDATE install_requests
+         SET status = ?,
+             approved_by_user_id = COALESCE(?, approved_by_user_id),
+             bin_path = COALESCE(?, bin_path),
+             env_json = COALESCE(?, env_json),
+             logs = COALESCE(?, logs),
+             error_message = COALESCE(?, error_message),
+             completed_at = COALESCE(?, completed_at),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`
+      )
+      .run(
+        input.status,
+        input.approvedByUserId ?? null,
+        input.binPath ?? null,
+        input.envJson ?? null,
+        input.logs ?? null,
+        input.errorMessage ?? null,
+        input.completedAt ?? null,
+        input.installRequestId
+      );
+  }
+
+  public getInstallRequestById(installRequestId: number): InstallRequestRow | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM install_requests WHERE id = ?")
+      .get(installRequestId) as (InstallRequestRow & {
+        id: number | bigint;
+        repo_id: number | bigint;
+        request_id: number | bigint | null;
+      }) | undefined;
+
+    return this.mapInstallRequestRow(row);
+  }
+
+  public getActiveInstallRequestByRoot(installRoot: string): InstallRequestRow | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT *
+         FROM install_requests
+         WHERE install_root = ?
+           AND status IN ('approved', 'running')
+         ORDER BY id DESC
+         LIMIT 1`
+      )
+      .get(installRoot) as (InstallRequestRow & {
+      id: number | bigint;
+      repo_id: number | bigint;
+      request_id: number | bigint | null;
+    }) | undefined;
+
+    return this.mapInstallRequestRow(row);
+  }
+
+  public listSuccessfulInstallRequestsForScope(input: {
+    repoId: number;
+    threadId?: string | null;
+  }): InstallRequestRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT *
+         FROM install_requests
+         WHERE status = 'succeeded'
+           AND (
+             (scope = 'repo' AND repo_id = ?)
+             OR (scope = 'request' AND thread_id = ?)
+           )
+         ORDER BY id ASC`
+      )
+      .all(input.repoId, input.threadId ?? null) as unknown as Array<InstallRequestRow & {
+      id: number | bigint;
+      repo_id: number | bigint;
+      request_id: number | bigint | null;
+    }>;
+
+    return rows
+      .map((row) => this.mapInstallRequestRow(row))
+      .filter((row): row is InstallRequestRow => Boolean(row));
   }
 
   public close(): void {

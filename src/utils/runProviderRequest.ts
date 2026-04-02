@@ -6,6 +6,7 @@ export interface ProviderRequestInput {
   cwd: string;
   timeoutMs: number;
   model?: string;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface ProviderRunnerConfig {
@@ -57,6 +58,7 @@ export async function runProviderRequest(
   try {
     ({ stdout, stderr } = await spawnCollect(config.binary, args, {
       cwd: input.cwd,
+      ...(input.env ? { env: input.env } : {}),
       timeoutMs: input.timeoutMs,
       maxBuffer: 4 * 1024 * 1024,
     }));

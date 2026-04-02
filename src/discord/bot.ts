@@ -23,7 +23,7 @@ import {
 import type pino from "pino";
 import type { AppConfig } from "../config.js";
 import { AppDatabase } from "../db/database.js";
-import type { AiProvider, RepoRow } from "../db/types.js";
+import type { AiProvider, RepoRow, RequestStatus } from "../db/types.js";
 import { commandBuilders } from "./commands.js";
 import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
@@ -53,6 +53,7 @@ import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecut
 import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
 import { GeminiExecutionError, runGeminiRequest } from "../services/geminiExecutionService.js";
 import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
+import { InstallService, InstallServiceError } from "../services/installService.js";
 import { createRequestWorktree, deleteRequestBranch, RequestWorktreeError } from "../services/requestWorktreeService.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
@@ -62,6 +63,10 @@ const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
   codex: "Codex",
   gemini: "Gemini"
 };
+
+function isActiveRequestStatus(status: RequestStatus): boolean {
+  return status === "queued" || status === "running" || status === "install_approved" || status === "install_running";
+}
 
 function clipForDiscord(input: string, maxLength: number): string {
   const text = input.trim();
@@ -292,6 +297,7 @@ export class ActuariusBot {
   private readonly logger: pino.Logger;
   private readonly db: AppDatabase;
   private readonly requestQueue: RequestExecutionQueue;
+  private readonly installService: InstallService;
 
   public constructor(config: AppConfig, logger: pino.Logger, db: AppDatabase) {
     this.config = config;
@@ -306,6 +312,7 @@ export class ActuariusBot {
         this.logger.debug({ guildId, event, running, pending }, "Request queue state changed");
       }
     );
+    this.installService = new InstallService(config, logger, db);
     this.client = new Client({
       // MessageContent is a privileged intent — must be enabled in the Discord Developer Portal
       intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
@@ -446,6 +453,7 @@ export class ActuariusBot {
       await this.runQueuedRequest({
         requestId: request.id,
         threadId: message.channelId,
+        repoId: repo.id,
         repo: { owner: repo.owner, repo: repo.repo, fullName: repo.full_name },
         prompt,
         provider,
@@ -481,6 +489,9 @@ export class ActuariusBot {
         return;
       case "ask":
         await this.handleAsk(interaction);
+        return;
+      case "install":
+        await this.handleInstall(interaction);
         return;
       case "bug":
         await this.handleIssueCreate(interaction, "bug");
@@ -1233,7 +1244,7 @@ export class ActuariusBot {
       return;
     }
 
-    if (request.status === "queued" || request.status === "running") {
+    if (isActiveRequestStatus(request.status)) {
       await interaction.reply({ content: "This request is still running. Wait for it to finish before deleting the branch.", ephemeral: true });
       return;
     }
@@ -1317,6 +1328,116 @@ export class ActuariusBot {
 
   private async handleAsk(interaction: ChatInputCommandInteraction): Promise<void> {
     await this.handleRepoCommand(interaction, { label: "request" });
+  }
+
+  private async handleInstall(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to install tools.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const packageId = interaction.options.getString("package", true);
+    const scope = interaction.options.getString("scope", true);
+    if (scope !== "repo" && scope !== "request") {
+      await interaction.reply({ content: "Invalid install scope.", ephemeral: true });
+      return;
+    }
+
+    const repo = this.resolveRepoFromInteraction(interaction);
+    if (!repo) {
+      await interaction.reply({
+        content: "No connected repo could be resolved. Run this in a mapped repo channel or thread.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    let threadId: string | null = null;
+    let requestId: number | null = null;
+
+    if (scope === "request") {
+      if (!interaction.channel?.isThread()) {
+        await interaction.reply({
+          content: "Request-scoped installs must be run inside the request thread that should receive the tool.",
+          ephemeral: true
+        });
+        return;
+      }
+
+      const latestRequest = this.db.getLatestRequestWithWorkspaceByThreadId(interaction.channelId);
+      if (!latestRequest?.worktree_path) {
+        await interaction.reply({
+          content: "This thread does not have an active tracked worktree. Run `/ask` first before using request scope.",
+          ephemeral: true
+        });
+        return;
+      }
+
+      threadId = interaction.channelId;
+      requestId = latestRequest.id;
+    }
+
+    let installRequest;
+    try {
+      installRequest = this.installService.createApprovedInstallRequest({
+        guildId: interaction.guildId,
+        repoId: repo.id,
+        requestId,
+        threadId,
+        packageId,
+        scope,
+        requestedByUserId: interaction.user.id,
+        approvedByUserId: interaction.user.id
+      });
+    } catch (error) {
+      const message = this.describeExecutionError(error);
+      await interaction.reply({ content: `Install failed: ${message}`, ephemeral: true });
+      return;
+    }
+
+    // Reply immediately — install may take a long time on slow connections
+    await interaction.reply({
+      content: `Installing \`${packageId}\` in \`${scope}\` scope. I'll post here when it's done.`,
+      ephemeral: true
+    });
+
+    const channel = interaction.channel?.isTextBased() && !interaction.channel.isDMBased() ? interaction.channel : null;
+    const userId = interaction.user.id;
+
+    void this.runQueuedGuildTask(interaction.guildId, async () =>
+      this.installService.runInstall(installRequest.id)
+    ).then(async (completedInstall) => {
+      await channel?.send(
+        [
+          `<@${userId}> Installed \`${completedInstall.package_id}@${completedInstall.package_version}\` in \`${scope}\` scope.`,
+          `Install request: #${completedInstall.id}`,
+          completedInstall.bin_path ? `PATH prefix: \`${completedInstall.bin_path}\`` : "PATH prefix: (none)"
+        ].join("\n")
+      );
+    }).catch(async (error) => {
+      const message = this.describeExecutionError(error);
+      await channel?.send(`<@${userId}> Install failed: ${message}`);
+    });
+  }
+
+  private async runQueuedGuildTask<T>(guildId: string, task: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.requestQueue.enqueue(guildId, async () => {
+        try {
+          resolve(await task());
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
   }
 
   private async handleRepoCommand(
@@ -1405,6 +1526,7 @@ export class ActuariusBot {
       await this.runQueuedRequest({
         requestId: request.id,
         threadId: thread.id,
+        repoId: repo.id,
         repo: {
           owner: repo.owner,
           repo: repo.repo,
@@ -1580,12 +1702,14 @@ Output the result of the command or the link to the created issue.`;
     cwd: string;
     timeoutMs?: number;
     model?: string;
+    env?: NodeJS.ProcessEnv;
   }): Promise<string> {
     const request = {
       prompt: input.prompt,
       cwd: input.cwd,
       timeoutMs: input.timeoutMs ?? this.config.askExecutionTimeoutMs,
-      ...(input.model ? { model: input.model } : {})
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.env ? { env: input.env } : {})
     };
 
     switch (input.provider) {
@@ -1707,7 +1831,7 @@ Output the result of the command or the link to the created issue.`;
       return;
     }
 
-    if (latestRequest.status === "running" || latestRequest.status === "queued") {
+    if (isActiveRequestStatus(latestRequest.status)) {
       await interaction.reply({
         content: "The latest request in this thread is still queued or running. Wait for it to finish before reviewing.",
         ephemeral: true
@@ -1790,6 +1914,7 @@ Output the result of the command or the link to the created issue.`;
   private async runQueuedRequest(input: {
     requestId: number;
     threadId: string;
+    repoId: number;
     repo: {
       owner: string;
       repo: string;
@@ -1892,10 +2017,16 @@ Output the result of the command or the link to the created issue.`;
         "Starting AI execution"
       );
 
+      const executionEnvironment = this.installService.buildExecutionEnvironment({
+        repoId: input.repoId,
+        threadId: input.threadId
+      });
+
       const resultText = await this.runProviderText({
         provider: input.provider,
         prompt: effectivePrompt,
         cwd: worktreePath,
+        ...(executionEnvironment.packages.length > 0 ? { env: executionEnvironment.env } : {}),
         ...(input.model ? { model: input.model } : {})
       });
 
@@ -1954,6 +2085,10 @@ Output the result of the command or the link to the created issue.`;
     }
 
     if (error instanceof AdversarialReviewError) {
+      return error.message;
+    }
+
+    if (error instanceof InstallServiceError) {
       return error.message;
     }
 

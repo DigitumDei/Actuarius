@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import { commandBuilders } from "../src/discord/commands.js";
 
 describe("command registration", () => {
-  it("registers the branches, cleanup, issues, and delete commands", () => {
+  it("registers the branches, cleanup, issues, install, and delete commands", () => {
     const names = commandBuilders.map((builder) => builder.name);
     expect(names).toContain("branches");
     expect(names).toContain("cleanup");
     expect(names).toContain("issues");
+    expect(names).toContain("install");
     expect(names).toContain("delete");
     expect(names).not.toContain("gemini-oauth-file");
   });
@@ -30,6 +31,35 @@ describe("command registration", () => {
         name: "issue",
         required: false,
         min_value: 1
+      })
+    ]);
+  });
+
+  it("registers /install with package and scope options", () => {
+    const installCommand = commandBuilders.find((builder) => builder.name === "install");
+    expect(installCommand).toBeDefined();
+
+    const json = installCommand!.toJSON();
+    expect(json.options).toEqual([
+      expect.objectContaining({
+        name: "package",
+        required: true,
+        choices: expect.arrayContaining([
+          { name: "rustup-default-stable", value: "rustup-default-stable" },
+          { name: "npm-prettier", value: "npm-prettier" },
+          { name: "java-temurin", value: "java-temurin" },
+          { name: "gradle", value: "gradle" },
+          { name: "kotlin-compiler", value: "kotlin-compiler" },
+          { name: "android-sdk", value: "android-sdk" }
+        ])
+      }),
+      expect.objectContaining({
+        name: "scope",
+        required: true,
+        choices: [
+          { name: "Repo", value: "repo" },
+          { name: "Request", value: "request" }
+        ]
       })
     ]);
   });

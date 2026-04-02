@@ -6,6 +6,7 @@ export interface GeminiExecutionInput {
   cwd: string;
   timeoutMs: number;
   model?: string;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface GeminiExecutionResult {

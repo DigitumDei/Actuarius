@@ -1,6 +1,7 @@
 import { REST, Routes, SlashCommandBuilder } from "discord.js";
 import type { AppConfig } from "../config.js";
 import type pino from "pino";
+import { INSTALLER_PACKAGE_CHOICES } from "../services/installerRegistry.js";
 
 export const commandBuilders = [
   new SlashCommandBuilder().setName("help").setDescription("Show supported commands and usage."),
@@ -63,6 +64,25 @@ export const commandBuilders = [
     .setName("ask")
     .setDescription("Create a request thread in the connected repo channel.")
     .addStringOption((option) => option.setName("prompt").setDescription("Request text for this thread.").setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("install")
+    .setDescription("Install an allowlisted tool into repo or request scope. Requires Manage Server permission.")
+    .addStringOption((option) =>
+      INSTALLER_PACKAGE_CHOICES.reduce(
+        (builder, choice) => builder.addChoices({ name: choice.name, value: choice.value }),
+        option.setName("package").setDescription("Allowlisted package ID to install.").setRequired(true)
+      )
+    )
+    .addStringOption((option) =>
+      option
+        .setName("scope")
+        .setDescription("Installation scope")
+        .setRequired(true)
+        .addChoices(
+          { name: "Repo", value: "repo" },
+          { name: "Request", value: "request" }
+        )
+    ),
   new SlashCommandBuilder()
     .setName("bug")
     .setDescription("Create a bug report issue on GitHub by analyzing the codebase.")
@@ -131,6 +151,7 @@ export type CommandName =
   | "repos"
   | "issues"
   | "ask"
+  | "install"
   | "bug"
   | "issue"
   | "model-select"
