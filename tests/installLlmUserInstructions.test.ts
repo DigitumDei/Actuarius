@@ -35,7 +35,7 @@ describe("install-llm-user-instructions.sh", () => {
       mkdirSync(join(homeDir, dir), { recursive: true });
     }
 
-    const result = spawnSync("bash", [scriptPath, sourceRoot, homeDir], {
+    const result = spawnSync("sh", [scriptPath, sourceRoot, homeDir], {
       cwd: repoRoot,
       encoding: "utf8",
     });
@@ -55,7 +55,7 @@ describe("install-llm-user-instructions.sh", () => {
       writeFileSync(join(homeDir, dir, file), `stale ${file}\n`);
     }
 
-    const result = spawnSync("bash", [scriptPath, sourceRoot, homeDir], {
+    const result = spawnSync("sh", [scriptPath, sourceRoot, homeDir], {
       cwd: repoRoot,
       encoding: "utf8",
     });
