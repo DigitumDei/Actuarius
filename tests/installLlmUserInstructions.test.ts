@@ -23,11 +23,17 @@ function makeTempDir(prefix: string): string {
 }
 
 describe("install-llm-user-instructions.sh", () => {
+  const managedFiles = [
+    { dir: ".claude", file: "CLAUDE.md" },
+    { dir: ".codex", file: "AGENTS.md" },
+    { dir: ".gemini", file: "GEMINI.md" },
+  ] as const;
+
   it("installs the managed instruction files into the runtime home directory", () => {
     const homeDir = makeTempDir("llm-home-");
-    mkdirSync(join(homeDir, ".claude"), { recursive: true });
-    mkdirSync(join(homeDir, ".codex"), { recursive: true });
-    mkdirSync(join(homeDir, ".gemini"), { recursive: true });
+    for (const { dir } of managedFiles) {
+      mkdirSync(join(homeDir, dir), { recursive: true });
+    }
 
     const result = spawnSync("bash", [scriptPath, sourceRoot, homeDir], {
       cwd: repoRoot,
@@ -35,24 +41,19 @@ describe("install-llm-user-instructions.sh", () => {
     });
 
     expect(result.status).toBe(0);
-    expect(readFileSync(join(homeDir, ".claude", "CLAUDE.md"), "utf8")).toBe(
-      readFileSync(join(sourceRoot, ".claude", "CLAUDE.md"), "utf8")
-    );
-    expect(readFileSync(join(homeDir, ".codex", "AGENTS.md"), "utf8")).toBe(
-      readFileSync(join(sourceRoot, ".codex", "AGENTS.md"), "utf8")
-    );
-    expect(readFileSync(join(homeDir, ".gemini", "GEMINI.md"), "utf8")).toBe(
-      readFileSync(join(sourceRoot, ".gemini", "GEMINI.md"), "utf8")
-    );
+    for (const { dir, file } of managedFiles) {
+      expect(readFileSync(join(homeDir, dir, file), "utf8")).toBe(
+        readFileSync(join(sourceRoot, dir, file), "utf8")
+      );
+    }
   });
 
-  it("overwrites stale files with the managed repo version", () => {
+  it("overwrites stale files with the managed repo version for every tool", () => {
     const homeDir = makeTempDir("llm-home-stale-");
-    mkdirSync(join(homeDir, ".codex"), { recursive: true });
-    mkdirSync(join(homeDir, ".claude"), { recursive: true });
-    mkdirSync(join(homeDir, ".gemini"), { recursive: true });
-    const stalePath = join(homeDir, ".codex", "AGENTS.md");
-    writeFileSync(stalePath, "stale\n");
+    for (const { dir, file } of managedFiles) {
+      mkdirSync(join(homeDir, dir), { recursive: true });
+      writeFileSync(join(homeDir, dir, file), `stale ${file}\n`);
+    }
 
     const result = spawnSync("bash", [scriptPath, sourceRoot, homeDir], {
       cwd: repoRoot,
@@ -60,8 +61,10 @@ describe("install-llm-user-instructions.sh", () => {
     });
 
     expect(result.status).toBe(0);
-    expect(readFileSync(stalePath, "utf8")).toBe(
-      readFileSync(join(sourceRoot, ".codex", "AGENTS.md"), "utf8")
-    );
+    for (const { dir, file } of managedFiles) {
+      expect(readFileSync(join(homeDir, dir, file), "utf8")).toBe(
+        readFileSync(join(sourceRoot, dir, file), "utf8")
+      );
+    }
   });
 });
