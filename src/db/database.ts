@@ -175,6 +175,7 @@ export class AppDatabase {
       );
     `);
 
+    // Keep additive migrations for deployments that already had install_requests before these later columns existed.
     const installRequestColumns = new Map([
       ["thread_id", "TEXT"],
       ["package_version", "TEXT NOT NULL DEFAULT ''"],
@@ -663,6 +664,25 @@ export class AppDatabase {
         repo_id: number | bigint;
         request_id: number | bigint | null;
       }) | undefined;
+
+    return this.mapInstallRequestRow(row);
+  }
+
+  public getActiveInstallRequestByRoot(installRoot: string): InstallRequestRow | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT *
+         FROM install_requests
+         WHERE install_root = ?
+           AND status IN ('approved', 'running')
+         ORDER BY id DESC
+         LIMIT 1`
+      )
+      .get(installRoot) as (InstallRequestRow & {
+      id: number | bigint;
+      repo_id: number | bigint;
+      request_id: number | bigint | null;
+    }) | undefined;
 
     return this.mapInstallRequestRow(row);
   }

@@ -19,6 +19,7 @@ export class InstallServiceError extends Error {
     | "UNKNOWN_PACKAGE"
     | "UNSUPPORTED_SCOPE"
     | "INVALID_SCOPE"
+    | "INSTALL_ALREADY_ACTIVE"
     | "CONFIG_NOT_FOUND"
     | "CONFIG_INVALID"
     | "INSTALL_FAILED"
@@ -30,6 +31,7 @@ export class InstallServiceError extends Error {
       | "UNKNOWN_PACKAGE"
       | "UNSUPPORTED_SCOPE"
       | "INVALID_SCOPE"
+      | "INSTALL_ALREADY_ACTIVE"
       | "CONFIG_NOT_FOUND"
       | "CONFIG_INVALID"
       | "INSTALL_FAILED"
@@ -107,6 +109,13 @@ export class InstallService {
       repoId: input.repoId,
       ...(input.threadId !== undefined ? { threadId: input.threadId } : {})
     });
+    const activeInstall = this.db.getActiveInstallRequestByRoot(installRoot);
+    if (activeInstall) {
+      throw new InstallServiceError(
+        "INSTALL_ALREADY_ACTIVE",
+        `Package \`${input.packageId}\` is already installing for this ${input.scope} target via install request #${activeInstall.id}.`
+      );
+    }
 
     const installRequest = this.db.createInstallRequest({
       guildId: input.guildId,

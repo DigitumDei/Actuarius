@@ -283,6 +283,33 @@ describe("InstallService", () => {
     ).toThrowError(expect.objectContaining({ code: "INVALID_SCOPE" }));
   });
 
+  it("rejects creating a second active install for the same target root", () => {
+    service.createApprovedInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "npm-prettier",
+      scope: "repo",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1"
+    });
+
+    expect(() =>
+      service.createApprovedInstallRequest({
+        guildId: "guild-1",
+        repoId: 1,
+        packageId: "npm-prettier",
+        scope: "repo",
+        requestedByUserId: "user-2",
+        approvedByUserId: "admin-2"
+      })
+    ).toThrowError(
+      expect.objectContaining({
+        code: "INSTALL_ALREADY_ACTIVE",
+        message: expect.stringContaining("already installing")
+      })
+    );
+  });
+
   it("resolves java-temurin from .tool-versions before .java-version", () => {
     writeRepoFile(".tool-versions", "java temurin-21.0.3+9\n");
     writeRepoFile(".java-version", "17\n");
