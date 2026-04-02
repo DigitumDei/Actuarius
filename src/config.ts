@@ -50,7 +50,7 @@ const envSchema = z.object({
     .refine((value) => Number.isFinite(value) && value > 0, "ASK_CONCURRENCY_PER_GUILD must be a positive number"),
   ASK_EXECUTION_TIMEOUT_MS: z
     .string()
-    .default("1200000")
+    .default("2700000")
     .transform((value) => Number.parseInt(value, 10))
     .refine((value) => Number.isFinite(value) && value > 0, "ASK_EXECUTION_TIMEOUT_MS must be a positive number"),
   INSTALL_STEP_TIMEOUT_MS: z
