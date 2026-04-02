@@ -14,6 +14,7 @@ User-level defaults for Claude on this machine.
 - Keep global guidance generic and avoid treating this file as a place for repository-specific architecture or workflow details.
 - Prefer `gh` for GitHub operations when a repository uses GitHub.
 - Use `gh` for author-sensitive GitHub actions such as creating pull requests, posting comments, and replying to review threads so the configured machine identity is used.
+- When addressing pull request review comments, always reply on the review thread after making the requested change unless explicitly told not to.
 - Avoid destructive git commands such as `git reset --hard`, `git checkout --`, or force-pushing unless explicitly requested.
 - Keep changes scoped to the task at hand and do not revert unrelated user changes.
 - Before making non-trivial changes, look for repository guidance such as `AGENTS.md`, `CLAUDE.md`, `README.md`, or nearby docs.

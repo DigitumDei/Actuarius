@@ -31,6 +31,7 @@ That means this repository's local instruction files remain authoritative for re
 - Respect repository-local instructions when present.
 - Prefer `gh` for GitHub operations.
 - Use `gh` for author-sensitive GitHub actions so the configured machine identity is used.
+- When addressing pull request review comments, reply on the review thread after making the requested change unless explicitly told not to.
 - Avoid destructive git commands unless explicitly requested.
 - Keep global instructions generic rather than repository-specific.
 
