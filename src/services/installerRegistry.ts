@@ -63,7 +63,11 @@ os.makedirs(staging, exist_ok=True)
 
 if archive_path.endswith(".zip"):
     with zipfile.ZipFile(archive_path) as archive:
-        archive.extractall(staging)
+        for info in archive.infolist():
+            archive.extract(info, staging)
+            unix_mode = info.external_attr >> 16
+            if unix_mode:
+                os.chmod(os.path.join(staging, info.filename), unix_mode)
 elif archive_path.endswith(".tar.gz") or archive_path.endswith(".tgz"):
     with tarfile.open(archive_path, "r:gz") as archive:
         archive.extractall(staging)
@@ -555,8 +559,8 @@ exec rustup run ${shellQuote(packageVersion)} rustfmt "$@"
   {
     packageId: "android-sdk",
     summary:
-      "Android SDK command-line tools, platform-tools, and target platform resolved from repo config. Requires repo-scoped Java for sdkmanager.",
-    supportedScopes: ["repo"],
+      "Android SDK command-line tools, platform-tools, and target platform resolved from repo config. Requires Java (java-temurin) at the same scope.",
+    supportedScopes: ["repo", "request"],
     resolveVersion: resolveAndroidCompileSdk,
     buildPlan: (installRoot, packageVersion) => {
       const androidHome = join(installRoot, "home");
