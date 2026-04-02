@@ -142,7 +142,11 @@ export class InstallService {
 
     const plan = pkg.buildPlan(installRequest.install_root, installRequest.package_version);
     const binDir = join(plan.installRoot, "bin");
-    const env = this.mergeInstallEnvironment(plan.envVars, [binDir]);
+    const scopeEnv = this.buildExecutionEnvironment({
+      repoId: installRequest.repo_id,
+      threadId: installRequest.thread_id
+    });
+    const env = this.mergeInstallEnvironment(plan.envVars, [binDir], scopeEnv.env);
     const logs: string[] = [];
 
     this.db.updateInstallRequest({
@@ -324,13 +328,14 @@ export class InstallService {
     return buildRepoCheckoutPath(this.config.reposRootPath, repo.owner, repo.repo);
   }
 
-  private mergeInstallEnvironment(envVars: Record<string, string>, pathEntries: string[]): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...envVars
-    };
-
-    env.PATH = `${pathEntries.join(":")}:${process.env.PATH ?? ""}`;
+  private mergeInstallEnvironment(
+    envVars: Record<string, string>,
+    pathEntries: string[],
+    priorEnv?: NodeJS.ProcessEnv
+  ): NodeJS.ProcessEnv {
+    const base: NodeJS.ProcessEnv = priorEnv ?? { ...process.env };
+    const env: NodeJS.ProcessEnv = { ...base, ...envVars };
+    env.PATH = `${pathEntries.join(":")}:${base.PATH ?? ""}`;
     return env;
   }
 

@@ -49,7 +49,8 @@ describe("command registration", () => {
           { name: "npm-prettier", value: "npm-prettier" },
           { name: "java-temurin", value: "java-temurin" },
           { name: "gradle", value: "gradle" },
-          { name: "kotlin-compiler", value: "kotlin-compiler" }
+          { name: "kotlin-compiler", value: "kotlin-compiler" },
+          { name: "android-sdk", value: "android-sdk" }
         ])
       }),
       expect.objectContaining({

@@ -60,6 +60,7 @@ describe("InstallService", () => {
         threadAutoArchiveMinutes: 1440,
         askConcurrencyPerGuild: 1,
         askExecutionTimeoutMs: 1000,
+        installStepTimeoutMs: 1000,
         enableCodexExecution: false,
         enableGeminiExecution: false
       },
@@ -342,6 +343,85 @@ describe("InstallService", () => {
     });
 
     expect(install.package_version).toBe("2.1.21");
+  });
+
+  it("resolves android-sdk compileSdk from gradle.properties before build files", () => {
+    writeRepoFile("gradle.properties", "actuarius.android.compileSdk=35\n");
+    writeRepoFile("app/build.gradle.kts", "android { compileSdk = 34 }\n");
+
+    const install = service.createApprovedInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "android-sdk",
+      scope: "repo",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1"
+    });
+
+    expect(install.package_version).toBe("35");
+  });
+
+  it("falls back to build.gradle compileSdk when android-sdk config is not explicit", () => {
+    writeRepoFile("androidApp/build.gradle.kts", "android {\n  compileSdk = 34\n}\n");
+
+    const install = service.createApprovedInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "android-sdk",
+      scope: "repo",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1"
+    });
+
+    expect(install.package_version).toBe("34");
+  });
+
+  it("passes prior repo-scope install env into later install steps", async () => {
+    const priorInstall = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "java-temurin",
+      packageVersion: "21",
+      scope: "repo",
+      status: "approved",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1",
+      installRoot: "/data/tool-installs/repo/1/java-temurin"
+    });
+    db.updateInstallRequest({
+      installRequestId: priorInstall.id,
+      status: "succeeded",
+      binPath: "/data/tool-installs/repo/1/java-temurin/bin",
+      envJson: JSON.stringify({ JAVA_HOME: "/data/tool-installs/repo/1/java-temurin/home" }),
+      completedAt: "2026-03-31T00:00:00.000Z"
+    });
+
+    writeRepoFile("gradle.properties", "actuarius.android.compileSdk=34\n");
+    const install = service.createApprovedInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "android-sdk",
+      scope: "repo",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1"
+    });
+
+    mockSpawnCollect.mockResolvedValue({ stdout: "ok", stderr: "" });
+
+    await service.runInstall(install.id);
+
+    expect(mockSpawnCollect).toHaveBeenCalledWith(
+      expect.stringContaining("/data/tool-installs/repo/1/android-sdk/home/cmdline-tools/latest/bin/sdkmanager"),
+      expect.arrayContaining(["platform-tools"]),
+      expect.objectContaining({
+        env: expect.objectContaining({
+          JAVA_HOME: "/data/tool-installs/repo/1/java-temurin/home",
+          ANDROID_HOME: "/data/tool-installs/repo/1/android-sdk/home",
+          ANDROID_SDK_ROOT: "/data/tool-installs/repo/1/android-sdk/home",
+          PATH: expect.stringContaining("/data/tool-installs/repo/1/android-sdk/bin:/data/tool-installs/repo/1/java-temurin/bin")
+        })
+      })
+    );
   });
 
   it("fails with CONFIG_NOT_FOUND when repo-config-backed packages have no supported version source", () => {

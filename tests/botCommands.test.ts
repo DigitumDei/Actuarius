@@ -122,7 +122,13 @@ function createInteraction(overrides: Record<string, unknown> = {}) {
     guildId: "guild-1",
     id: "interaction-1",
     channelId: "thread-1",
-    channel: { isThread: () => true, parentId: "channel-1", send: vi.fn().mockResolvedValue(undefined) },
+    channel: {
+      isThread: () => true,
+      isTextBased: () => true,
+      isDMBased: () => false,
+      parentId: "channel-1",
+      send: vi.fn().mockResolvedValue(undefined)
+    },
     user: { id: "user-1" },
     memberPermissions: { has: vi.fn().mockReturnValue(false) },
     options: {
@@ -1030,6 +1036,7 @@ describe("ActuariusBot install command", () => {
   });
 
   it("creates and runs the install when the request is valid", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
     const bot = createBot({
       getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
         id: 41,
@@ -1058,6 +1065,13 @@ describe("ActuariusBot install command", () => {
       runInstall
     };
     const interaction = createInteraction({
+      channel: {
+        isThread: () => true,
+        isTextBased: () => true,
+        isDMBased: () => false,
+        parentId: "channel-1",
+        send
+      },
       memberPermissions: { has: vi.fn().mockReturnValue(true) },
       options: {
         getString: vi.fn((name: string) => {
@@ -1082,8 +1096,14 @@ describe("ActuariusBot install command", () => {
       approvedByUserId: "user-1"
     });
     expect(runInstall).toHaveBeenCalledWith(55);
-    expect(interaction.editReply).toHaveBeenCalledWith(
-      "Installed `npm-prettier@3` in `request` scope.\nInstall request: #55\nPATH prefix: `/data/tool-installs/request/thread-1/npm-prettier/bin`"
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Installing `npm-prettier` in `request` scope. I'll post here when it's done.",
+      ephemeral: true
+    });
+    await vi.waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        "<@user-1> Installed `npm-prettier@3` in `request` scope.\nInstall request: #55\nPATH prefix: `/data/tool-installs/request/thread-1/npm-prettier/bin`"
+      )
     );
   });
 });
