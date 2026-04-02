@@ -1385,10 +1385,9 @@ export class ActuariusBot {
       requestId = latestRequest.id;
     }
 
-    await interaction.deferReply({ ephemeral: true });
-
+    let installRequest;
     try {
-      const installRequest = this.installService.createApprovedInstallRequest({
+      installRequest = this.installService.createApprovedInstallRequest({
         guildId: interaction.guildId,
         repoId: repo.id,
         requestId,
@@ -1398,22 +1397,35 @@ export class ActuariusBot {
         requestedByUserId: interaction.user.id,
         approvedByUserId: interaction.user.id
       });
+    } catch (error) {
+      const message = this.describeExecutionError(error);
+      await interaction.reply({ content: `Install failed: ${message}`, ephemeral: true });
+      return;
+    }
 
-      const completedInstall = await this.runQueuedGuildTask(interaction.guildId, async () =>
-        this.installService.runInstall(installRequest.id)
-      );
+    // Reply immediately — install may take a long time on slow connections
+    await interaction.reply({
+      content: `Installing \`${packageId}\` in \`${scope}\` scope. I'll post here when it's done.`,
+      ephemeral: true
+    });
 
-      await interaction.editReply(
+    const channel = interaction.channel?.isTextBased() && !interaction.channel.isDMBased() ? interaction.channel : null;
+    const userId = interaction.user.id;
+
+    void this.runQueuedGuildTask(interaction.guildId, async () =>
+      this.installService.runInstall(installRequest.id)
+    ).then(async (completedInstall) => {
+      await channel?.send(
         [
-          `Installed \`${completedInstall.package_id}@${completedInstall.package_version}\` in \`${scope}\` scope.`,
+          `<@${userId}> Installed \`${completedInstall.package_id}@${completedInstall.package_version}\` in \`${scope}\` scope.`,
           `Install request: #${completedInstall.id}`,
           completedInstall.bin_path ? `PATH prefix: \`${completedInstall.bin_path}\`` : "PATH prefix: (none)"
         ].join("\n")
       );
-    } catch (error) {
+    }).catch(async (error) => {
       const message = this.describeExecutionError(error);
-      await interaction.editReply(`Install failed: ${message}`);
-    }
+      await channel?.send(`<@${userId}> Install failed: ${message}`);
+    });
   }
 
   private async runQueuedGuildTask<T>(guildId: string, task: () => Promise<T>): Promise<T> {

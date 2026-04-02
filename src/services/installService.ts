@@ -164,7 +164,7 @@ export class InstallService {
           const { stdout, stderr } = await spawnCollect(step.command, step.args, {
             cwd: plan.installRoot,
             env,
-            timeoutMs: this.config.askExecutionTimeoutMs,
+            timeoutMs: this.config.installStepTimeoutMs,
             maxBuffer: INSTALL_BUFFER_LIMIT
           });
           if (stdout.trim()) {
@@ -196,7 +196,7 @@ export class InstallService {
           ({ stdout, stderr } = await spawnCollect(wrapperPath, wrapper.verifyArgs, {
             cwd: plan.installRoot,
             env,
-            timeoutMs: this.config.askExecutionTimeoutMs,
+            timeoutMs: this.config.installStepTimeoutMs,
             maxBuffer: INSTALL_BUFFER_LIMIT
           }));
         } catch (error) {

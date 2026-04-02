@@ -53,6 +53,11 @@ const envSchema = z.object({
     .default("1200000")
     .transform((value) => Number.parseInt(value, 10))
     .refine((value) => Number.isFinite(value) && value > 0, "ASK_EXECUTION_TIMEOUT_MS must be a positive number"),
+  INSTALL_STEP_TIMEOUT_MS: z
+    .string()
+    .default("3600000")
+    .transform((value) => Number.parseInt(value, 10))
+    .refine((value) => Number.isFinite(value) && value > 0, "INSTALL_STEP_TIMEOUT_MS must be a positive number"),
   ENABLE_CODEX_EXECUTION: z
     .string()
     .default("false")
@@ -121,6 +126,7 @@ export const appConfig = {
   threadAutoArchiveMinutes: normalizeArchiveDuration(rawConfig.THREAD_AUTO_ARCHIVE_MINUTES),
   askConcurrencyPerGuild: rawConfig.ASK_CONCURRENCY_PER_GUILD,
   askExecutionTimeoutMs: rawConfig.ASK_EXECUTION_TIMEOUT_MS,
+  installStepTimeoutMs: rawConfig.INSTALL_STEP_TIMEOUT_MS,
   enableCodexExecution: rawConfig.ENABLE_CODEX_EXECUTION,
   enableGeminiExecution: rawConfig.ENABLE_GEMINI_EXECUTION
 };
