@@ -8,6 +8,8 @@ Issue `#84` defines machine-wide user-level defaults for the LLM tools used in t
 - `~/.codex/AGENTS.md`
 - `~/.gemini/GEMINI.md`
 
+In the container runtime, these are materialized under the persisted home directory rooted at `/data/home/appuser`.
+
 In this environment, "user-level" is effectively the same as "VM-wide" because the machine is operated through a single user account.
 
 ## Purpose
@@ -38,3 +40,9 @@ Later expansion should verify each tool with two cases:
 
 1. Run the tool in a directory without repo-local instruction files and confirm the user-level file is applied.
 2. Run the tool in a repository with local instruction files and confirm the repo-local guidance takes precedence over the user-level defaults.
+
+## Container Loading
+
+The canonical file contents live in `docker/llm-user-instructions/`.
+
+The image copies those templates into `/app/llm-user-instructions`, and `docker/entrypoint.sh` installs them into the runtime home on every container start before the bot process begins. This ensures the files exist in the persisted `/data/home/appuser` tree for both fresh and existing volumes.
