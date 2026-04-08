@@ -68,6 +68,16 @@ export const commandBuilders = [
     .setName("install")
     .setDescription("Install an allowlisted tool or apt package. Requires Manage Server permission.")
     .addStringOption((option) =>
+      option
+        .setName("scope")
+        .setDescription("Installation scope")
+        .setRequired(true)
+        .addChoices(
+          { name: "Repo", value: "repo" },
+          { name: "Request", value: "request" }
+        )
+    )
+    .addStringOption((option) =>
       INSTALLER_PACKAGE_CHOICES.reduce(
         (builder, choice) => builder.addChoices({ name: choice.name, value: choice.value }),
         option.setName("package").setDescription("Allowlisted package ID to install.").setRequired(false)
@@ -78,16 +88,6 @@ export const commandBuilders = [
         .setName("apt-package")
         .setDescription("APT package name or space-separated package specs to install.")
         .setRequired(false)
-    )
-    .addStringOption((option) =>
-      option
-        .setName("scope")
-        .setDescription("Installation scope")
-        .setRequired(true)
-        .addChoices(
-          { name: "Repo", value: "repo" },
-          { name: "Request", value: "request" }
-        )
     ),
   new SlashCommandBuilder()
     .setName("bug")
