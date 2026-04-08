@@ -93,6 +93,8 @@ function createBot(dbOverrides: Record<string, unknown> = {}): ActuariusBot {
     threadAutoArchiveMinutes: 1440,
     askConcurrencyPerGuild: 1,
     askExecutionTimeoutMs: 1000,
+    installStepTimeoutMs: 1000,
+    aptInstallHelperPath: undefined,
     enableCodexExecution: false,
     enableGeminiExecution: false
   } as const;
@@ -1004,6 +1006,29 @@ describe("ActuariusBot install command", () => {
     });
   });
 
+  it("requires exactly one install source", async () => {
+    const bot = createBot();
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "package") return "npm-prettier";
+          if (name === "apt-package") return "libssl-dev";
+          if (name === "scope") return "repo";
+          return null;
+        }),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleInstall(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Specify exactly one of `package` or `apt-package`.",
+      ephemeral: true
+    });
+  });
+
   it("rejects request-scoped installs outside a thread", async () => {
     const bot = createBot({
       getRepoByChannelId: vi.fn().mockReturnValue({
@@ -1076,6 +1101,7 @@ describe("ActuariusBot install command", () => {
       options: {
         getString: vi.fn((name: string) => {
           if (name === "package") return "npm-prettier";
+          if (name === "apt-package") return null;
           if (name === "scope") return "request";
           return null;
         }),
@@ -1103,6 +1129,76 @@ describe("ActuariusBot install command", () => {
     await vi.waitFor(() =>
       expect(send).toHaveBeenCalledWith(
         "<@user-1> Installed `npm-prettier@3` in `request` scope.\nInstall request: #55\nPATH prefix: `/data/tool-installs/request/thread-1/npm-prettier/bin`"
+      )
+    );
+  });
+
+  it("accepts apt-package installs", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot({
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      })
+    });
+    const createApprovedInstallRequest = vi.fn().mockReturnValue({
+      id: 77,
+      package_id: "apt:libssl-dev",
+      package_version: "libssl-dev",
+      bin_path: null
+    });
+    const runInstall = vi.fn().mockResolvedValue({
+      id: 77,
+      package_id: "apt:libssl-dev",
+      package_version: "libssl-dev",
+      bin_path: null
+    });
+    (bot as any).installService = {
+      createApprovedInstallRequest,
+      runInstall
+    };
+    const interaction = createInteraction({
+      channel: {
+        isThread: () => false,
+        isTextBased: () => true,
+        isDMBased: () => false,
+        parentId: "channel-1",
+        send
+      },
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "package") return null;
+          if (name === "apt-package") return "libssl-dev";
+          if (name === "scope") return "repo";
+          return null;
+        }),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleInstall(interaction);
+
+    expect(createApprovedInstallRequest).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      repoId: 1,
+      requestId: null,
+      threadId: null,
+      packageId: "apt:libssl-dev",
+      scope: "repo",
+      requestedByUserId: "user-1",
+      approvedByUserId: "user-1"
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Installing APT package `libssl-dev` in `repo` scope. I'll post here when it's done.",
+      ephemeral: true
+    });
+    await vi.waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        "<@user-1> Installed APT package `libssl-dev` in `repo` scope.\nInstall request: #77\nPATH prefix: (none)"
       )
     );
   });

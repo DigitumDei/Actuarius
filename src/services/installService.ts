@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, writeFile, chmod } from "node:fs/promises";
 import { join } from "node:path";
 import type { Logger } from "pino";
@@ -6,7 +7,9 @@ import type { AppDatabase } from "../db/database.js";
 import type { InstallRequestRow, InstallScope } from "../db/types.js";
 import { buildRepoCheckoutPath } from "./gitWorkspaceService.js";
 import {
+  getAptPackageSpec,
   getInstallerPackageDefinition,
+  isAptPackageId,
   listInstallerPackages,
   resolveInstallerPackage
 } from "./installerRegistry.js";
@@ -149,19 +152,23 @@ export class InstallService {
       throw new InstallServiceError("UNKNOWN_PACKAGE", `Package \`${installRequest.package_id}\` is not allowlisted.`);
     }
 
-    const plan = pkg.buildPlan(installRequest.install_root, installRequest.package_version);
-    const binDir = join(plan.installRoot, "bin");
+    if (isAptPackageId(installRequest.package_id)) {
+      this.assertAptInstallAvailable();
+    }
+
+    const plan = this.buildInstallPlan(installRequest.package_id, installRequest.install_root, installRequest.package_version, pkg);
+    const binDir = plan.binDir === undefined ? join(plan.installRoot, "bin") : plan.binDir;
     const scopeEnv = this.buildExecutionEnvironment({
       repoId: installRequest.repo_id,
       threadId: installRequest.thread_id
     });
-    const env = this.mergeInstallEnvironment(plan.envVars, [binDir], scopeEnv.env);
+    const env = this.mergeInstallEnvironment(plan.envVars, binDir ? [binDir] : [], scopeEnv.env);
     const logs: string[] = [];
 
     this.db.updateInstallRequest({
       installRequestId,
       status: "running",
-      binPath: binDir
+      ...(binDir ? { binPath: binDir } : {})
     });
     if (installRequest.request_id !== null) {
       this.db.updateRequestStatus(installRequest.request_id, "install_running");
@@ -169,7 +176,9 @@ export class InstallService {
 
     try {
       await mkdir(plan.installRoot, { recursive: true });
-      await mkdir(binDir, { recursive: true });
+      if (binDir) {
+        await mkdir(binDir, { recursive: true });
+      }
 
       for (const step of plan.steps) {
         logs.push(`$ ${step.command} ${step.args.join(" ")}`);
@@ -199,6 +208,10 @@ export class InstallService {
       }
 
       for (const wrapper of plan.wrappers) {
+        if (!binDir) {
+          throw new InstallServiceError("INSTALL_FAILED", `Package \`${installRequest.package_id}\` does not define a bin directory.`);
+        }
+
         const wrapperPath = join(binDir, wrapper.binaryName);
         await writeFile(wrapperPath, wrapper.scriptBody, "utf8");
         await chmod(wrapperPath, 0o755);
@@ -232,7 +245,7 @@ export class InstallService {
         installRequestId,
         status: "succeeded",
         approvedByUserId: installRequest.approved_by_user_id,
-        binPath: binDir,
+        ...(binDir ? { binPath: binDir } : {}),
         envJson: JSON.stringify(plan.envVars),
         logs: logs.join("\n\n"),
         completedAt: new Date().toISOString()
@@ -246,7 +259,7 @@ export class InstallService {
         installRequestId,
         status: "failed",
         approvedByUserId: installRequest.approved_by_user_id,
-        binPath: binDir,
+        ...(binDir ? { binPath: binDir } : {}),
         envJson: JSON.stringify(plan.envVars),
         logs: logs.join("\n\n"),
         errorMessage: message,
@@ -303,6 +316,10 @@ export class InstallService {
     repoId: number;
     threadId?: string | null;
   }): string {
+    if (isAptPackageId(input.packageId)) {
+      return join(this.config.installsRootPath, "system", this.getInstallRootSegment(input.packageId));
+    }
+
     if (input.scope === "repo") {
       return join(this.config.installsRootPath, "repo", String(input.repoId), input.packageId);
     }
@@ -312,6 +329,14 @@ export class InstallService {
     }
 
     return join(this.config.installsRootPath, "request", input.threadId, input.packageId);
+  }
+
+  private getInstallRootSegment(packageId: string): string {
+    if (isAptPackageId(packageId)) {
+      return `apt-${Buffer.from(packageId, "utf8").toString("base64url")}`;
+    }
+
+    return packageId;
   }
 
   private getInstallSourceRoot(input: { repoId: number; scope: InstallScope; requestId?: number | null }): string {
@@ -344,7 +369,14 @@ export class InstallService {
   ): NodeJS.ProcessEnv {
     const base: NodeJS.ProcessEnv = priorEnv ?? { ...process.env };
     const env: NodeJS.ProcessEnv = { ...base, ...envVars };
-    env.PATH = `${pathEntries.join(":")}:${base.PATH ?? ""}`;
+    const orderedPathEntries = pathEntries.filter((entry) => entry.length > 0);
+    if (orderedPathEntries.length > 0) {
+      env.PATH = `${orderedPathEntries.join(":")}:${base.PATH ?? ""}`;
+    } else if (base.PATH !== undefined) {
+      env.PATH = base.PATH;
+    } else {
+      delete env.PATH;
+    }
     return env;
   }
 
@@ -355,4 +387,68 @@ export class InstallService {
     const stdout = nodeError.stdout?.trim();
     return [command, message, stderr, stdout].filter(Boolean).join(": ");
   }
+
+  private buildInstallPlan(
+    packageId: string,
+    installRoot: string,
+    packageVersion: string,
+    pkg: ReturnType<typeof getInstallerPackageDefinition>
+  ) {
+    if (pkg && isAptPackageId(packageId) && this.shouldUseAptHelper()) {
+      const packageSpec = getAptPackageSpec(packageId);
+      const helperPath = this.config.aptInstallHelperPath;
+      if (!packageSpec || !helperPath) {
+        throw new InstallServiceError("INSTALL_UNAVAILABLE", "APT install helper configuration is invalid.");
+      }
+
+      return {
+        packageId,
+        packageVersion,
+        installRoot,
+        binDir: null,
+        envVars: {},
+        steps: [
+          {
+            label: "Install APT packages",
+            command: "sudo",
+            args: [helperPath, ...packageSpec.split(" ")]
+          }
+        ],
+        wrappers: []
+      };
+    }
+
+    return pkg!.buildPlan(installRoot, packageVersion);
+  }
+
+  private shouldUseAptHelper(): boolean {
+    return isRootUnavailable() && Boolean(this.config.aptInstallHelperPath);
+  }
+
+  private assertAptInstallAvailable(): void {
+    if (!isRootUnavailable()) {
+      return;
+    }
+
+    const helperPath = this.config.aptInstallHelperPath;
+    if (helperPath && existsSync(helperPath)) {
+      return;
+    }
+
+    if (helperPath && !existsSync(helperPath)) {
+      throw new InstallServiceError(
+        "INSTALL_UNAVAILABLE",
+        `APT installs require root privileges. Configured helper \`${helperPath}\` was not found or is not mounted in this runtime.`
+      );
+    }
+
+    throw new InstallServiceError(
+      "INSTALL_UNAVAILABLE",
+      "APT installs require root privileges. This runtime is not running as root, and no APT install helper is configured."
+    );
+  }
+}
+
+function isRootUnavailable(): boolean {
+  return typeof process.getuid === "function" && process.getuid() !== 0;
 }
