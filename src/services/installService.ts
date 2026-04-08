@@ -369,7 +369,14 @@ export class InstallService {
   ): NodeJS.ProcessEnv {
     const base: NodeJS.ProcessEnv = priorEnv ?? { ...process.env };
     const env: NodeJS.ProcessEnv = { ...base, ...envVars };
-    env.PATH = `${pathEntries.join(":")}:${base.PATH ?? ""}`;
+    const orderedPathEntries = pathEntries.filter((entry) => entry.length > 0);
+    if (orderedPathEntries.length > 0) {
+      env.PATH = `${orderedPathEntries.join(":")}:${base.PATH ?? ""}`;
+    } else if (base.PATH !== undefined) {
+      env.PATH = base.PATH;
+    } else {
+      delete env.PATH;
+    }
     return env;
   }
 
