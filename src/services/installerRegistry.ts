@@ -456,6 +456,21 @@ function buildJavaDownloadUrl(version: string): string {
   return `https://api.adoptium.net/v3/binary/version/${encodeURIComponent(`jdk-${version}`)}/linux/x64/jdk/hotspot/normal/eclipse`;
 }
 
+export function buildRustupInitDownloadUrl(arch: NodeJS.Architecture = process.arch): string {
+  const rustupArch = (() => {
+    switch (arch) {
+      case "x64":
+        return "x86_64";
+      case "arm64":
+        return "aarch64";
+      default:
+        throw new Error(`Unsupported Rust host architecture: ${arch}`);
+    }
+  })();
+
+  return `https://static.rust-lang.org/rustup/dist/${rustupArch}-unknown-linux-gnu/rustup-init`;
+}
+
 const packageDefinitions: InstallerPackageDefinition[] = [
   {
     packageId: "rustup-default-stable",
@@ -481,7 +496,7 @@ const packageDefinitions: InstallerPackageDefinition[] = [
         steps: [
           makeDownloadFileStep(
             "Download rustup-init",
-            "https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init",
+            buildRustupInitDownloadUrl(),
             rustupInitPath,
             "755"
           ),

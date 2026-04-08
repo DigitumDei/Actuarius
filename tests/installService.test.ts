@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import pino from "pino";
 import { AppDatabase } from "../src/db/database.js";
 import { InstallService } from "../src/services/installService.js";
+import { buildRustupInitDownloadUrl } from "../src/services/installerRegistry.js";
 
 vi.mock("../src/utils/spawnCollect.js");
 
@@ -227,7 +228,7 @@ describe("InstallService", () => {
       "python3",
       expect.arrayContaining([
         "-c",
-        "https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init",
+        buildRustupInitDownloadUrl(),
         "/data/tool-installs/repo/1/rustup-default-stable/downloads/rustup-init",
         "755"
       ]),
@@ -249,6 +250,15 @@ describe("InstallService", () => {
           RUSTUP_TOOLCHAIN: "stable"
         })
       })
+    );
+  });
+
+  it("builds the rustup-init download URL for supported Linux host architectures", () => {
+    expect(buildRustupInitDownloadUrl("x64")).toBe(
+      "https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init"
+    );
+    expect(buildRustupInitDownloadUrl("arm64")).toBe(
+      "https://static.rust-lang.org/rustup/dist/aarch64-unknown-linux-gnu/rustup-init"
     );
   });
 
