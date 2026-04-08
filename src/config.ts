@@ -58,6 +58,7 @@ const envSchema = z.object({
     .default("3600000")
     .transform((value) => Number.parseInt(value, 10))
     .refine((value) => Number.isFinite(value) && value > 0, "INSTALL_STEP_TIMEOUT_MS must be a positive number"),
+  APT_INSTALL_HELPER_PATH: optionalNonEmpty,
   ENABLE_CODEX_EXECUTION: z
     .string()
     .default("false")
@@ -127,6 +128,7 @@ export const appConfig = {
   askConcurrencyPerGuild: rawConfig.ASK_CONCURRENCY_PER_GUILD,
   askExecutionTimeoutMs: rawConfig.ASK_EXECUTION_TIMEOUT_MS,
   installStepTimeoutMs: rawConfig.INSTALL_STEP_TIMEOUT_MS,
+  aptInstallHelperPath: rawConfig.APT_INSTALL_HELPER_PATH,
   enableCodexExecution: rawConfig.ENABLE_CODEX_EXECUTION,
   enableGeminiExecution: rawConfig.ENABLE_GEMINI_EXECUTION
 };

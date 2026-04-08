@@ -54,6 +54,7 @@ import { CodexExecutionError, runCodexRequest } from "../services/codexExecution
 import { GeminiExecutionError, runGeminiRequest } from "../services/geminiExecutionService.js";
 import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
 import { InstallService, InstallServiceError } from "../services/installService.js";
+import { buildAptPackageId, getAptPackageSpec, isAptPackageId } from "../services/installerRegistry.js";
 import { createRequestWorktree, deleteRequestBranch, RequestWorktreeError } from "../services/requestWorktreeService.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
@@ -1344,10 +1345,27 @@ export class ActuariusBot {
       return;
     }
 
-    const packageId = interaction.options.getString("package", true);
+    const selectedPackageId = interaction.options.getString("package");
+    const aptPackage = interaction.options.getString("apt-package");
     const scope = interaction.options.getString("scope", true);
     if (scope !== "repo" && scope !== "request") {
       await interaction.reply({ content: "Invalid install scope.", ephemeral: true });
+      return;
+    }
+
+    if ((!selectedPackageId && !aptPackage) || (selectedPackageId && aptPackage)) {
+      await interaction.reply({
+        content: "Specify exactly one of `package` or `apt-package`.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    let packageId: string;
+    try {
+      packageId = selectedPackageId ?? buildAptPackageId(aptPackage!);
+    } catch (error) {
+      await interaction.reply({ content: `Install failed: ${this.describeExecutionError(error)}`, ephemeral: true });
       return;
     }
 
@@ -1405,7 +1423,7 @@ export class ActuariusBot {
 
     // Reply immediately — install may take a long time on slow connections
     await interaction.reply({
-      content: `Installing \`${packageId}\` in \`${scope}\` scope. I'll post here when it's done.`,
+      content: `Installing ${this.describeInstallTarget(packageId)} in \`${scope}\` scope. I'll post here when it's done.`,
       ephemeral: true
     });
 
@@ -1417,7 +1435,7 @@ export class ActuariusBot {
     ).then(async (completedInstall) => {
       await channel?.send(
         [
-          `<@${userId}> Installed \`${completedInstall.package_id}@${completedInstall.package_version}\` in \`${scope}\` scope.`,
+          `<@${userId}> Installed ${this.describeInstallTarget(completedInstall.package_id, completedInstall.package_version)} in \`${scope}\` scope.`,
           `Install request: #${completedInstall.id}`,
           completedInstall.bin_path ? `PATH prefix: \`${completedInstall.bin_path}\`` : "PATH prefix: (none)"
         ].join("\n")
@@ -2097,6 +2115,15 @@ Output the result of the command or the link to the created issue.`;
     }
 
     return "Unknown execution error.";
+  }
+
+  private describeInstallTarget(packageId: string, packageVersion?: string): string {
+    if (isAptPackageId(packageId)) {
+      const packageSpec = getAptPackageSpec(packageId) ?? packageVersion ?? packageId;
+      return `APT package \`${packageSpec}\``;
+    }
+
+    return packageVersion ? `\`${packageId}@${packageVersion}\`` : `\`${packageId}\``;
   }
 
   private async buildThreadPromptWithHistory(channel: AnyThreadChannel, newMessageContent: string): Promise<string> {

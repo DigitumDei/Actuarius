@@ -18,6 +18,7 @@ export interface InstallPlan {
   packageId: string;
   packageVersion: string;
   installRoot: string;
+  binDir?: string | null;
   envVars: Record<string, string>;
   steps: InstallStep[];
   wrappers: InstallWrapper[];
@@ -39,6 +40,9 @@ export interface InstallerPackageDefinition {
   resolveVersion?: (repoRoot: string) => string;
   buildPlan: (installRoot: string, packageVersion: string) => InstallPlan;
 }
+
+const APT_PACKAGE_ID_PREFIX = "apt:";
+const APT_PACKAGE_SPEC_PATTERN = /^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9-]+)?(?:=[a-z0-9.+:~_-]+)?$/i;
 
 const PYTHON_DOWNLOAD_AND_EXTRACT_SCRIPT = `
 import os
@@ -178,6 +182,79 @@ function requireMatchingVersion(rawVersion: string, pattern: RegExp, message: st
   }
 
   return value;
+}
+
+export function isAptPackageId(packageId: string): boolean {
+  return packageId.startsWith(APT_PACKAGE_ID_PREFIX);
+}
+
+export function normalizeAptPackageSpec(rawSpec: string): string {
+  const specs = rawSpec
+    .split(/\s+/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (specs.length === 0) {
+    throw new Error("APT installs require at least one package name.");
+  }
+
+  for (const spec of specs) {
+    if (!APT_PACKAGE_SPEC_PATTERN.test(spec)) {
+      throw new Error(
+        `APT package spec \`${spec}\` is invalid. Use Debian package names like \`libssl-dev\` or pinned specs like \`clang=1:16.0-57\`.`
+      );
+    }
+  }
+
+  return specs.join(" ");
+}
+
+export function buildAptPackageId(rawSpec: string): string {
+  return `${APT_PACKAGE_ID_PREFIX}${normalizeAptPackageSpec(rawSpec)}`;
+}
+
+export function getAptPackageSpec(packageId: string): string | undefined {
+  if (!isAptPackageId(packageId)) {
+    return undefined;
+  }
+
+  return normalizeAptPackageSpec(packageId.slice(APT_PACKAGE_ID_PREFIX.length));
+}
+
+function buildAptPackageDefinition(packageId: string): InstallerPackageDefinition {
+  const packageSpec = getAptPackageSpec(packageId);
+  if (!packageSpec) {
+    throw new Error(`Package \`${packageId}\` is not a supported apt package request.`);
+  }
+
+  const aptSpecs = packageSpec.split(" ");
+
+  return {
+    packageId,
+    summary: `APT package install (${packageSpec}).`,
+    supportedScopes: ["repo", "request"],
+    defaultVersion: packageSpec,
+    buildPlan: (installRoot, packageVersion) => ({
+      packageId,
+      packageVersion,
+      installRoot,
+      binDir: null,
+      envVars: {},
+      steps: [
+        {
+          label: "Refresh APT package indexes",
+          command: "apt-get",
+          args: ["update"]
+        },
+        {
+          label: "Install APT packages",
+          command: "apt-get",
+          args: ["install", "-y", "--no-install-recommends", ...aptSpecs]
+        }
+      ],
+      wrappers: []
+    })
+  };
 }
 
 function resolveJavaVersion(repoRoot: string): string {
@@ -625,6 +702,10 @@ export function listInstallerPackages(): InstallerPackageDefinition[] {
 }
 
 export function getInstallerPackageDefinition(packageId: string): InstallerPackageDefinition | undefined {
+  if (isAptPackageId(packageId)) {
+    return buildAptPackageDefinition(packageId);
+  }
+
   return packageDefinitions.find((pkg) => pkg.packageId === packageId);
 }
 

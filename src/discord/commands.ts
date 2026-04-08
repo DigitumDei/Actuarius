@@ -66,12 +66,18 @@ export const commandBuilders = [
     .addStringOption((option) => option.setName("prompt").setDescription("Request text for this thread.").setRequired(true)),
   new SlashCommandBuilder()
     .setName("install")
-    .setDescription("Install an allowlisted tool into repo or request scope. Requires Manage Server permission.")
+    .setDescription("Install an allowlisted tool or apt package. Requires Manage Server permission.")
     .addStringOption((option) =>
       INSTALLER_PACKAGE_CHOICES.reduce(
         (builder, choice) => builder.addChoices({ name: choice.name, value: choice.value }),
-        option.setName("package").setDescription("Allowlisted package ID to install.").setRequired(true)
+        option.setName("package").setDescription("Allowlisted package ID to install.").setRequired(false)
       )
+    )
+    .addStringOption((option) =>
+      option
+        .setName("apt-package")
+        .setDescription("APT package name or space-separated package specs to install.")
+        .setRequired(false)
     )
     .addStringOption((option) =>
       option
