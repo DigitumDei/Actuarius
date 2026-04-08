@@ -681,6 +681,117 @@ exec ${shellQuote(rustupBinary)} run ${shellQuote(packageVersion)} rustfmt "$@"
     }
   },
   {
+    packageId: "uv",
+    defaultVersion: "0.4.18",
+    summary: "uv Python package manager and project tool (uv, uvx).",
+    supportedScopes: ["repo", "request"],
+    buildPlan: (installRoot, packageVersion) => {
+      const uvDist = join(installRoot, "dist");
+      const archivePath = join(installRoot, "downloads", "uv.tar.gz");
+
+      return {
+        packageId: "uv",
+        packageVersion,
+        installRoot,
+        envVars: {},
+        steps: [
+          makeDownloadAndExtractStep(
+            "Install uv",
+            `https://github.com/astral-sh/uv/releases/download/${packageVersion}/uv-x86_64-unknown-linux-gnu.tar.gz`,
+            archivePath,
+            uvDist
+          )
+        ],
+        wrappers: [
+          {
+            binaryName: "uv",
+            scriptBody: makeExecWrapper(join(uvDist, "uv")),
+            verifyArgs: ["--version"]
+          },
+          {
+            binaryName: "uvx",
+            scriptBody: makeExecWrapper(join(uvDist, "uvx")),
+            verifyArgs: ["--version"]
+          }
+        ]
+      };
+    }
+  },
+  {
+    packageId: "pip",
+    defaultVersion: "system",
+    summary: "Python virtual environment with scoped pip, python, and python3.",
+    supportedScopes: ["repo", "request"],
+    buildPlan: (installRoot, packageVersion) => {
+      const venvPath = join(installRoot, "venv");
+
+      return {
+        packageId: "pip",
+        packageVersion,
+        installRoot,
+        envVars: {
+          VIRTUAL_ENV: venvPath
+        },
+        steps: [
+          {
+            label: "Create Python virtual environment",
+            command: "python3",
+            args: ["-m", "venv", venvPath]
+          }
+        ],
+        wrappers: [
+          {
+            binaryName: "pip",
+            scriptBody: makeExecWrapper(join(venvPath, "bin", "pip")),
+            verifyArgs: ["--version"]
+          },
+          {
+            binaryName: "python3",
+            scriptBody: makeExecWrapper(join(venvPath, "bin", "python3")),
+            verifyArgs: ["--version"]
+          },
+          {
+            binaryName: "python",
+            scriptBody: makeExecWrapper(join(venvPath, "bin", "python")),
+            verifyArgs: ["--version"]
+          }
+        ]
+      };
+    }
+  },
+  {
+    packageId: "maturin",
+    defaultVersion: "1.7.1",
+    summary: "Maturin build tool for Rust-based Python packages (PyO3/pyo3).",
+    supportedScopes: ["repo", "request"],
+    buildPlan: (installRoot, packageVersion) => {
+      const maturinDist = join(installRoot, "dist");
+      const archivePath = join(installRoot, "downloads", "maturin.tar.gz");
+
+      return {
+        packageId: "maturin",
+        packageVersion,
+        installRoot,
+        envVars: {},
+        steps: [
+          makeDownloadAndExtractStep(
+            "Install maturin",
+            `https://github.com/PyO3/maturin/releases/download/v${packageVersion}/maturin-x86_64-unknown-linux-musl.tar.gz`,
+            archivePath,
+            maturinDist
+          )
+        ],
+        wrappers: [
+          {
+            binaryName: "maturin",
+            scriptBody: makeExecWrapper(join(maturinDist, "maturin")),
+            verifyArgs: ["--version"]
+          }
+        ]
+      };
+    }
+  },
+  {
     packageId: "android-sdk",
     summary:
       "Android SDK command-line tools, platform-tools, and target platform resolved from repo config. Requires Java (java-temurin) at the same scope.",
