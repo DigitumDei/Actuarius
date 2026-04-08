@@ -52,8 +52,9 @@ COPY --from=build /app/dist ./dist
 COPY docker/entrypoint.sh /app/entrypoint.sh
 
 RUN useradd --uid 1001 --home-dir /data/home/appuser --no-create-home --shell /usr/sbin/nologin appuser \
-  && mkdir -p /data/home/appuser \
-  && cat <<'EOF' >/usr/local/bin/actuarius-apt-install
+  && mkdir -p /data/home/appuser
+
+RUN cat <<'EOF' >/usr/local/bin/actuarius-apt-install
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -74,7 +75,8 @@ apt-get update
 apt-get install -y --no-install-recommends "$@"
 rm -rf /var/lib/apt/lists/*
 EOF
-  && chmod 0755 /usr/local/bin/actuarius-apt-install \
+
+RUN chmod 0755 /usr/local/bin/actuarius-apt-install \
   && printf 'Defaults!/usr/local/bin/actuarius-apt-install !requiretty\nappuser ALL=(root) NOPASSWD: /usr/local/bin/actuarius-apt-install\n' >/etc/sudoers.d/actuarius-apt-install \
   && chmod 0440 /etc/sudoers.d/actuarius-apt-install \
   && chmod +x /app/entrypoint.sh \
