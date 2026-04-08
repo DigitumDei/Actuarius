@@ -205,6 +205,52 @@ describe("InstallService", () => {
     );
   });
 
+  it("bootstraps rustup inside the scoped install root instead of requiring a system rustup", async () => {
+    const install = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "rustup-default-stable",
+      packageVersion: "stable",
+      scope: "repo",
+      status: "approved",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1",
+      installRoot: "/data/tool-installs/repo/1/rustup-default-stable"
+    });
+
+    mockSpawnCollect.mockResolvedValue({ stdout: "ok", stderr: "" });
+
+    await service.runInstall(install.id);
+
+    expect(mockSpawnCollect).toHaveBeenCalledWith(
+      "python3",
+      expect.arrayContaining([
+        "-c",
+        "https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init",
+        "/data/tool-installs/repo/1/rustup-default-stable/downloads/rustup-init",
+        "755"
+      ]),
+      expect.objectContaining({
+        env: expect.objectContaining({
+          CARGO_HOME: "/data/tool-installs/repo/1/rustup-default-stable/cargo",
+          RUSTUP_HOME: "/data/tool-installs/repo/1/rustup-default-stable/rustup",
+          RUSTUP_TOOLCHAIN: "stable"
+        })
+      })
+    );
+    expect(mockSpawnCollect).toHaveBeenCalledWith(
+      "/data/tool-installs/repo/1/rustup-default-stable/downloads/rustup-init",
+      ["-y", "--profile", "minimal", "--default-toolchain", "stable", "--no-modify-path"],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          CARGO_HOME: "/data/tool-installs/repo/1/rustup-default-stable/cargo",
+          RUSTUP_HOME: "/data/tool-installs/repo/1/rustup-default-stable/rustup",
+          RUSTUP_TOOLCHAIN: "stable"
+        })
+      })
+    );
+  });
+
   it("marks the install as failed when the install step process rejects", async () => {
     const install = db.createInstallRequest({
       guildId: "guild-1",

@@ -88,6 +88,22 @@ else:
 shutil.rmtree(staging, ignore_errors=True)
 `.trim();
 
+const PYTHON_DOWNLOAD_FILE_SCRIPT = `
+import os
+import shutil
+import sys
+import urllib.request
+
+url, destination, mode = sys.argv[1:4]
+os.makedirs(os.path.dirname(destination), exist_ok=True)
+tmp_destination = destination + ".tmp"
+req = urllib.request.Request(url, headers={"User-Agent": "curl/8.0"})
+with urllib.request.urlopen(req) as response, open(tmp_destination, "wb") as output:
+    shutil.copyfileobj(response, output)
+os.replace(tmp_destination, destination)
+os.chmod(destination, int(mode, 8))
+`.trim();
+
 const PYTHON_WRITE_LICENSE_FILES_SCRIPT = `
 import os, sys
 licenses_dir = sys.argv[1]
@@ -120,6 +136,14 @@ function makeDownloadAndExtractStep(label: string, url: string, archivePath: str
     label,
     command: "python3",
     args: ["-c", PYTHON_DOWNLOAD_AND_EXTRACT_SCRIPT, url, archivePath, destination]
+  };
+}
+
+function makeDownloadFileStep(label: string, url: string, destination: string, mode: string): InstallStep {
+  return {
+    label,
+    command: "python3",
+    args: ["-c", PYTHON_DOWNLOAD_FILE_SCRIPT, url, destination, mode]
   };
 }
 
@@ -364,6 +388,8 @@ const packageDefinitions: InstallerPackageDefinition[] = [
     buildPlan: (installRoot, packageVersion) => {
       const cargoHome = join(installRoot, "cargo");
       const rustupHome = join(installRoot, "rustup");
+      const rustupInitPath = join(installRoot, "downloads", "rustup-init");
+      const rustupBinary = join(cargoHome, "bin", "rustup");
       const envVars = {
         CARGO_HOME: cargoHome,
         RUSTUP_HOME: rustupHome,
@@ -376,10 +402,16 @@ const packageDefinitions: InstallerPackageDefinition[] = [
         installRoot,
         envVars,
         steps: [
+          makeDownloadFileStep(
+            "Download rustup-init",
+            "https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init",
+            rustupInitPath,
+            "755"
+          ),
           {
             label: "Install Rust stable toolchain",
-            command: "rustup",
-            args: ["toolchain", "install", packageVersion, "--profile", "minimal", "--no-self-update"]
+            command: rustupInitPath,
+            args: ["-y", "--profile", "minimal", "--default-toolchain", packageVersion, "--no-modify-path"]
           }
         ],
         wrappers: [
@@ -390,7 +422,7 @@ set -euo pipefail
 export CARGO_HOME=${shellQuote(cargoHome)}
 export RUSTUP_HOME=${shellQuote(rustupHome)}
 export RUSTUP_TOOLCHAIN=${shellQuote(packageVersion)}
-exec rustup run ${shellQuote(packageVersion)} cargo "$@"
+exec ${shellQuote(rustupBinary)} run ${shellQuote(packageVersion)} cargo "$@"
 `,
             verifyArgs: ["--version"]
           },
@@ -401,7 +433,7 @@ set -euo pipefail
 export CARGO_HOME=${shellQuote(cargoHome)}
 export RUSTUP_HOME=${shellQuote(rustupHome)}
 export RUSTUP_TOOLCHAIN=${shellQuote(packageVersion)}
-exec rustup run ${shellQuote(packageVersion)} rustc "$@"
+exec ${shellQuote(rustupBinary)} run ${shellQuote(packageVersion)} rustc "$@"
 `,
             verifyArgs: ["--version"]
           },
@@ -412,7 +444,7 @@ set -euo pipefail
 export CARGO_HOME=${shellQuote(cargoHome)}
 export RUSTUP_HOME=${shellQuote(rustupHome)}
 export RUSTUP_TOOLCHAIN=${shellQuote(packageVersion)}
-exec rustup run ${shellQuote(packageVersion)} rustfmt "$@"
+exec ${shellQuote(rustupBinary)} run ${shellQuote(packageVersion)} rustfmt "$@"
 `,
             verifyArgs: ["--version"]
           }
