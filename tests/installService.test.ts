@@ -61,6 +61,7 @@ describe("InstallService", () => {
         askConcurrencyPerGuild: 1,
         askExecutionTimeoutMs: 1000,
         installStepTimeoutMs: 1000,
+        aptInstallHelperPath: undefined,
         enableCodexExecution: false,
         enableGeminiExecution: false
       },
@@ -270,6 +271,25 @@ describe("InstallService", () => {
     ).toThrowError(expect.objectContaining({ code: "UNKNOWN_PACKAGE" }));
   });
 
+  it("accepts apt package requests and stores them in a shared system install root", () => {
+    const install = service.createApprovedInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "apt:libssl-dev",
+      scope: "repo",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1"
+    });
+
+    expect(install).toMatchObject({
+      package_id: "apt:libssl-dev",
+      package_version: "libssl-dev",
+      scope: "repo",
+      status: "approved",
+      install_root: expect.stringContaining("/data/tool-installs/system/apt-")
+    });
+  });
+
   it("rejects request-scoped installs without a thread id", () => {
     expect(() =>
       service.createApprovedInstallRequest({
@@ -477,5 +497,96 @@ describe("InstallService", () => {
         approvedByUserId: "admin-1"
       })
     ).toThrowError(expect.objectContaining({ code: "CONFIG_INVALID" }));
+  });
+
+  it("fails apt installs early when the process is not running as root", async () => {
+    const getuidSpy = vi.spyOn(process, "getuid").mockReturnValue(1001);
+    const install = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "apt:libssl-dev",
+      packageVersion: "libssl-dev",
+      scope: "repo",
+      status: "approved",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1",
+      installRoot: "/data/tool-installs/system/apt-test"
+    });
+
+    await expect(service.runInstall(install.id)).rejects.toMatchObject({
+      code: "INSTALL_UNAVAILABLE",
+      message: expect.stringContaining("no APT install helper is configured")
+    });
+    expect(mockSpawnCollect).not.toHaveBeenCalled();
+    getuidSpy.mockRestore();
+  });
+
+  it("uses the configured apt helper via sudo when the process is not running as root", async () => {
+    const helperPath = join(tmpdir(), "actuarius-apt-install-test-helper");
+    writeFileSync(helperPath, "#!/usr/bin/env bash\nexit 0\n", { encoding: "utf8", mode: 0o755 });
+    const getuidSpy = vi.spyOn(process, "getuid").mockReturnValue(1001);
+    const originalPath = process.env.PATH;
+    process.env.PATH = "/usr/local/bin:/usr/bin";
+    try {
+      service = new InstallService(
+        {
+          discordToken: "token",
+          discordClientId: "client",
+          discordGuildId: undefined,
+          ghToken: undefined,
+          githubAppId: undefined,
+          githubAppPrivateKey: undefined,
+          githubAppPrivateKeyB64: undefined,
+          githubAppInstallationId: undefined,
+          gitUserName: undefined,
+          gitUserEmail: undefined,
+          geminiApiKey: undefined,
+          databasePath: ":memory:",
+          reposRootPath,
+          installsRootPath: "/data/tool-installs",
+          githubCliConfigPath: "/data/.gh",
+          logLevel: "info",
+          threadAutoArchiveMinutes: 1440,
+          askConcurrencyPerGuild: 1,
+          askExecutionTimeoutMs: 1000,
+          installStepTimeoutMs: 1000,
+          aptInstallHelperPath: helperPath,
+          enableCodexExecution: false,
+          enableGeminiExecution: false
+        },
+        pino({ level: "silent" }),
+        db
+      );
+
+      const install = db.createInstallRequest({
+        guildId: "guild-1",
+        repoId: 1,
+        packageId: "apt:libssl-dev pkg-config",
+        packageVersion: "libssl-dev pkg-config",
+        scope: "repo",
+        status: "approved",
+        requestedByUserId: "user-1",
+        approvedByUserId: "admin-1",
+        installRoot: "/data/tool-installs/system/apt-test"
+      });
+
+      mockSpawnCollect.mockResolvedValue({ stdout: "ok", stderr: "" });
+
+      await service.runInstall(install.id);
+
+      expect(mockSpawnCollect).toHaveBeenCalledWith(
+        "sudo",
+        [helperPath, "libssl-dev", "pkg-config"],
+        expect.objectContaining({
+          cwd: "/data/tool-installs/system/apt-test",
+          env: expect.objectContaining({
+            PATH: "/usr/local/bin:/usr/bin"
+          })
+        })
+      );
+    } finally {
+      process.env.PATH = originalPath;
+      getuidSpy.mockRestore();
+    }
   });
 });

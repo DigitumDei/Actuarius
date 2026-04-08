@@ -35,7 +35,7 @@ describe("command registration", () => {
     ]);
   });
 
-  it("registers /install with package and scope options", () => {
+  it("registers /install with allowlisted and apt package options", () => {
     const installCommand = commandBuilders.find((builder) => builder.name === "install");
     expect(installCommand).toBeDefined();
 
@@ -43,7 +43,7 @@ describe("command registration", () => {
     expect(json.options).toEqual([
       expect.objectContaining({
         name: "package",
-        required: true,
+        required: false,
         choices: expect.arrayContaining([
           { name: "rustup-default-stable", value: "rustup-default-stable" },
           { name: "npm-prettier", value: "npm-prettier" },
@@ -52,6 +52,10 @@ describe("command registration", () => {
           { name: "kotlin-compiler", value: "kotlin-compiler" },
           { name: "android-sdk", value: "android-sdk" }
         ])
+      }),
+      expect.objectContaining({
+        name: "apt-package",
+        required: false
       }),
       expect.objectContaining({
         name: "scope",

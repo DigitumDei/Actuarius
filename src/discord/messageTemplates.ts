@@ -8,7 +8,7 @@ export function buildHelpText(): string {
     "- `/repos` List connected repos and their channels.",
     "- `/issues [mode:<list|summary|detail>] [issue:<number>]` Read open GitHub issues for the connected repo.",
     "- `/ask prompt:<text>` Create a new request thread and run AI in an isolated worktree.",
-    "- `/install package:<allowed-package-id> scope:<repo|request>` Install an allowlisted tool into repo or request scope (admin only).",
+    "- `/install [package:<allowed-package-id>] [apt-package:<deb-specs>] scope:<repo|request>` Install an allowlisted tool or apt package (admin only; specify exactly one of `package` or `apt-package`).",
     "- `/review` Run adversarial code review in the current request thread (request owner or Manage Server).",
     "- `/review-rounds [rounds:<number>]` Show or set the max `/review` consensus rounds for this server (admin only to set).",
     "- `/model-select provider:<claude|codex|gemini> model:<name>` Set the AI provider and model for `/ask` (admin only).",
