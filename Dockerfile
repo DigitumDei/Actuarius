@@ -64,7 +64,7 @@ if [ "$#" -eq 0 ]; then
 fi
 
 for spec in "$@"; do
-  if ! [[ "$spec" =~ ^[A-Za-z0-9][A-Za-z0-9+.-]*(?::[A-Za-z0-9-]+)?(=[A-Za-z0-9.+:~_-]+)?$ ]]; then
+  if ! [[ "$spec" =~ ^[A-Za-z0-9][A-Za-z0-9+.-]*(:[A-Za-z0-9-]+)?(=[A-Za-z0-9.+:~_-]+)?$ ]]; then
     echo "invalid apt package spec: $spec" >&2
     exit 64
   fi
