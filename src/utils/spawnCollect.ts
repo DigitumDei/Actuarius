@@ -39,6 +39,7 @@ export function spawnCollect(
     }, options.timeoutMs);
 
     child.stdout!.on("data", (chunk: Buffer) => {
+      if (bufferOverflow || timedOut) return;
       stdout += chunk.toString();
       if (stdout.length > options.maxBuffer) {
         bufferOverflow = true;
@@ -47,6 +48,7 @@ export function spawnCollect(
     });
 
     child.stderr!.on("data", (chunk: Buffer) => {
+      if (bufferOverflow || timedOut) return;
       const combined = stderr + chunk.toString();
       if (combined.length > effectiveStderrMax) {
         stderrTruncated = true;
