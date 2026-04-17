@@ -471,6 +471,36 @@ export function buildRustupInitDownloadUrl(arch: NodeJS.Architecture = process.a
   return `https://static.rust-lang.org/rustup/dist/${rustupArch}-unknown-linux-gnu/rustup-init`;
 }
 
+export function buildUvDownloadUrl(version: string, arch: NodeJS.Architecture = process.arch): string {
+  const uvArch = (() => {
+    switch (arch) {
+      case "x64":
+        return "x86_64";
+      case "arm64":
+        return "aarch64";
+      default:
+        throw new Error(`Unsupported uv host architecture: ${arch}`);
+    }
+  })();
+
+  return `https://github.com/astral-sh/uv/releases/download/${version}/uv-${uvArch}-unknown-linux-gnu.tar.gz`;
+}
+
+export function buildMaturinDownloadUrl(version: string, arch: NodeJS.Architecture = process.arch): string {
+  const maturinArch = (() => {
+    switch (arch) {
+      case "x64":
+        return "x86_64";
+      case "arm64":
+        return "aarch64";
+      default:
+        throw new Error(`Unsupported maturin host architecture: ${arch}`);
+    }
+  })();
+
+  return `https://github.com/PyO3/maturin/releases/download/v${version}/maturin-${maturinArch}-unknown-linux-musl.tar.gz`;
+}
+
 const packageDefinitions: InstallerPackageDefinition[] = [
   {
     packageId: "rustup-default-stable",
@@ -697,7 +727,7 @@ exec ${shellQuote(rustupBinary)} run ${shellQuote(packageVersion)} rustfmt "$@"
         steps: [
           makeDownloadAndExtractStep(
             "Install uv",
-            `https://github.com/astral-sh/uv/releases/download/${packageVersion}/uv-x86_64-unknown-linux-gnu.tar.gz`,
+            buildUvDownloadUrl(packageVersion),
             archivePath,
             uvDist
           )
@@ -776,7 +806,7 @@ exec ${shellQuote(rustupBinary)} run ${shellQuote(packageVersion)} rustfmt "$@"
         steps: [
           makeDownloadAndExtractStep(
             "Install maturin",
-            `https://github.com/PyO3/maturin/releases/download/v${packageVersion}/maturin-x86_64-unknown-linux-musl.tar.gz`,
+            buildMaturinDownloadUrl(packageVersion),
             archivePath,
             maturinDist
           )
