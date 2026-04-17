@@ -1178,7 +1178,7 @@ export class ActuariusBot {
       await interaction.editReply({ content: `GitHub authentication refreshed. Logged in as \`${login}\`.` });
     } catch (err) {
       this.logger.error({ err }, "gh-auth-refresh failed");
-      const message = err instanceof Error ? err.message : String(err);
+      const message = err instanceof Error ? ((err as any).stderr?.trim() || err.message) : String(err);
       await interaction.editReply({ content: `GitHub authentication refresh failed: ${message}` });
     }
   }

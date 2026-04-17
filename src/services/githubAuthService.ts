@@ -396,11 +396,14 @@ class GitHubAuthManager {
   }
 
   public async forceRefresh(): Promise<string> {
+    if (this.refreshPromise) {
+      await this.refreshPromise;
+    }
     this.cachedInstallationToken = null;
     await this.refreshAuthentication();
     const env = this.getCommandEnvironment();
     const { stdout } = await spawnCollect("gh", ["api", "/user", "-q", ".login"], {
-      cwd: "/",
+      cwd: process.cwd(),
       timeoutMs: GITHUB_AUTH_COMMAND_TIMEOUT_MS,
       maxBuffer: 1024 * 1024,
       env
