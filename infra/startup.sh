@@ -22,10 +22,9 @@ fi
 mkdir -p "$DATA_MNT/repos"
 
 # --- Ensure app data is owned by appuser (UID 1001) inside the container ---
-# Chown everything except Docker's data-root which must stay root-owned.
 touch "$DATA_MNT/app.db"
 chown 1001:1001 "$DATA_MNT"
-find "$DATA_MNT" -maxdepth 1 -not -name docker -not -name .swapfile -not -path "$DATA_MNT" -exec chown -R 1001:1001 {} +
+find "$DATA_MNT" -maxdepth 1 -not -name .swapfile -not -path "$DATA_MNT" -exec chown -R 1001:1001 {} +
 
 # --- Swap file on data disk (safety margin for Claude CLI subprocesses) ---
 SWAP="$DATA_MNT/.swapfile"
@@ -41,14 +40,6 @@ swapon "$SWAP" 2>/dev/null || true
 META="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
 HDR="Metadata-Flavor: Google"
 curl -sf -H "$HDR" "$META/env-redeploy-script" > /var/redeploy.sh
-
-# --- Move Docker data-root to the persistent data disk ---
-DOCKER_DATA="$DATA_MNT/docker"
-mkdir -p "$DOCKER_DATA"
-cat > /etc/docker/daemon.json <<DJSON
-{"data-root": "$DOCKER_DATA"}
-DJSON
-systemctl restart docker
 
 # --- Deploy the bot (reuses the same script used for manual redeploys) ---
 bash /var/redeploy.sh
