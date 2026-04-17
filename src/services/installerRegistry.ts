@@ -471,6 +471,36 @@ export function buildRustupInitDownloadUrl(arch: NodeJS.Architecture = process.a
   return `https://static.rust-lang.org/rustup/dist/${rustupArch}-unknown-linux-gnu/rustup-init`;
 }
 
+export function buildUvDownloadUrl(version: string, arch: NodeJS.Architecture = process.arch): string {
+  const uvArch = (() => {
+    switch (arch) {
+      case "x64":
+        return "x86_64";
+      case "arm64":
+        return "aarch64";
+      default:
+        throw new Error(`Unsupported uv host architecture: ${arch}`);
+    }
+  })();
+
+  return `https://github.com/astral-sh/uv/releases/download/${version}/uv-${uvArch}-unknown-linux-gnu.tar.gz`;
+}
+
+export function buildMaturinDownloadUrl(version: string, arch: NodeJS.Architecture = process.arch): string {
+  const maturinArch = (() => {
+    switch (arch) {
+      case "x64":
+        return "x86_64";
+      case "arm64":
+        return "aarch64";
+      default:
+        throw new Error(`Unsupported maturin host architecture: ${arch}`);
+    }
+  })();
+
+  return `https://github.com/PyO3/maturin/releases/download/v${version}/maturin-${maturinArch}-unknown-linux-musl.tar.gz`;
+}
+
 const packageDefinitions: InstallerPackageDefinition[] = [
   {
     packageId: "rustup-default-stable",
@@ -675,6 +705,117 @@ exec ${shellQuote(rustupBinary)} run ${shellQuote(packageVersion)} rustfmt "$@"
             binaryName: "kotlin",
             scriptBody: makeExecWrapper(join(kotlinHome, "bin", "kotlin")),
             verifyArgs: ["-version"]
+          }
+        ]
+      };
+    }
+  },
+  {
+    packageId: "uv",
+    defaultVersion: "0.4.18",
+    summary: "uv Python package manager and project tool (uv, uvx).",
+    supportedScopes: ["repo", "request"],
+    buildPlan: (installRoot, packageVersion) => {
+      const uvDist = join(installRoot, "dist");
+      const archivePath = join(installRoot, "downloads", "uv.tar.gz");
+
+      return {
+        packageId: "uv",
+        packageVersion,
+        installRoot,
+        envVars: {},
+        steps: [
+          makeDownloadAndExtractStep(
+            "Install uv",
+            buildUvDownloadUrl(packageVersion),
+            archivePath,
+            uvDist
+          )
+        ],
+        wrappers: [
+          {
+            binaryName: "uv",
+            scriptBody: makeExecWrapper(join(uvDist, "uv")),
+            verifyArgs: ["--version"]
+          },
+          {
+            binaryName: "uvx",
+            scriptBody: makeExecWrapper(join(uvDist, "uvx")),
+            verifyArgs: ["--version"]
+          }
+        ]
+      };
+    }
+  },
+  {
+    packageId: "pip",
+    defaultVersion: "system",
+    summary: "Python virtual environment with scoped pip, python, and python3.",
+    supportedScopes: ["repo", "request"],
+    buildPlan: (installRoot, packageVersion) => {
+      const venvPath = join(installRoot, "venv");
+
+      return {
+        packageId: "pip",
+        packageVersion,
+        installRoot,
+        envVars: {
+          VIRTUAL_ENV: venvPath
+        },
+        steps: [
+          {
+            label: "Create Python virtual environment",
+            command: "python3",
+            args: ["-m", "venv", venvPath]
+          }
+        ],
+        wrappers: [
+          {
+            binaryName: "pip",
+            scriptBody: makeExecWrapper(join(venvPath, "bin", "pip")),
+            verifyArgs: ["--version"]
+          },
+          {
+            binaryName: "python3",
+            scriptBody: makeExecWrapper(join(venvPath, "bin", "python3")),
+            verifyArgs: ["--version"]
+          },
+          {
+            binaryName: "python",
+            scriptBody: makeExecWrapper(join(venvPath, "bin", "python")),
+            verifyArgs: ["--version"]
+          }
+        ]
+      };
+    }
+  },
+  {
+    packageId: "maturin",
+    defaultVersion: "1.7.1",
+    summary: "Maturin build tool for Rust-based Python packages (PyO3/pyo3).",
+    supportedScopes: ["repo", "request"],
+    buildPlan: (installRoot, packageVersion) => {
+      const maturinDist = join(installRoot, "dist");
+      const archivePath = join(installRoot, "downloads", "maturin.tar.gz");
+
+      return {
+        packageId: "maturin",
+        packageVersion,
+        installRoot,
+        envVars: {},
+        steps: [
+          makeDownloadAndExtractStep(
+            "Install maturin",
+            buildMaturinDownloadUrl(packageVersion),
+            archivePath,
+            maturinDist
+          )
+        ],
+        wrappers: [
+          {
+            binaryName: "maturin",
+            scriptBody: makeExecWrapper(join(maturinDist, "maturin")),
+            verifyArgs: ["--version"]
           }
         ]
       };
