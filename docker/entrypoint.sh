@@ -4,8 +4,7 @@ set -eu
 GIT_USER_NAME="${GIT_USER_NAME:-Actuarius Bot}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-actuarius-bot@users.noreply.github.com}"
 
-mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" \
-  "$HOME/.claude" "$HOME/.codex" "$HOME/.gemini"
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
 
 /app/install-llm-user-instructions.sh
 
