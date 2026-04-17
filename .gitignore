@@ -10,6 +10,8 @@ data/
 
 .claude.credentials.json
 .claude/
+!docker/llm-user-instructions/.claude/
+!docker/llm-user-instructions/.claude/CLAUDE.md
 
 # Terraform
 infra/*.tfvars
