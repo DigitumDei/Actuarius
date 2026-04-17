@@ -141,6 +141,9 @@ export const commandBuilders = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName("gh-auth-refresh")
+    .setDescription("Force-refresh the GitHub App authentication token. Requires Manage Server permission."),
+  new SlashCommandBuilder()
     .setName("delete")
     .setDescription("Delete the worktree branch associated with this request thread."),
   new SlashCommandBuilder()
@@ -164,6 +167,7 @@ export type CommandName =
   | "model-current"
   | "review-rounds"
   | "codex-auth"
+  | "gh-auth-refresh"
   | "delete"
   | "review";
 
