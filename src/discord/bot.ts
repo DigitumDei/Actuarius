@@ -27,7 +27,7 @@ import type { AiProvider, RepoRow, RequestStatus } from "../db/types.js";
 import { commandBuilders } from "./commands.js";
 import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
-import { getGitHubCommandEnvironment } from "../services/githubAuthService.js";
+import { forceRefreshGitHubAuth, getGitHubCommandEnvironment } from "../services/githubAuthService.js";
 import {
   GitHubIssueLookupError,
   GitHubRepoLookupError,
@@ -511,6 +511,9 @@ export class ActuariusBot {
         return;
       case "codex-auth":
         await this.handleCodexAuth(interaction);
+        return;
+      case "gh-auth-refresh":
+        await this.handleGhAuthRefresh(interaction);
         return;
       case "delete":
         await this.handleDelete(interaction);
@@ -1151,6 +1154,33 @@ export class ActuariusBot {
       logCommand: "codex-auth",
       successMessage: "Codex credentials saved. `/ask` requests with the Codex provider should now work."
     });
+  }
+
+  private async handleGhAuthRefresh(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to refresh GitHub authentication.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const login = await forceRefreshGitHubAuth();
+      this.logger.info({ login }, "GitHub auth force-refreshed via /gh-auth-refresh");
+      await interaction.editReply({ content: `GitHub authentication refreshed. Logged in as \`${login}\`.` });
+    } catch (err) {
+      this.logger.error({ err }, "gh-auth-refresh failed");
+      const message = err instanceof Error ? ((err as any).stderr?.trim() || err.message) : String(err);
+      await interaction.editReply({ content: `GitHub authentication refresh failed: ${message}` });
+    }
   }
 
   private async handleCredentialFileUpload(

@@ -387,12 +387,28 @@ class GitHubAuthManager {
 
     const delay = Math.max(expiresAtMs - Date.now() - TOKEN_REFRESH_BUFFER_MS, TOKEN_REFRESH_RETRY_MS);
     this.refreshTimer = setTimeout(() => {
-      void this.refreshAuthentication().catch((error) => {
-        this.logger.error({ error }, "Failed to refresh GitHub App auth; retrying soon");
+      void this.refreshAuthentication().catch((err) => {
+        this.logger.error({ err }, "Failed to refresh GitHub App auth; retrying soon");
         this.scheduleRefresh(Date.now() + TOKEN_REFRESH_RETRY_MS + TOKEN_REFRESH_BUFFER_MS);
       });
     }, delay);
     this.refreshTimer.unref?.();
+  }
+
+  public async forceRefresh(): Promise<string> {
+    if (this.refreshPromise) {
+      await this.refreshPromise;
+    }
+    this.cachedInstallationToken = null;
+    await this.refreshAuthentication();
+    const env = this.getCommandEnvironment();
+    const { stdout } = await spawnCollect("gh", ["api", "/user", "-q", ".login"], {
+      cwd: process.cwd(),
+      timeoutMs: GITHUB_AUTH_COMMAND_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+      env
+    });
+    return stdout.trim();
   }
 
   private resolveGitIdentity(): GitIdentity | null {
@@ -455,4 +471,11 @@ export async function configureRepositoryGitAuth(localPath: string): Promise<voi
   }
 
   await gitHubAuthManager.configureRepository(localPath);
+}
+
+export async function forceRefreshGitHubAuth(): Promise<string> {
+  if (!gitHubAuthManager) {
+    throw new Error("GitHub auth manager is not initialized.");
+  }
+  return gitHubAuthManager.forceRefresh();
 }

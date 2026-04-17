@@ -2,6 +2,15 @@
 
 Hard-won knowledge from debugging and development. Read this before making changes to avoid repeating past mistakes.
 
+## Recovering from an expired `gh` token on the deployed box
+
+If `gh auth status` shows a 401 inside the `actuarius` container, the GitHub App installation token in `/data/.gh/hosts.yml` is stale. The auth manager's scheduled refresh loop uses pino with the `error` key (instead of `err`), so `error.message` is silently dropped from logs — only the error `code` is visible.
+
+**Recovery options (in order of preference):**
+1. `/gh-auth-refresh` — Discord slash command (requires Manage Server). Force-mints a fresh installation token and re-runs `gh auth login`. Reports the logged-in account name on success.
+2. `docker restart actuarius` — re-runs `initialize()`, which also mints a fresh token. Use when the bot is unreachable via Discord.
+3. If both fail: the GitHub App private key or installation ID is the culprit. Regenerate the private key on GitHub, re-encode it (`base64 -w0 private-key.pem`), update `.env` `GITHUB_APP_PRIVATE_KEY_B64`, and `docker compose up -d --build`.
+
 ## Subprocess stdin must be closed
 
 `execFile`/`promisify` leaves stdin as an open pipe. CLI tools like Claude wait on stdin before running, even with `-p`, causing the process to stall indefinitely.
