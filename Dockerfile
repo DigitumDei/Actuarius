@@ -15,8 +15,6 @@ RUN apt-get update \
     sudo \
   && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @openai/codex @anthropic-ai/claude-code @google/gemini-cli
-
 FROM base AS deps
 
 COPY package.json package-lock.json ./
@@ -40,6 +38,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/data/app.db
 ENV HOME=/data/home/appuser
+ENV NPM_CONFIG_PREFIX=/data/home/appuser/.npm-global
+ENV PATH=/data/home/appuser/.npm-global/bin:$PATH
 ENV XDG_CONFIG_HOME=/data/home/appuser/.config
 ENV XDG_CACHE_HOME=/data/home/appuser/.cache
 ENV XDG_DATA_HOME=/data/home/appuser/.local/share
