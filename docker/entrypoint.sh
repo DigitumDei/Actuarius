@@ -8,7 +8,9 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STA
 mkdir -p "$NPM_CONFIG_PREFIX"
 
 /app/install-llm-user-instructions.sh
-/app/seed-provider-clis.sh
+if ! /app/seed-provider-clis.sh; then
+  echo "WARNING: provider CLI seeding failed; continuing startup with currently installed CLIs" >&2
+fi
 
 if [ ! -f "$HOME/.gemini/settings.json" ]; then
   cat <<EOF > "$HOME/.gemini/settings.json"

@@ -110,7 +110,7 @@ docker-compose up
 
 The first container start after a fresh volume mount is slower than normal because it seeds `claude`, `codex`, and `gemini` into `/data/home/appuser/.npm-global`. Later restarts skip installs for CLIs that are already present and only repair the specific provider binaries that are missing.
 
-If the npm registry is unavailable during first boot or a later repair of a missing CLI, startup fails fast and the container should be restarted after network access is restored.
+If the npm registry is unavailable during first boot or a later repair of a missing CLI, the bot still starts and logs a warning instead of crash-looping. Requests that need a missing provider CLI will continue to fail until network access is restored and the container is restarted or the CLI is reinstalled manually.
 
 ### PowerShell helper
 
