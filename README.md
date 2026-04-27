@@ -12,9 +12,9 @@ Discord bot container that links GitHub repos to Discord channels and creates re
   - `gh`
   - `node`
   - `npm`
-  - `codex`
-  - `claude`
-  - `gemini`
+  - `codex` (seeded into `/data/home/appuser/.npm-global/bin` on first boot)
+  - `claude` (seeded into `/data/home/appuser/.npm-global/bin` on first boot)
+  - `gemini` (seeded into `/data/home/appuser/.npm-global/bin` on first boot)
 - Waits for Discord server invite if not yet in any server.
 - Registers slash commands:
   - `/help`
@@ -63,7 +63,7 @@ Copy `.env.example` to `.env` and set:
 - `GEMINI_API_KEY` (required for Gemini execution)
 - `CLAUDE_CODE_OAUTH_TOKEN` (optional for local/manual runs, required by the production redeploy helper for non-interactive Claude auth)
 
-Provider CLI auth state is persisted under `/data/home/appuser` inside the container. That keeps Claude and Codex authentication across container replacement, because production mounts `/data` from the persistent disk. Gemini execution uses `GEMINI_API_KEY` instead of persisted OAuth state.
+Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global`, with `docker/entrypoint.sh` seeding them on first boot if missing. That keeps Claude and Codex authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. Gemini execution uses `GEMINI_API_KEY` instead of persisted OAuth state.
 
 ## Local development
 
@@ -108,6 +108,10 @@ Or without rebuilding (uses cached image):
 docker-compose up
 ```
 
+The first container start after a fresh volume mount is slower than normal because it seeds `claude`, `codex`, and `gemini` into `/data/home/appuser/.npm-global`. Later restarts skip installs for CLIs that are already present and only repair the specific provider binaries that are missing.
+
+If the npm registry is unavailable during first boot or a later repair of a missing CLI, the bot still starts and logs a warning instead of crash-looping. Requests that need a missing provider CLI will continue to fail until network access is restored and the container is restarted or the CLI is reinstalled manually.
+
 ### PowerShell helper
 
 ```powershell
@@ -147,6 +151,16 @@ docker run --rm \
 ```
 
 If you authenticate Claude interactively once inside a container with the `/data` volume mounted, that persisted state is also reused on later starts. Codex CLI auth is stored under the same persisted home tree. Gemini requires `GEMINI_API_KEY`.
+
+### Updating provider CLIs without rebuilding
+
+Because the provider CLIs live under `/data/home/appuser/.npm-global`, you can update them directly inside the running container without rebuilding the image:
+
+```bash
+docker exec -u appuser actuarius npm install -g @anthropic-ai/claude-code@latest
+docker exec -u appuser actuarius npm install -g @openai/codex@latest
+docker exec -u appuser actuarius npm install -g @google/gemini-cli@latest
+```
 
 ## Production operations (GCP VM)
 
