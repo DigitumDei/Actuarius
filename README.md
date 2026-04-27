@@ -108,7 +108,9 @@ Or without rebuilding (uses cached image):
 docker-compose up
 ```
 
-The first container start after a fresh volume mount is slower than normal because it seeds `claude`, `codex`, and `gemini` into `/data/home/appuser/.npm-global`. Later restarts skip that install unless one of the binaries is missing.
+The first container start after a fresh volume mount is slower than normal because it seeds `claude`, `codex`, and `gemini` into `/data/home/appuser/.npm-global`. Later restarts skip installs for CLIs that are already present and only repair the specific provider binaries that are missing.
+
+If the npm registry is unavailable during first boot or a later repair of a missing CLI, startup fails fast and the container should be restarted after network access is restored.
 
 ### PowerShell helper
 

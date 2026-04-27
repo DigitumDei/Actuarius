@@ -6,13 +6,9 @@ GIT_USER_EMAIL="${GIT_USER_EMAIL:-actuarius-bot@users.noreply.github.com}"
 
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
 mkdir -p "$NPM_CONFIG_PREFIX"
-export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
 
 /app/install-llm-user-instructions.sh
-
-if [ ! -x "$NPM_CONFIG_PREFIX/bin/claude" ] || [ ! -x "$NPM_CONFIG_PREFIX/bin/codex" ] || [ ! -x "$NPM_CONFIG_PREFIX/bin/gemini" ]; then
-  npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
-fi
+/app/seed-provider-clis.sh
 
 if [ ! -f "$HOME/.gemini/settings.json" ]; then
   cat <<EOF > "$HOME/.gemini/settings.json"
