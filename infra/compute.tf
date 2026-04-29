@@ -14,7 +14,7 @@ resource "google_compute_instance" "actuarius" {
     initialize_params {
       # Container-Optimized OS: Docker pre-installed, minimal, auto-updates
       image = "projects/cos-cloud/global/images/family/cos-stable"
-      size  = 10          # GB — stays within 10 GB remaining free tier quota
+      size  = 10 # GB — stays within 10 GB remaining free tier quota
       type  = "pd-standard"
     }
   }
@@ -27,28 +27,28 @@ resource "google_compute_instance" "actuarius" {
   network_interface {
     network    = google_compute_network.vpc.self_link
     subnetwork = google_compute_subnetwork.subnet.self_link
-    access_config {}    # Ephemeral public IP (free while VM is running)
+    access_config {} # Ephemeral public IP (free while VM is running)
   }
 
   # All config and scripts stored in metadata — the startup script is a static
   # bootstrapper that pulls the real script from metadata, so metadata changes
   # never force VM recreation.
   metadata = {
-    env-discord-token       = var.discord_token
-    env-discord-client-id   = var.discord_client_id
-    env-discord-guild-id    = var.discord_guild_id
+    env-discord-token              = var.discord_token
+    env-discord-client-id          = var.discord_client_id
+    env-discord-guild-id           = var.discord_guild_id
     env-gh-token                   = var.gh_token
     env-github-app-id              = var.github_app_id
     env-github-app-installation-id = var.github_app_installation_id
     env-github-app-private-key-b64 = var.github_app_private_key_b64
-    env-claude-oauth-token  = var.claude_oauth_token
-    env-docker-image        = var.docker_image
-    env-ask-concurrency         = var.ask_concurrency
-    env-enable-codex-execution  = var.enable_codex_execution
-    env-enable-gemini-execution = var.enable_gemini_execution
-    env-gemini-api-key          = var.gemini_api_key
-    env-redeploy-script         = file("${path.module}/../scripts/redeploy.sh")
-    env-startup-script          = file("${path.module}/startup.sh")
+    env-claude-oauth-token         = var.claude_oauth_token
+    env-docker-image               = var.docker_image
+    env-ask-concurrency            = var.ask_concurrency
+    env-enable-codex-execution     = var.enable_codex_execution
+    env-enable-gemini-execution    = var.enable_gemini_execution
+    env-gemini-api-key             = var.gemini_api_key
+    env-redeploy-script            = file("${path.module}/../scripts/redeploy.sh")
+    env-startup-script             = file("${path.module}/startup.sh")
   }
 
   # Static bootstrapper — pulls the real startup script from metadata and runs it.

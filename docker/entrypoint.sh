@@ -5,8 +5,12 @@ GIT_USER_NAME="${GIT_USER_NAME:-Actuarius Bot}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-actuarius-bot@users.noreply.github.com}"
 
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
+mkdir -p "$NPM_CONFIG_PREFIX"
 
 /app/install-llm-user-instructions.sh
+if ! /app/seed-provider-clis.sh; then
+  echo "WARNING: provider CLI seeding failed; continuing startup with currently installed CLIs" >&2
+fi
 
 if [ ! -f "$HOME/.gemini/settings.json" ]; then
   cat <<EOF > "$HOME/.gemini/settings.json"

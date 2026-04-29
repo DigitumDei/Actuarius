@@ -15,8 +15,6 @@ RUN apt-get update \
     sudo \
   && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @openai/codex @anthropic-ai/claude-code @google/gemini-cli
-
 FROM base AS deps
 
 COPY package.json package-lock.json ./
@@ -40,6 +38,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/data/app.db
 ENV HOME=/data/home/appuser
+ENV NPM_CONFIG_PREFIX=/data/home/appuser/.npm-global
+ENV PATH=/data/home/appuser/.npm-global/bin:$PATH
 ENV XDG_CONFIG_HOME=/data/home/appuser/.config
 ENV XDG_CACHE_HOME=/data/home/appuser/.cache
 ENV XDG_DATA_HOME=/data/home/appuser/.local/share
@@ -51,6 +51,7 @@ COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY docker/entrypoint.sh /app/entrypoint.sh
 COPY docker/install-llm-user-instructions.sh /app/install-llm-user-instructions.sh
+COPY docker/seed-provider-clis.sh /app/seed-provider-clis.sh
 COPY docker/llm-user-instructions /app/llm-user-instructions
 
 RUN useradd --uid 1001 --home-dir /data/home/appuser --no-create-home --shell /usr/sbin/nologin appuser \
@@ -81,7 +82,7 @@ EOF
 RUN chmod 0755 /usr/local/bin/actuarius-apt-install \
   && printf 'Defaults!/usr/local/bin/actuarius-apt-install !requiretty\nappuser ALL=(root) NOPASSWD: /usr/local/bin/actuarius-apt-install\n' >/etc/sudoers.d/actuarius-apt-install \
   && chmod 0440 /etc/sudoers.d/actuarius-apt-install \
-  && chmod +x /app/entrypoint.sh /app/install-llm-user-instructions.sh \
+  && chmod +x /app/entrypoint.sh /app/install-llm-user-instructions.sh /app/seed-provider-clis.sh \
   && chown -R appuser:appuser /app /data
 
 USER appuser
