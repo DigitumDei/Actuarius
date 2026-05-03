@@ -65,6 +65,12 @@ const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
   gemini: "Gemini"
 };
 
+const PROVIDER_NPM_PACKAGES: Record<string, string> = {
+  claude: "@anthropic-ai/claude-code",
+  codex: "@openai/codex",
+  gemini: "@google/gemini-cli"
+};
+
 function isActiveRequestStatus(status: RequestStatus): boolean {
   return status === "queued" || status === "running" || status === "install_approved" || status === "install_running";
 }
@@ -1976,17 +1982,11 @@ Output the result of the command or the link to the created issue.`;
       return;
     }
 
-    const PROVIDER_PACKAGES: Record<string, string> = {
-      claude: "@anthropic-ai/claude-code",
-      codex: "@openai/codex",
-      gemini: "@google/gemini-cli"
-    };
-
     const selected = interaction.options.getString("provider") ?? "all";
     const packages = selected === "all"
-      ? Object.values(PROVIDER_PACKAGES)
-      : PROVIDER_PACKAGES[selected]
-        ? [PROVIDER_PACKAGES[selected]!]
+      ? Object.values(PROVIDER_NPM_PACKAGES)
+      : PROVIDER_NPM_PACKAGES[selected]
+        ? [PROVIDER_NPM_PACKAGES[selected]!]
         : null;
 
     if (!packages) {
@@ -1999,31 +1999,33 @@ Output the result of the command or the link to the created issue.`;
 
     await interaction.deferReply({ ephemeral: true });
 
-    try {
-      const { spawnCollect } = await import("../utils/spawnCollect.js");
+    const label = selected === "all" ? "All provider CLIs" : AI_PROVIDER_LABELS[selected as AiProvider] ?? selected;
+    await interaction.editReply(`Updating ${label} to latest...`);
 
-      const label = selected === "all" ? "All provider CLIs" : AI_PROVIDER_LABELS[selected as AiProvider] ?? selected;
-      await interaction.editReply(`Updating ${label} to latest...`);
+    this.requestQueue.enqueue(interaction.guildId, async () => {
+      try {
+        const { spawnCollect } = await import("../utils/spawnCollect.js");
 
-      const result = await spawnCollect("npm", ["install", "-g", ...packages], {
-        cwd: process.cwd(),
-        env: { ...process.env },
-        timeoutMs: 120_000,
-        maxBuffer: 1024 * 1024
-      });
+        const result = await spawnCollect("npm", ["install", "-g", ...packages], {
+          cwd: process.cwd(),
+          env: { ...process.env },
+          timeoutMs: 120_000,
+          maxBuffer: 1024 * 1024
+        });
 
-      const installedList = packages.join(", ");
-      const stderrTrimmed = result.stderr.trim();
-      const body = [`Updated \`${installedList}\` to latest.`];
-      if (stderrTrimmed) {
-        body.push("", "```", stderrTrimmed.slice(0, 1500), "```");
+        const installedList = packages.join(", ");
+        const stderrTrimmed = result.stderr.trim();
+        const body = [`Updated \`${installedList}\` to latest.`];
+        if (stderrTrimmed) {
+          body.push("", "```", stderrTrimmed.slice(0, 1500), "```");
+        }
+        await interaction.editReply(body.join("\n"));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Update failed.";
+        this.logger.error({ error, provider: selected }, "Provider CLI update failed");
+        await interaction.editReply(`Update failed: ${clipForDiscord(message, 1500)}`);
       }
-      await interaction.editReply(body.join("\n"));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Update failed.";
-      this.logger.error({ error, provider: selected }, "Provider CLI update failed");
-      await interaction.editReply(`Update failed: ${clipForDiscord(message, 1500)}`);
-    }
+    });
   }
 
   private async runQueuedRequest(input: {
