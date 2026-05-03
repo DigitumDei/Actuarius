@@ -11,6 +11,7 @@ export function buildHelpText(): string {
     "- `/install [package:<allowed-package-id>] [apt-package:<deb-specs>] scope:<repo|request>` Install an allowlisted tool or apt package (admin only; specify exactly one of `package` or `apt-package`).",
     "- `/review` Run adversarial code review in the current request thread (request owner or Manage Server).",
     "- `/review-rounds [rounds:<number>]` Show or set the max `/review` consensus rounds for this server (admin only to set).",
+    "- `/update-clis [provider:<claude|codex|gemini>]` Update provider CLIs to latest. Omit provider to update all (admin only).",
     "- `/model-select provider:<claude|codex|gemini> model:<name>` Set the AI provider and model for `/ask` (admin only).",
     "- `/model-current` Show the active AI provider and model for this server.",
     "- `/codex-auth credentials:<file>` Upload Codex credentials file from `~/.codex/auth.json` (admin only).",

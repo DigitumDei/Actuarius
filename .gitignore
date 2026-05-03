@@ -20,3 +20,6 @@ infra/terraform.tfstate
 infra/terraform.tfstate.backup
 infra/.terraform.lock.hcl
 infra/*.backup
+
+# MemPalace
+mempalace.yaml
