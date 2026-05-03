@@ -148,7 +148,22 @@ export const commandBuilders = [
     .setDescription("Delete the worktree branch associated with this request thread."),
   new SlashCommandBuilder()
     .setName("review")
-    .setDescription("Run adversarial code review for the current request thread.")
+    .setDescription("Run adversarial code review for the current request thread."),
+  new SlashCommandBuilder()
+    .setName("update-clis")
+    .setDescription("Update provider CLIs (claude, codex, gemini) to latest. Requires Manage Server permission.")
+    .addStringOption((option) =>
+      option
+        .setName("provider")
+        .setDescription("Which CLI to update. Omit to update all.")
+        .setRequired(false)
+        .addChoices(
+          { name: "All", value: "all" },
+          { name: "Claude", value: "claude" },
+          { name: "Codex", value: "codex" },
+          { name: "Gemini", value: "gemini" }
+        )
+    )
 ];
 
 export type CommandName =
@@ -169,7 +184,8 @@ export type CommandName =
   | "codex-auth"
   | "gh-auth-refresh"
   | "delete"
-  | "review";
+  | "review"
+  | "update-clis";
 
 export async function registerSlashCommands(config: AppConfig, logger: pino.Logger): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(config.discordToken);

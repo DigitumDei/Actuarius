@@ -521,6 +521,9 @@ export class ActuariusBot {
       case "review":
         await this.handleReview(interaction);
         return;
+      case "update-clis":
+        await this.handleUpdateClis(interaction);
+        return;
       default:
         await interaction.reply({ content: "Unknown command.", ephemeral: true });
     }
@@ -1956,6 +1959,70 @@ Output the result of the command or the link to the created issue.`;
       const message = this.describeExecutionError(error);
       await interaction.channel.send(`**Adversarial review failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
       await interaction.editReply(`Review failed: ${message}`);
+    }
+  }
+
+  private async handleUpdateClis(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to update provider CLIs.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const PROVIDER_PACKAGES: Record<string, string> = {
+      claude: "@anthropic-ai/claude-code",
+      codex: "@openai/codex",
+      gemini: "@google/gemini-cli"
+    };
+
+    const selected = interaction.options.getString("provider") ?? "all";
+    const packages = selected === "all"
+      ? Object.values(PROVIDER_PACKAGES)
+      : PROVIDER_PACKAGES[selected]
+        ? [PROVIDER_PACKAGES[selected]!]
+        : null;
+
+    if (!packages) {
+      await interaction.reply({
+        content: `Unknown provider \`${selected}\`. Use \`claude\`, \`codex\`, \`gemini\`, or omit for all.`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const { spawnCollect } = await import("../utils/spawnCollect.js");
+
+      const label = selected === "all" ? "All provider CLIs" : AI_PROVIDER_LABELS[selected as AiProvider] ?? selected;
+      await interaction.editReply(`Updating ${label} to latest...`);
+
+      const result = await spawnCollect("npm", ["install", "-g", ...packages], {
+        cwd: process.cwd(),
+        env: { ...process.env },
+        timeoutMs: 120_000,
+        maxBuffer: 1024 * 1024
+      });
+
+      const installedList = packages.join(", ");
+      const stderrTrimmed = result.stderr.trim();
+      const body = [`Updated \`${installedList}\` to latest.`];
+      if (stderrTrimmed) {
+        body.push("", "```", stderrTrimmed.slice(0, 1500), "```");
+      }
+      await interaction.editReply(body.join("\n"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Update failed.";
+      this.logger.error({ error, provider: selected }, "Provider CLI update failed");
+      await interaction.editReply(`Update failed: ${clipForDiscord(message, 1500)}`);
     }
   }
 
