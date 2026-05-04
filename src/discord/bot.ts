@@ -70,7 +70,8 @@ const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
 const PROVIDER_NPM_PACKAGES: Record<string, string> = {
   claude: "@anthropic-ai/claude-code",
   codex: "@openai/codex",
-  gemini: "@google/gemini-cli"
+  gemini: "@google/gemini-cli",
+  opencode: "opencode-ai"
 };
 
 const KNOWN_MODELS_BY_PROVIDER: Partial<Record<AiProvider, string[]>> = {
@@ -2031,7 +2032,7 @@ Output the result of the command or the link to the created issue.`;
 
     if (!packages) {
       await interaction.reply({
-        content: `Unknown provider \`${selected}\`. Use \`claude\`, \`codex\`, \`gemini\`, or omit for all.`,
+        content: `Unknown provider \`${selected}\`. Use \`claude\`, \`codex\`, \`gemini\`, \`opencode\`, or omit for all.`,
         ephemeral: true
       });
       return;
