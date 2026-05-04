@@ -77,7 +77,7 @@ const KNOWN_MODELS_BY_PROVIDER: Partial<Record<AiProvider, string[]>> = {
   claude: ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-6"],
   codex: ["o4-mini", "o4", "gpt-5.2"],
   gemini: ["gemini-2.5-pro", "gemini-2.0-flash"],
-  opencode: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat"]
+  opencode: ["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash", "deepseek/deepseek-chat", "deepseek/deepseek-reasoner"]
 };
 
 function isActiveRequestStatus(status: RequestStatus): boolean {

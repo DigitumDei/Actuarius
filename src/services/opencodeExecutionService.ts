@@ -30,9 +30,8 @@ export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: 
 
   // opencode --model expects bare model IDs (e.g. deepseek-v4-pro) without a provider prefix.
   // Omitting --model lets opencode use its configured default model.
-  const { model: _model, ...inputWithoutModel } = input;
   const text = await runProviderRequest(
-    inputWithoutModel,
+    input,
     {
       binary: "opencode",
       prefixArgs: ["run"],
