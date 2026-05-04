@@ -52,6 +52,7 @@ import {
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
 import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
 import { GeminiExecutionError, runGeminiRequest } from "../services/geminiExecutionService.js";
+import { OpencodeExecutionError, runOpencodeRequest } from "../services/opencodeExecutionService.js";
 import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
 import { InstallService, InstallServiceError } from "../services/installService.js";
 import { buildAptPackageId, getAptPackageSpec, isAptPackageId } from "../services/installerRegistry.js";
@@ -62,13 +63,22 @@ const DISCORD_MESSAGE_LIMIT = 2_000;
 const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
   claude: "Claude",
   codex: "Codex",
-  gemini: "Gemini"
+  gemini: "Gemini",
+  opencode: "OpenCode"
 };
 
 const PROVIDER_NPM_PACKAGES: Record<string, string> = {
   claude: "@anthropic-ai/claude-code",
   codex: "@openai/codex",
-  gemini: "@google/gemini-cli"
+  gemini: "@google/gemini-cli",
+  opencode: "opencode-ai"
+};
+
+const KNOWN_MODELS_BY_PROVIDER: Partial<Record<AiProvider, string[]>> = {
+  claude: ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-6"],
+  codex: ["o4-mini", "o4", "gpt-5.2"],
+  gemini: ["gemini-2.5-pro", "gemini-2.0-flash"],
+  opencode: ["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash", "deepseek/deepseek-chat", "deepseek/deepseek-reasoner"]
 };
 
 function isActiveRequestStatus(status: RequestStatus): boolean {
@@ -1013,13 +1023,14 @@ export class ActuariusBot {
     }
 
     const history = this.db.getModelHistory(provider as AiProvider);
+    const candidates = history.length > 0 ? history : KNOWN_MODELS_BY_PROVIDER[provider as AiProvider] ?? [];
     const typed = focused.value.toLowerCase();
     const filtered = typed
-      ? history.filter((m) => m.toLowerCase().includes(typed))
-      : history;
+      ? candidates.filter((m) => m.toLowerCase().includes(typed))
+      : candidates;
 
     await interaction.respond(
-      filtered.map((model) => ({ name: model, value: model }))
+      filtered.slice(0, 10).map((model) => ({ name: model, value: model }))
     );
   }
 
@@ -1072,6 +1083,22 @@ export class ActuariusBot {
     if (provider === "gemini" && !this.config.geminiApiKey?.trim()) {
       await interaction.reply({
         content: "Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (provider === "opencode" && !this.config.enableOpencodeExecution) {
+      await interaction.reply({
+        content: "OpenCode execution is not enabled on this instance (`ENABLE_OPENCODE_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (provider === "opencode" && !this.config.deepseekApiKey?.trim()) {
+      await interaction.reply({
+        content: "OpenCode execution requires `DEEPSEEK_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.",
         ephemeral: true
       });
       return;
@@ -1700,7 +1727,7 @@ Output the result of the command or the link to the created issue.`;
     const preferredProvider: AiProvider = modelConfig?.provider ?? "claude";
     const preferredModel = modelConfig?.model ?? undefined;
     const providers: AiProvider[] = [preferredProvider];
-    for (const candidate of ["claude", "codex", "gemini"] satisfies AiProvider[]) {
+    for (const candidate of ["claude", "codex", "gemini", "opencode"] satisfies AiProvider[]) {
       if (!providers.includes(candidate)) {
         providers.push(candidate);
       }
@@ -1723,6 +1750,9 @@ Output the result of the command or the link to the created issue.`;
         continue;
       }
       if (provider === "gemini" && !this.config.enableGeminiExecution) {
+        continue;
+      }
+      if (provider === "opencode" && !this.config.enableOpencodeExecution) {
         continue;
       }
 
@@ -1790,6 +1820,17 @@ Output the result of the command or the link to the created issue.`;
         }
 
         const result = await runGeminiRequest(request, this.logger);
+        return result.text;
+      }
+      case "opencode": {
+        if (!this.config.enableOpencodeExecution) {
+          throw new OpencodeExecutionError(
+            "OPENCODE_DISABLED",
+            "The server's configured AI provider (OpenCode) is currently disabled. An admin can switch providers with `/model-select`."
+          );
+        }
+
+        const result = await runOpencodeRequest(request, this.logger);
         return result.text;
       }
       case "claude":
@@ -1991,7 +2032,7 @@ Output the result of the command or the link to the created issue.`;
 
     if (!packages) {
       await interaction.reply({
-        content: `Unknown provider \`${selected}\`. Use \`claude\`, \`codex\`, \`gemini\`, or omit for all.`,
+        content: `Unknown provider \`${selected}\`. Use \`claude\`, \`codex\`, \`gemini\`, \`opencode\`, or omit for all.`,
         ephemeral: true
       });
       return;
@@ -2190,6 +2231,10 @@ Output the result of the command or the link to the created issue.`;
     }
 
     if (error instanceof GeminiExecutionError) {
+      return error.message;
+    }
+
+    if (error instanceof OpencodeExecutionError) {
       return error.message;
     }
 
