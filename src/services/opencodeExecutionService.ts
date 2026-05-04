@@ -28,8 +28,11 @@ export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: 
     throw new OpencodeExecutionError("NOT_AUTHENTICATED", "Opencode requires `DEEPSEEK_API_KEY` to be set for DeepSeek API access.");
   }
 
+  // opencode --model expects bare model IDs (e.g. deepseek-v4-pro) without a provider prefix.
+  // Omitting --model lets opencode use its configured default model.
+  const { model: _model, ...inputWithoutModel } = input;
   const text = await runProviderRequest(
-    input,
+    inputWithoutModel,
     {
       binary: "opencode",
       prefixArgs: ["run"],
