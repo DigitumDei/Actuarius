@@ -5,7 +5,7 @@ export interface GuildRow {
   updated_at: string;
 }
 
-export type AiProvider = "claude" | "codex" | "gemini";
+export type AiProvider = "claude" | "codex" | "gemini" | "opencode";
 
 export interface GuildModelConfigRow {
   guild_id: string;

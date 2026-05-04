@@ -108,7 +108,8 @@ export const commandBuilders = [
         .addChoices(
           { name: "Claude", value: "claude" },
           { name: "Codex", value: "codex" },
-          { name: "Gemini", value: "gemini" }
+          { name: "Gemini", value: "gemini" },
+          { name: "OpenCode (DeepSeek)", value: "opencode" }
         )
     )
     .addStringOption((option) =>

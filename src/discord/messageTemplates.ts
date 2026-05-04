@@ -12,7 +12,7 @@ export function buildHelpText(): string {
     "- `/review` Run adversarial code review in the current request thread (request owner or Manage Server).",
     "- `/review-rounds [rounds:<number>]` Show or set the max `/review` consensus rounds for this server (admin only to set).",
     "- `/update-clis [provider:<claude|codex|gemini>]` Update provider CLIs to latest. Omit provider to update all (admin only).",
-    "- `/model-select provider:<claude|codex|gemini> model:<name>` Set the AI provider and model for `/ask` (admin only).",
+    "- `/model-select provider:<claude|codex|gemini|opencode> model:<name>` Set the AI provider and model for `/ask` (admin only).",
     "- `/model-current` Show the active AI provider and model for this server.",
     "- `/codex-auth credentials:<file>` Upload Codex credentials file from `~/.codex/auth.json` (admin only).",
     "",
@@ -20,6 +20,7 @@ export function buildHelpText(): string {
     "- Private repos work when the configured GitHub identity can access them.",
     "- `/ask` uses queued AI execution with per-guild concurrency limits.",
     "- Codex and Gemini require `ENABLE_CODEX_EXECUTION` / `ENABLE_GEMINI_EXECUTION` to be enabled.",
-    "- Gemini additionally requires `GEMINI_API_KEY`."
+    "- Gemini additionally requires `GEMINI_API_KEY`.",
+    "- OpenCode requires `ENABLE_OPENCODE_EXECUTION` and `DEEPSEEK_API_KEY`."
   ].join("\n");
 }
