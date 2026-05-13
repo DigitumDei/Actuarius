@@ -143,7 +143,7 @@ export const commandBuilders = [
     ),
   new SlashCommandBuilder()
     .setName("opencode-auth")
-    .setDescription("Configure an API key for OpenCode to use with a specific AI provider. Requires Manage Server permission.")
+    .setDescription("Configure an API key for OpenCode (e.g. deepseek, openai). Requires Manage Server permission.")
     .addStringOption((option) =>
       option
         .setName("provider")
