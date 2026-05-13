@@ -142,6 +142,50 @@ export const commandBuilders = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName("opencode-auth")
+    .setDescription("Configure an API key for OpenCode to use with a specific AI provider. Requires Manage Server permission.")
+    .addStringOption((option) =>
+      option
+        .setName("provider")
+        .setDescription("AI provider to configure the key for (e.g. deepseek, openai, anthropic)")
+        .setRequired(true)
+        .addChoices(
+          { name: "DeepSeek", value: "deepseek" },
+          { name: "OpenAI", value: "openai" },
+          { name: "Anthropic", value: "anthropic" },
+          { name: "Google", value: "google" },
+          { name: "xAI", value: "xai" },
+          { name: "Groq", value: "groq" },
+          { name: "OpenRouter", value: "openrouter" },
+          { name: "Together", value: "together" }
+        )
+    )
+    .addStringOption((option) =>
+      option
+        .setName("key")
+        .setDescription("Your API key for the selected provider")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("opencode-auth-remove")
+    .setDescription("Remove a stored API key for OpenCode. Requires Manage Server permission.")
+    .addStringOption((option) =>
+      option
+        .setName("provider")
+        .setDescription("AI provider to remove the key for")
+        .setRequired(true)
+        .addChoices(
+          { name: "DeepSeek", value: "deepseek" },
+          { name: "OpenAI", value: "openai" },
+          { name: "Anthropic", value: "anthropic" },
+          { name: "Google", value: "google" },
+          { name: "xAI", value: "xai" },
+          { name: "Groq", value: "groq" },
+          { name: "OpenRouter", value: "openrouter" },
+          { name: "Together", value: "together" }
+        )
+    ),
+  new SlashCommandBuilder()
     .setName("gh-auth-refresh")
     .setDescription("Force-refresh the GitHub App authentication token. Requires Manage Server permission."),
   new SlashCommandBuilder()
@@ -183,6 +227,8 @@ export type CommandName =
   | "model-current"
   | "review-rounds"
   | "codex-auth"
+  | "opencode-auth"
+  | "opencode-auth-remove"
   | "gh-auth-refresh"
   | "delete"
   | "review"

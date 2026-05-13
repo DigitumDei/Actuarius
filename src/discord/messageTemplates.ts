@@ -15,12 +15,15 @@ export function buildHelpText(): string {
     "- `/model-select provider:<claude|codex|gemini|opencode> model:<name>` Set the AI provider and model for `/ask` (admin only).",
     "- `/model-current` Show the active AI provider and model for this server.",
     "- `/codex-auth credentials:<file>` Upload Codex credentials file from `~/.codex/auth.json` (admin only).",
+    "- `/opencode-auth provider:<name> key:<your-key>` Configure an API key for OpenCode to use with a specific AI provider (admin only).",
+    "- `/opencode-auth-remove provider:<name>` Remove a stored API key for OpenCode (admin only).",
     "",
     "v1 notes:",
     "- Private repos work when the configured GitHub identity can access them.",
     "- `/ask` uses queued AI execution with per-guild concurrency limits.",
     "- Codex and Gemini require `ENABLE_CODEX_EXECUTION` / `ENABLE_GEMINI_EXECUTION` to be enabled.",
     "- Gemini additionally requires `GEMINI_API_KEY`.",
-    "- OpenCode requires `ENABLE_OPENCODE_EXECUTION` and `DEEPSEEK_API_KEY`."
+    "- OpenCode requires `ENABLE_OPENCODE_EXECUTION` and API keys. Use `/opencode-auth` to configure per-provider keys (deepseek, openai, anthropic, etc.) or set the relevant env vars on the instance.",
+    "- OpenCode supports any provider/model combination via `--model <provider>/<model>`, e.g. `deepseek/deepseek-v4-pro`, `openai/o4-mini`, `anthropic/claude-sonnet-4-6`."
   ].join("\n");
 }

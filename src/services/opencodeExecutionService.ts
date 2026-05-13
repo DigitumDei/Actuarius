@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import type { Logger } from "pino";
 import { runProviderRequest } from "../utils/runProviderRequest.js";
 
@@ -23,11 +26,29 @@ export class OpencodeExecutionError extends Error {
   }
 }
 
-export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: Logger): Promise<OpencodeExecutionResult> {
-  const apiKey = input.env?.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY;
-  if (!apiKey?.trim()) {
-    throw new OpencodeExecutionError("NOT_AUTHENTICATED", "Opencode requires `DEEPSEEK_API_KEY` to be set for DeepSeek API access.");
+const OPENCODE_AUTH_PATH = join(homedir(), ".local", "share", "opencode", "auth.json");
+
+export function hasOpencodeAuth(): boolean {
+  if (existsSync(OPENCODE_AUTH_PATH)) {
+    try {
+      const raw = readFileSync(OPENCODE_AUTH_PATH, "utf-8");
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (typeof parsed === "object" && parsed !== null && Object.keys(parsed).length > 0) {
+        return true;
+      }
+    } catch {
+      // Malformed file — deem it absent
+    }
   }
+
+  return false;
+}
+
+export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: Logger): Promise<OpencodeExecutionResult> {
+  if (!hasOpencodeAuth() && !(input.env?.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY)?.trim()) {
+    throw new OpencodeExecutionError("NOT_AUTHENTICATED", "Opencode requires an API key. Use `/opencode-auth` to configure keys, or set `DEEPSEEK_API_KEY` on the instance.");
+  }
+
   const text = await runProviderRequest(
     input,
     {
@@ -40,7 +61,7 @@ export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: 
       unavailableCode: "OPENCODE_UNAVAILABLE",
       notAuthenticatedCode: "NOT_AUTHENTICATED",
       authFailurePattern: /not authenticated|API key not found|authentication required|set an Auth method/i,
-      authHint: "Set `DEEPSEEK_API_KEY` to a valid DeepSeek API key.",
+      authHint: "Use `/opencode-auth` to configure API keys.",
       timeoutCode: "TIMEOUT",
       failedCode: "FAILED",
       emptyOutputCode: "EMPTY_OUTPUT",
