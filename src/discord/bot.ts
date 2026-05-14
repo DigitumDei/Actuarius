@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import {
@@ -52,7 +52,7 @@ import {
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
 import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
 import { GeminiExecutionError, runGeminiRequest } from "../services/geminiExecutionService.js";
-import { OpencodeExecutionError, runOpencodeRequest, hasOpencodeAuth } from "../services/opencodeExecutionService.js";
+import { OpencodeExecutionError, runOpencodeRequest, hasOpencodeAuth, OPENCODE_AUTH_PATH, ALLOWED_OPENCODE_PROVIDERS } from "../services/opencodeExecutionService.js";
 import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
 import { InstallService, InstallServiceError } from "../services/installService.js";
 import { buildAptPackageId, getAptPackageSpec, isAptPackageId } from "../services/installerRegistry.js";
@@ -1242,25 +1242,19 @@ export class ActuariusBot {
       return;
     }
 
-    const allowedProviders = ["deepseek", "openai", "anthropic", "google", "xai", "groq", "openrouter", "together"];
-
-    if (!allowedProviders.includes(rawProvider)) {
+    if (!ALLOWED_OPENCODE_PROVIDERS.includes(rawProvider as typeof ALLOWED_OPENCODE_PROVIDERS[number])) {
       await interaction.reply({
-        content: `Invalid provider. Choose from: \`${allowedProviders.join("`, `")}\`.`,
+        content: `Invalid provider. Choose from: \`${ALLOWED_OPENCODE_PROVIDERS.join("`, `")}\`.`,
         ephemeral: true
       });
       return;
     }
 
-    const authPath = join(homedir(), ".local", "share", "opencode", "auth.json");
-    const { readFile } = await import("node:fs/promises");
-    const { existsSync: localExistsSync } = await import("node:fs");
-
     let authJson: Record<string, { type: string; key: string }> = {};
 
-    if (localExistsSync(authPath)) {
+    if (existsSync(OPENCODE_AUTH_PATH)) {
       try {
-        const raw = await readFile(authPath, "utf-8");
+        const raw = await readFile(OPENCODE_AUTH_PATH, "utf-8");
         authJson = JSON.parse(raw) as typeof authJson;
       } catch {
         // Start fresh if the file is malformed
@@ -1269,8 +1263,8 @@ export class ActuariusBot {
 
     authJson[rawProvider] = { type: "api", key: apiKey };
 
-    await mkdir(dirname(authPath), { recursive: true });
-    await writeFile(authPath, JSON.stringify(authJson, null, 2) + "\n", { mode: 0o600 });
+    await mkdir(dirname(OPENCODE_AUTH_PATH), { recursive: true });
+    await writeFile(OPENCODE_AUTH_PATH, JSON.stringify(authJson, null, 2) + "\n", { mode: 0o600 });
 
     this.logger.info({ guildId: interaction.guildId, provider: rawProvider }, "OpenCode auth key saved");
 
@@ -1296,21 +1290,15 @@ export class ActuariusBot {
 
     const rawProvider = interaction.options.getString("provider", true);
 
-    const allowedProviders = ["deepseek", "openai", "anthropic", "google", "xai", "groq", "openrouter", "together"];
-
-    if (!allowedProviders.includes(rawProvider)) {
+    if (!ALLOWED_OPENCODE_PROVIDERS.includes(rawProvider as typeof ALLOWED_OPENCODE_PROVIDERS[number])) {
       await interaction.reply({
-        content: `Invalid provider. Choose from: \`${allowedProviders.join("`, `")}\`.`,
+        content: `Invalid provider. Choose from: \`${ALLOWED_OPENCODE_PROVIDERS.join("`, `")}\`.`,
         ephemeral: true
       });
       return;
     }
 
-    const authPath = join(homedir(), ".local", "share", "opencode", "auth.json");
-    const { readFile } = await import("node:fs/promises");
-    const { existsSync: localExistsSync } = await import("node:fs");
-
-    if (!localExistsSync(authPath)) {
+    if (!existsSync(OPENCODE_AUTH_PATH)) {
       await interaction.reply({
         content: `No stored auth.json found. No keys to remove.`,
         ephemeral: true
@@ -1320,7 +1308,7 @@ export class ActuariusBot {
 
     let authJson: Record<string, unknown> = {};
     try {
-      const raw = await readFile(authPath, "utf-8");
+      const raw = await readFile(OPENCODE_AUTH_PATH, "utf-8");
       authJson = JSON.parse(raw) as typeof authJson;
     } catch {
       await interaction.reply({
@@ -1341,10 +1329,9 @@ export class ActuariusBot {
     delete authJson[rawProvider];
 
     if (Object.keys(authJson).length === 0) {
-      const { unlink } = await import("node:fs/promises");
-      await unlink(authPath);
+      await unlink(OPENCODE_AUTH_PATH);
     } else {
-      await writeFile(authPath, JSON.stringify(authJson, null, 2) + "\n", { mode: 0o600 });
+      await writeFile(OPENCODE_AUTH_PATH, JSON.stringify(authJson, null, 2) + "\n", { mode: 0o600 });
     }
 
     this.logger.info({ guildId: interaction.guildId, provider: rawProvider }, "OpenCode auth key removed");

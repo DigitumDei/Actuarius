@@ -5,6 +5,9 @@ import { homedir } from "node:os";
 import type { Logger } from "pino";
 import { runProviderRequest } from "../utils/runProviderRequest.js";
 
+export const ALLOWED_OPENCODE_PROVIDERS = ["deepseek", "openai", "anthropic", "google", "xai", "groq", "openrouter", "together"] as const;
+export const OPENCODE_AUTH_PATH = join(homedir(), ".local", "share", "opencode", "auth.json");
+
 export interface OpencodeExecutionInput {
   prompt: string;
   cwd: string;
@@ -26,8 +29,6 @@ export class OpencodeExecutionError extends Error {
     this.code = code;
   }
 }
-
-const OPENCODE_AUTH_PATH = join(homedir(), ".local", "share", "opencode", "auth.json");
 
 export async function hasOpencodeAuth(): Promise<boolean> {
   if (existsSync(OPENCODE_AUTH_PATH)) {
