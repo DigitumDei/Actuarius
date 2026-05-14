@@ -87,6 +87,12 @@ variable "enable_gemini_execution" {
   description = "Enable Gemini CLI execution for /ask requests"
 }
 
+variable "enable_opencode_execution" {
+  type        = bool
+  default     = false
+  description = "Enable OpenCode CLI execution for /ask requests"
+}
+
 variable "gemini_api_key" {
   type        = string
   sensitive   = true
