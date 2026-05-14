@@ -22,6 +22,7 @@ queue_package_if_missing() {
 queue_package_if_missing "claude" "@anthropic-ai/claude-code"
 queue_package_if_missing "codex" "@openai/codex"
 queue_package_if_missing "gemini" "@google/gemini-cli"
+queue_package_if_missing "opencode" "opencode-ai"
 
 if [ -n "$missing_packages" ]; then
   # Intentionally rely on word splitting so npm receives one package per argument.

@@ -15,6 +15,7 @@ Discord bot container that links GitHub repos to Discord channels and creates re
   - `codex` (seeded into `/data/home/appuser/.npm-global/bin` on first boot)
   - `claude` (seeded into `/data/home/appuser/.npm-global/bin` on first boot)
   - `gemini` (seeded into `/data/home/appuser/.npm-global/bin` on first boot)
+  - `opencode` (seeded into `/data/home/appuser/.npm-global/bin` on first boot)
 - Waits for Discord server invite if not yet in any server.
 - Registers slash commands:
   - `/help`
@@ -61,9 +62,11 @@ Copy `.env.example` to `.env` and set:
 - `ASK_CONCURRENCY_PER_GUILD` (default `3`)
 - `ASK_EXECUTION_TIMEOUT_MS` (default `1200000`)
 - `GEMINI_API_KEY` (required for Gemini execution)
+- `ENABLE_OPENCODE_EXECUTION` (default `false`, enables OpenCode/DeepSeek provider)
+- `DEEPSEEK_API_KEY` (required for OpenCode execution)
 - `CLAUDE_CODE_OAUTH_TOKEN` (optional for local/manual runs, required by the production redeploy helper for non-interactive Claude auth)
 
-Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global`, with `docker/entrypoint.sh` seeding them on first boot if missing. That keeps Claude and Codex authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. Gemini execution uses `GEMINI_API_KEY` instead of persisted OAuth state.
+Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global`, with `docker/entrypoint.sh` seeding them on first boot if missing. That keeps Claude and Codex authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. Gemini and OpenCode execution use API keys (`GEMINI_API_KEY` / `DEEPSEEK_API_KEY`) instead of persisted OAuth state.
 
 ## Local development
 

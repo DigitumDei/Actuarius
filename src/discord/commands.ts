@@ -108,7 +108,8 @@ export const commandBuilders = [
         .addChoices(
           { name: "Claude", value: "claude" },
           { name: "Codex", value: "codex" },
-          { name: "Gemini", value: "gemini" }
+          { name: "Gemini", value: "gemini" },
+          { name: "OpenCode (DeepSeek)", value: "opencode" }
         )
     )
     .addStringOption((option) =>
@@ -141,6 +142,50 @@ export const commandBuilders = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName("opencode-auth")
+    .setDescription("Configure an API key for OpenCode (e.g. deepseek, openai). Requires Manage Server permission.")
+    .addStringOption((option) =>
+      option
+        .setName("provider")
+        .setDescription("AI provider to configure the key for (e.g. deepseek, openai, anthropic)")
+        .setRequired(true)
+        .addChoices(
+          { name: "DeepSeek", value: "deepseek" },
+          { name: "OpenAI", value: "openai" },
+          { name: "Anthropic", value: "anthropic" },
+          { name: "Google", value: "google" },
+          { name: "xAI", value: "xai" },
+          { name: "Groq", value: "groq" },
+          { name: "OpenRouter", value: "openrouter" },
+          { name: "Together", value: "together" }
+        )
+    )
+    .addStringOption((option) =>
+      option
+        .setName("key")
+        .setDescription("Your API key for the selected provider")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("opencode-auth-remove")
+    .setDescription("Remove a stored API key for OpenCode. Requires Manage Server permission.")
+    .addStringOption((option) =>
+      option
+        .setName("provider")
+        .setDescription("AI provider to remove the key for")
+        .setRequired(true)
+        .addChoices(
+          { name: "DeepSeek", value: "deepseek" },
+          { name: "OpenAI", value: "openai" },
+          { name: "Anthropic", value: "anthropic" },
+          { name: "Google", value: "google" },
+          { name: "xAI", value: "xai" },
+          { name: "Groq", value: "groq" },
+          { name: "OpenRouter", value: "openrouter" },
+          { name: "Together", value: "together" }
+        )
+    ),
+  new SlashCommandBuilder()
     .setName("gh-auth-refresh")
     .setDescription("Force-refresh the GitHub App authentication token. Requires Manage Server permission."),
   new SlashCommandBuilder()
@@ -151,7 +196,7 @@ export const commandBuilders = [
     .setDescription("Run adversarial code review for the current request thread."),
   new SlashCommandBuilder()
     .setName("update-clis")
-    .setDescription("Update provider CLIs (claude, codex, gemini) to latest. Requires Manage Server permission.")
+    .setDescription("Update provider CLIs (claude, codex, gemini, opencode) to latest. Requires Manage Server permission.")
     .addStringOption((option) =>
       option
         .setName("provider")
@@ -161,7 +206,8 @@ export const commandBuilders = [
           { name: "All", value: "all" },
           { name: "Claude", value: "claude" },
           { name: "Codex", value: "codex" },
-          { name: "Gemini", value: "gemini" }
+          { name: "Gemini", value: "gemini" },
+          { name: "OpenCode", value: "opencode" }
         )
     )
 ];
@@ -182,6 +228,8 @@ export type CommandName =
   | "model-current"
   | "review-rounds"
   | "codex-auth"
+  | "opencode-auth"
+  | "opencode-auth-remove"
   | "gh-auth-refresh"
   | "delete"
   | "review"

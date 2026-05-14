@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import {
@@ -52,6 +52,7 @@ import {
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
 import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
 import { GeminiExecutionError, runGeminiRequest } from "../services/geminiExecutionService.js";
+import { OpencodeExecutionError, runOpencodeRequest, hasOpencodeAuth, OPENCODE_AUTH_PATH, ALLOWED_OPENCODE_PROVIDERS } from "../services/opencodeExecutionService.js";
 import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
 import { InstallService, InstallServiceError } from "../services/installService.js";
 import { buildAptPackageId, getAptPackageSpec, isAptPackageId } from "../services/installerRegistry.js";
@@ -62,13 +63,35 @@ const DISCORD_MESSAGE_LIMIT = 2_000;
 const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
   claude: "Claude",
   codex: "Codex",
-  gemini: "Gemini"
+  gemini: "Gemini",
+  opencode: "OpenCode"
 };
 
 const PROVIDER_NPM_PACKAGES: Record<string, string> = {
   claude: "@anthropic-ai/claude-code",
   codex: "@openai/codex",
-  gemini: "@google/gemini-cli"
+  gemini: "@google/gemini-cli",
+  opencode: "opencode-ai"
+};
+
+const KNOWN_MODELS_BY_PROVIDER: Partial<Record<AiProvider, string[]>> = {
+  claude: ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-6"],
+  codex: ["o4-mini", "o4", "gpt-5.2"],
+  gemini: ["gemini-2.5-pro", "gemini-2.0-flash"],
+  opencode: [
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-chat",
+    "deepseek/deepseek-reasoner",
+    "openai/o4-mini",
+    "openai/o4",
+    "openai/gpt-5.2",
+    "anthropic/claude-sonnet-4-6",
+    "anthropic/claude-haiku-4-5",
+    "anthropic/claude-opus-4-6",
+    "google/gemini-2.5-pro",
+    "google/gemini-2.0-flash"
+  ]
 };
 
 function isActiveRequestStatus(status: RequestStatus): boolean {
@@ -517,6 +540,12 @@ export class ActuariusBot {
         return;
       case "codex-auth":
         await this.handleCodexAuth(interaction);
+        return;
+      case "opencode-auth":
+        await this.handleOpencodeAuth(interaction);
+        return;
+      case "opencode-auth-remove":
+        await this.handleOpencodeAuthRemove(interaction);
         return;
       case "gh-auth-refresh":
         await this.handleGhAuthRefresh(interaction);
@@ -1013,13 +1042,14 @@ export class ActuariusBot {
     }
 
     const history = this.db.getModelHistory(provider as AiProvider);
+    const candidates = [...new Set([...history, ...(KNOWN_MODELS_BY_PROVIDER[provider as AiProvider] ?? [])])];
     const typed = focused.value.toLowerCase();
     const filtered = typed
-      ? history.filter((m) => m.toLowerCase().includes(typed))
-      : history;
+      ? candidates.filter((m) => m.toLowerCase().includes(typed))
+      : candidates;
 
     await interaction.respond(
-      filtered.map((model) => ({ name: model, value: model }))
+      filtered.slice(0, 10).map((model) => ({ name: model, value: model }))
     );
   }
 
@@ -1072,6 +1102,22 @@ export class ActuariusBot {
     if (provider === "gemini" && !this.config.geminiApiKey?.trim()) {
       await interaction.reply({
         content: "Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (provider === "opencode" && !this.config.enableOpencodeExecution) {
+      await interaction.reply({
+        content: "OpenCode execution is not enabled on this instance (`ENABLE_OPENCODE_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (provider === "opencode" && !this.config.deepseekApiKey?.trim() && !(await hasOpencodeAuth())) {
+      await interaction.reply({
+        content: "OpenCode execution requires an API key. Use `/opencode-auth` to configure keys (e.g. `deepseek`, `openai`, `anthropic`), or set `DEEPSEEK_API_KEY` on the instance.",
         ephemeral: true
       });
       return;
@@ -1162,6 +1208,137 @@ export class ActuariusBot {
       logLabel: "Codex credentials written",
       logCommand: "codex-auth",
       successMessage: "Codex credentials saved. `/ask` requests with the Codex provider should now work."
+    });
+  }
+
+  private async handleOpencodeAuth(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to configure OpenCode API keys.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!this.config.enableOpencodeExecution) {
+      await interaction.reply({
+        content: "OpenCode execution is not enabled on this instance. Set `ENABLE_OPENCODE_EXECUTION=true` to enable it.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const rawProvider = interaction.options.getString("provider", true);
+    const rawKey = interaction.options.getString("key", true);
+    const apiKey = rawKey.trim();
+
+    if (!apiKey) {
+      await interaction.reply({ content: "API key cannot be empty.", ephemeral: true });
+      return;
+    }
+
+    if (!ALLOWED_OPENCODE_PROVIDERS.includes(rawProvider as typeof ALLOWED_OPENCODE_PROVIDERS[number])) {
+      await interaction.reply({
+        content: `Invalid provider. Choose from: \`${ALLOWED_OPENCODE_PROVIDERS.join("`, `")}\`.`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    let authJson: Record<string, { type: string; key: string }> = {};
+
+    if (existsSync(OPENCODE_AUTH_PATH)) {
+      try {
+        const raw = await readFile(OPENCODE_AUTH_PATH, "utf-8");
+        authJson = JSON.parse(raw) as typeof authJson;
+      } catch {
+        // Start fresh if the file is malformed
+      }
+    }
+
+    authJson[rawProvider] = { type: "api", key: apiKey };
+
+    await mkdir(dirname(OPENCODE_AUTH_PATH), { recursive: true });
+    await writeFile(OPENCODE_AUTH_PATH, JSON.stringify(authJson, null, 2) + "\n", { mode: 0o600 });
+
+    this.logger.info({ guildId: interaction.guildId, provider: rawProvider }, "OpenCode auth key saved");
+
+    await interaction.reply({
+      content: `API key for **${rawProvider}** saved to OpenCode's auth.json. All \`/ask\` requests with the OpenCode provider can now use this key.`,
+      ephemeral: true
+    });
+  }
+
+  private async handleOpencodeAuthRemove(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to remove OpenCode API keys.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const rawProvider = interaction.options.getString("provider", true);
+
+    if (!ALLOWED_OPENCODE_PROVIDERS.includes(rawProvider as typeof ALLOWED_OPENCODE_PROVIDERS[number])) {
+      await interaction.reply({
+        content: `Invalid provider. Choose from: \`${ALLOWED_OPENCODE_PROVIDERS.join("`, `")}\`.`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!existsSync(OPENCODE_AUTH_PATH)) {
+      await interaction.reply({
+        content: `No stored auth.json found. No keys to remove.`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    let authJson: Record<string, unknown> = {};
+    try {
+      const raw = await readFile(OPENCODE_AUTH_PATH, "utf-8");
+      authJson = JSON.parse(raw) as typeof authJson;
+    } catch {
+      await interaction.reply({
+        content: "OpenCode auth.json is malformed. Delete it manually and re-configure keys.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!(rawProvider in authJson)) {
+      await interaction.reply({
+        content: `No stored API key for **${rawProvider}**.`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    delete authJson[rawProvider];
+
+    if (Object.keys(authJson).length === 0) {
+      await unlink(OPENCODE_AUTH_PATH);
+    } else {
+      await writeFile(OPENCODE_AUTH_PATH, JSON.stringify(authJson, null, 2) + "\n", { mode: 0o600 });
+    }
+
+    this.logger.info({ guildId: interaction.guildId, provider: rawProvider }, "OpenCode auth key removed");
+
+    await interaction.reply({
+      content: `API key for **${rawProvider}** has been removed from OpenCode's auth.json.`,
+      ephemeral: true
     });
   }
 
@@ -1700,7 +1877,7 @@ Output the result of the command or the link to the created issue.`;
     const preferredProvider: AiProvider = modelConfig?.provider ?? "claude";
     const preferredModel = modelConfig?.model ?? undefined;
     const providers: AiProvider[] = [preferredProvider];
-    for (const candidate of ["claude", "codex", "gemini"] satisfies AiProvider[]) {
+    for (const candidate of ["claude", "codex", "gemini", "opencode"] satisfies AiProvider[]) {
       if (!providers.includes(candidate)) {
         providers.push(candidate);
       }
@@ -1723,6 +1900,9 @@ Output the result of the command or the link to the created issue.`;
         continue;
       }
       if (provider === "gemini" && !this.config.enableGeminiExecution) {
+        continue;
+      }
+      if (provider === "opencode" && !this.config.enableOpencodeExecution) {
         continue;
       }
 
@@ -1790,6 +1970,17 @@ Output the result of the command or the link to the created issue.`;
         }
 
         const result = await runGeminiRequest(request, this.logger);
+        return result.text;
+      }
+      case "opencode": {
+        if (!this.config.enableOpencodeExecution) {
+          throw new OpencodeExecutionError(
+            "OPENCODE_DISABLED",
+            "The server's configured AI provider (OpenCode) is currently disabled. An admin can switch providers with `/model-select`."
+          );
+        }
+
+        const result = await runOpencodeRequest(request, this.logger);
         return result.text;
       }
       case "claude":
@@ -1991,7 +2182,7 @@ Output the result of the command or the link to the created issue.`;
 
     if (!packages) {
       await interaction.reply({
-        content: `Unknown provider \`${selected}\`. Use \`claude\`, \`codex\`, \`gemini\`, or omit for all.`,
+        content: `Unknown provider \`${selected}\`. Use \`claude\`, \`codex\`, \`gemini\`, \`opencode\`, or omit for all.`,
         ephemeral: true
       });
       return;
@@ -2190,6 +2381,10 @@ Output the result of the command or the link to the created issue.`;
     }
 
     if (error instanceof GeminiExecutionError) {
+      return error.message;
+    }
+
+    if (error instanceof OpencodeExecutionError) {
       return error.message;
     }
 

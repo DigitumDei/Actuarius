@@ -13,6 +13,6 @@ install_instruction_file() {
   chmod 0644 "$target_path"
 }
 
-for file in ".claude/CLAUDE.md" ".codex/AGENTS.md" ".gemini/GEMINI.md"; do
+for file in ".claude/CLAUDE.md" ".codex/AGENTS.md" ".gemini/GEMINI.md" ".opencode/AGENTS.md"; do
   install_instruction_file "$SOURCE_ROOT/$file" "$TARGET_HOME/$file"
 done

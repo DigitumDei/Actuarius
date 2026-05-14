@@ -66,7 +66,12 @@ const envSchema = z.object({
   ENABLE_GEMINI_EXECUTION: z
     .string()
     .default("false")
-    .transform((value) => value === "true")
+    .transform((value) => value === "true"),
+  ENABLE_OPENCODE_EXECUTION: z
+    .string()
+    .default("false")
+    .transform((value) => value === "true"),
+  DEEPSEEK_API_KEY: optionalNonEmpty,
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -130,7 +135,9 @@ export const appConfig = {
   installStepTimeoutMs: rawConfig.INSTALL_STEP_TIMEOUT_MS,
   aptInstallHelperPath: rawConfig.APT_INSTALL_HELPER_PATH,
   enableCodexExecution: rawConfig.ENABLE_CODEX_EXECUTION,
-  enableGeminiExecution: rawConfig.ENABLE_GEMINI_EXECUTION
+  enableGeminiExecution: rawConfig.ENABLE_GEMINI_EXECUTION,
+  enableOpencodeExecution: rawConfig.ENABLE_OPENCODE_EXECUTION,
+  deepseekApiKey: rawConfig.DEEPSEEK_API_KEY,
 };
 
 export type AppConfig = typeof appConfig;
