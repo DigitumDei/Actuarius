@@ -1115,7 +1115,7 @@ export class ActuariusBot {
       return;
     }
 
-    if (provider === "opencode" && !this.config.deepseekApiKey?.trim() && !hasOpencodeAuth()) {
+    if (provider === "opencode" && !this.config.deepseekApiKey?.trim() && !(await hasOpencodeAuth())) {
       await interaction.reply({
         content: "OpenCode execution requires an API key. Use `/opencode-auth` to configure keys (e.g. `deepseek`, `openai`, `anthropic`), or set `DEEPSEEK_API_KEY` on the instance.",
         ephemeral: true

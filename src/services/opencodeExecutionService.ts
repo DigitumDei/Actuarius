@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Logger } from "pino";
@@ -28,10 +29,10 @@ export class OpencodeExecutionError extends Error {
 
 const OPENCODE_AUTH_PATH = join(homedir(), ".local", "share", "opencode", "auth.json");
 
-export function hasOpencodeAuth(): boolean {
+export async function hasOpencodeAuth(): Promise<boolean> {
   if (existsSync(OPENCODE_AUTH_PATH)) {
     try {
-      const raw = readFileSync(OPENCODE_AUTH_PATH, "utf-8");
+      const raw = await readFile(OPENCODE_AUTH_PATH, "utf-8");
       const parsed = JSON.parse(raw) as Record<string, unknown>;
       if (typeof parsed === "object" && parsed !== null && Object.keys(parsed).length > 0) {
         return true;
@@ -45,7 +46,7 @@ export function hasOpencodeAuth(): boolean {
 }
 
 export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: Logger): Promise<OpencodeExecutionResult> {
-  if (!hasOpencodeAuth() && !(input.env?.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY)?.trim()) {
+  if (!(await hasOpencodeAuth()) && !(input.env?.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY)?.trim()) {
     throw new OpencodeExecutionError("NOT_AUTHENTICATED", "Opencode requires an API key. Use `/opencode-auth` to configure keys, or set `DEEPSEEK_API_KEY` on the instance.");
   }
 

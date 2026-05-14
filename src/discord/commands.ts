@@ -196,7 +196,7 @@ export const commandBuilders = [
     .setDescription("Run adversarial code review for the current request thread."),
   new SlashCommandBuilder()
     .setName("update-clis")
-    .setDescription("Update provider CLIs (claude, codex, gemini) to latest. Requires Manage Server permission.")
+    .setDescription("Update provider CLIs (claude, codex, gemini, opencode) to latest. Requires Manage Server permission.")
     .addStringOption((option) =>
       option
         .setName("provider")
@@ -206,7 +206,8 @@ export const commandBuilders = [
           { name: "All", value: "all" },
           { name: "Claude", value: "claude" },
           { name: "Codex", value: "codex" },
-          { name: "Gemini", value: "gemini" }
+          { name: "Gemini", value: "gemini" },
+          { name: "OpenCode", value: "opencode" }
         )
     )
 ];
