@@ -45,12 +45,23 @@ export async function runProviderRequest(
   logger: Logger
 ): Promise<string> {
   const prefix = config.prefixArgs ?? [];
-  const promptArgs = config.splitPrompt ? input.prompt.split(/[^\S\r\n]+/).filter(Boolean) : [input.prompt];
-  const args = config.positionalPrompt
-    ? [...prefix, ...promptArgs, ...config.extraArgs]
-    : [...prefix, "-p", input.prompt, ...config.extraArgs];
-  if (input.model) {
-    args.push("--model", input.model);
+  let args: string[];
+  if (config.positionalPrompt) {
+    args = [...prefix, ...config.extraArgs];
+    if (input.model) {
+      args.push("--model", input.model);
+    }
+    if (config.splitPrompt) {
+      const promptArgs = input.prompt.split(/[^\S\r\n]+/).filter(Boolean);
+      args.push("--", ...promptArgs);
+    } else {
+      args.push(input.prompt);
+    }
+  } else {
+    args = [...prefix, "-p", input.prompt, ...config.extraArgs];
+    if (input.model) {
+      args.push("--model", input.model);
+    }
   }
 
   logger.debug({ args, cwd: input.cwd, timeoutMs: input.timeoutMs }, `${config.logLabel} subprocess args`);
