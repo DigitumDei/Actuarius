@@ -8,30 +8,21 @@ Discord bot container that links GitHub repos to Discord channels and creates re
 
 - Runs as a Docker container.
 - Includes these CLIs in-container:
-  - `git`
-  - `gh`
-  - `node`
-  - `npm`
-  - `codex` (seeded into `/data/home/appuser/.npm-global/bin` on first boot)
-  - `claude` (seeded into `/data/home/appuser/.npm-global/bin` on first boot)
-  - `gemini` (seeded into `/data/home/appuser/.npm-global/bin` on first boot)
-  - `opencode` (seeded into `/data/home/appuser/.npm-global/bin` on first boot)
+  - `git`, `gh`, `node`, `npm`
+  - `claude`, `codex`, `gemini`, `opencode` (seeded into `/data/home/appuser/.npm-global/bin` on first boot)
 - Waits for Discord server invite if not yet in any server.
-- Registers slash commands:
-  - `/help`
-  - `/connect-repo`
-  - `/sync-repo`
-  - `/repos`
-  - `/ask`
+- Registers slash commands for repo management, AI execution, and server administration (20+ commands — see `src/discord/commands.ts` for the full list).
 - Creates one dedicated channel per connected repo (per Discord server).
 - Creates one thread per `/ask` request to preserve request-specific history.
-- Runs Claude for each `/ask` request in an isolated git worktree.
-- Queues `/ask` jobs with bounded per-guild concurrency.
+- Runs the configured AI provider (Claude, Codex, Gemini, or OpenCode) for each `/ask` request in an isolated git worktree.
+- Queues `/ask` jobs with bounded per-guild concurrency and support for `/review` (adversarial code review across multiple provider CLIs).
 - Stores guild/repo/request mappings in SQLite.
+- Supports `/opencode-auth` for per-provider API key management when using OpenCode as the provider.
 
 ## What v1 does not do
 
-- Execute Codex/Gemini tasks from Discord requests yet.
+- Multi-guild operation from a single instance (one instance per guild, always).
+- Expose a public API or web UI.
 
 ## Requirements
 
@@ -61,12 +52,14 @@ Copy `.env.example` to `.env` and set:
 - `THREAD_AUTO_ARCHIVE_MINUTES` (`60`, `1440`, `4320`, or `10080`)
 - `ASK_CONCURRENCY_PER_GUILD` (default `3`)
 - `ASK_EXECUTION_TIMEOUT_MS` (default `1200000`)
-- `GEMINI_API_KEY` (required for Gemini execution)
+- `ENABLE_CODEX_EXECUTION` (default `false`, enables Codex/OpenAI provider)
+- `ENABLE_GEMINI_EXECUTION` (default `false`, enables Gemini provider)
 - `ENABLE_OPENCODE_EXECUTION` (default `false`, enables OpenCode/DeepSeek provider)
-- `DEEPSEEK_API_KEY` (required for OpenCode execution)
+- `GEMINI_API_KEY` (required for Gemini execution)
+- `DEEPSEEK_API_KEY` (required for OpenCode execution when not using `/opencode-auth`)
 - `CLAUDE_CODE_OAUTH_TOKEN` (optional for local/manual runs, required by the production redeploy helper for non-interactive Claude auth)
 
-Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global`, with `docker/entrypoint.sh` seeding them on first boot if missing. That keeps Claude and Codex authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. Gemini and OpenCode execution use API keys (`GEMINI_API_KEY` / `DEEPSEEK_API_KEY`) instead of persisted OAuth state.
+Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global`, with `docker/entrypoint.sh` seeding them on first boot if missing. That keeps Claude and Codex authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. Gemini and OpenCode execution use API keys instead of persisted OAuth state — set `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` as env vars, or use `/opencode-auth` to store per-provider keys in `auth.json` with support for DeepSeek, OpenAI, Anthropic, Google, xAI, Groq, OpenRouter, and Together.
 
 ## Local development
 
@@ -111,7 +104,7 @@ Or without rebuilding (uses cached image):
 docker-compose up
 ```
 
-The first container start after a fresh volume mount is slower than normal because it seeds `claude`, `codex`, and `gemini` into `/data/home/appuser/.npm-global`. Later restarts skip installs for CLIs that are already present and only repair the specific provider binaries that are missing.
+The first container start after a fresh volume mount is slower than normal because it seeds `claude`, `codex`, `gemini`, and `opencode` into `/data/home/appuser/.npm-global`. Later restarts skip installs for CLIs that are already present and only repair the specific provider binaries that are missing.
 
 If the npm registry is unavailable during first boot or a later repair of a missing CLI, the bot still starts and logs a warning instead of crash-looping. Requests that need a missing provider CLI will continue to fail until network access is restored and the container is restarted or the CLI is reinstalled manually.
 
@@ -163,7 +156,10 @@ Because the provider CLIs live under `/data/home/appuser/.npm-global`, you can u
 docker exec -u appuser actuarius npm install -g @anthropic-ai/claude-code@latest
 docker exec -u appuser actuarius npm install -g @openai/codex@latest
 docker exec -u appuser actuarius npm install -g @google/gemini-cli@latest
+docker exec -u appuser actuarius npm install -g opencode-ai@latest
 ```
+
+Or use the `/update-clis` slash command in Discord (supports all four providers).
 
 ## Production operations (GCP VM)
 
@@ -171,29 +167,34 @@ Every push to `main` builds and pushes two image tags to ghcr.io:
 - `ghcr.io/digitumdei/actuarius:latest`
 - `ghcr.io/digitumdei/actuarius:<git-sha>`
 
-The VM startup script reads the target image from instance metadata and pulls it on every boot.
+Infrastructure is managed via Terraform (`infra/`). VM instance metadata is the source of truth for env vars and the redeploy script itself.
 
 ### Deploy latest image or roll back
 
-SSH into the VM and run the helper script:
+SSH into the VM and run the helper script. **After `terraform apply`**, the local `/var/redeploy.sh` is stale — reboot or re-fetch it from metadata first:
 
 ```bash
+# Re-fetch redeploy.sh from fresh metadata after terraform apply
+META="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
+curl -sf -H "Metadata-Flavor: Google" "$META/env-redeploy-script" | sudo tee /var/redeploy.sh > /dev/null
+
 # Pull and run latest
-sudo /var/redeploy.sh
+sudo bash /var/redeploy.sh
 
 # Roll back to a specific git SHA
-sudo /var/redeploy.sh abc1234
+sudo bash /var/redeploy.sh abc1234
 ```
+
+See `docs/deploy.md` for the full deployment lifecycle.
 
 Find a SHA to roll back to:
 - **GitHub UI**: repo → Commits → copy the short SHA next to any commit
 - **CLI**: `git log --oneline`
 
-
 ### Watch startup logs
 
 ```bash
-gcloud compute ssh actuarius-bot --zone us-east1-b --project <YOUR_PROJECT_ID> --tunnel-through-iap
+gcloud compute ssh actuarius-bot --zone <region> --project <YOUR_PROJECT_ID> --tunnel-through-iap
 sudo journalctl -u google-startup-scripts -f
 ```
 
@@ -224,7 +225,7 @@ sudo journalctl -u google-startup-scripts -f
 - Must be run in the mapped repo channel.
 - Creates a new thread automatically.
 - Posts the prompt in the thread.
-- Queues the request and runs Claude in a per-request worktree rooted under `REPOS_ROOT_PATH/.worktrees`.
+- Queues the request and runs the configured AI provider in a per-request worktree rooted under `REPOS_ROOT_PATH/.worktrees`.
 - Posts a final completion/failure message in the thread.
 - Persists request metadata and lifecycle status for history/audit.
 
@@ -239,7 +240,7 @@ SQLite tables:
 
 ## Security considerations
 
-Actuarius executes AI agents (Claude, Codex, Gemini) with full shell access inside the container. User-supplied prompts from `/ask`, `/bug`, and `/issue` are passed directly to these agents, which run with unrestricted permissions (e.g. `--dangerously-auto-approve`, `--yolo`). This is by design — the bot's purpose is to let AI agents work freely on code.
+Actuarius executes AI agents (Claude, Codex, Gemini, OpenCode) with full shell access inside the container. User-supplied prompts from `/ask`, `/bug`, and `/issue` are passed directly to these agents, which run with unrestricted permissions (e.g. `--dangerously-auto-approve`, `--yolo`). This is by design — the bot's purpose is to let AI agents work freely on code.
 
 **This means any Discord user who can run slash commands in your server can instruct the AI to execute arbitrary shell commands inside the container.** There is no prompt sanitization or sandboxing beyond the container boundary itself.
 
