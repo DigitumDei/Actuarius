@@ -160,11 +160,6 @@ docker exec -u appuser actuarius npm install -g opencode-ai@latest
 ```
 
 Or use the `/update-clis` slash command in Discord (supports all four providers).
-docker exec -u appuser actuarius npm install -g opencode-ai@latest
-```
-
-Or use the `/update-clis` slash command in Discord (supports all four providers).
-```
 
 ## Production operations (GCP VM)
 
@@ -188,19 +183,6 @@ sudo bash /var/redeploy.sh
 
 # Roll back to a specific git SHA
 sudo bash /var/redeploy.sh abc1234
-```
-
-See `docs/deploy.md` for the full deployment lifecycle.
-
-Find a SHA to roll back to:
-- **GitHub UI**: repo → Commits → copy the short SHA next to any commit
-- **CLI**: `git log --oneline`
-
-### Watch startup logs
-
-```bash
-gcloud compute ssh actuarius --zone us-central1-a --tunnel-through-iap
-sudo journalctl -u google-startup-scripts -f
 ```
 
 See `docs/deploy.md` for the full deployment lifecycle.

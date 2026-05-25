@@ -55,7 +55,7 @@ sudo reboot
 
 ## Adding a new env var
 
-Two places need updating:
+Three places need updating:
 
 | Step | File | What to add |
 |------|------|-------------|

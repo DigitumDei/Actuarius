@@ -45,7 +45,7 @@ export async function runProviderRequest(
   logger: Logger
 ): Promise<string> {
   const prefix = config.prefixArgs ?? [];
-  const promptArgs = config.splitPrompt ? input.prompt.split(/\s+/).filter(Boolean) : [input.prompt];
+  const promptArgs = config.splitPrompt ? input.prompt.split(/[^\S\r\n]+/).filter(Boolean) : [input.prompt];
   const args = config.positionalPrompt
     ? [...prefix, ...promptArgs, ...config.extraArgs]
     : [...prefix, "-p", input.prompt, ...config.extraArgs];
