@@ -18,8 +18,6 @@ export interface ProviderRunnerConfig {
   extraArgs: string[];
   /** If true, pass the prompt as a positional arg instead of `-p <prompt>`. */
   positionalPrompt?: boolean;
-  /** If true, split the prompt by horizontal whitespace into separate positional args. */
-  splitPrompt?: boolean;
   /** Human-readable label used in log messages, e.g. "Codex". */
   logLabel: string;
   makeError: (code: string, message: string) => Error;
@@ -45,9 +43,8 @@ export async function runProviderRequest(
   logger: Logger
 ): Promise<string> {
   const prefix = config.prefixArgs ?? [];
-  const promptArgs = config.splitPrompt ? input.prompt.split(/[^\S\r\n]+/).filter(Boolean) : [input.prompt];
   const args = config.positionalPrompt
-    ? [...prefix, ...promptArgs, ...config.extraArgs]
+    ? [...prefix, input.prompt, ...config.extraArgs]
     : [...prefix, "-p", input.prompt, ...config.extraArgs];
   if (input.model) {
     args.push("--model", input.model);
