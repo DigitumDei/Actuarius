@@ -194,7 +194,7 @@ Find a SHA to roll back to:
 ### Watch startup logs
 
 ```bash
-gcloud compute ssh actuarius --zone us-central1-a --tunnel-through-iap
+gcloud compute ssh actuarius --zone <region> --project <YOUR_PROJECT_ID> --tunnel-through-iap
 sudo journalctl -u google-startup-scripts -f
 ```
 
