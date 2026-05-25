@@ -20,10 +20,19 @@ const DEFAULT_STDERR_MAX = 64 * 1024; // 64 KB
 export function spawnCollect(
   file: string,
   args: string[],
-  options: { cwd: string; timeoutMs: number; maxBuffer: number; maxStderrBuffer?: number; env?: NodeJS.ProcessEnv }
+  options: { cwd: string; timeoutMs: number; maxBuffer: number; maxStderrBuffer?: number; env?: NodeJS.ProcessEnv; stdin?: string }
 ): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(file, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: [options.stdin ? "pipe" : "ignore", "pipe", "pipe"] as const,
+    });
+
+    if (options.stdin && child.stdin) {
+      child.stdin.write(options.stdin);
+      child.stdin.end();
+    }
 
     let stdout = "";
     let stderr = "";
