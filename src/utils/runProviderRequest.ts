@@ -18,8 +18,8 @@ export interface ProviderRunnerConfig {
   extraArgs: string[];
   /** If true, pass the prompt as a positional arg instead of `-p <prompt>`. */
   positionalPrompt?: boolean;
-  /** If true, split the prompt by whitespace into separate positional args. Use when the CLI accepts message as varargs (e.g. opencode). */
-  splitPrompt?: boolean;
+  /** If true, pipe the prompt via stdin instead of passing as CLI arguments. */
+  pipeStdin?: boolean;
   /** Human-readable label used in log messages, e.g. "Codex". */
   logLabel: string;
   makeError: (code: string, message: string) => Error;
@@ -45,23 +45,13 @@ export async function runProviderRequest(
   logger: Logger
 ): Promise<string> {
   const prefix = config.prefixArgs ?? [];
-  let args: string[];
-  if (config.positionalPrompt) {
-    args = [...prefix, ...config.extraArgs];
-    if (input.model) {
-      args.push("--model", input.model);
-    }
-    if (config.splitPrompt) {
-      const promptArgs = input.prompt.split(/[^\S\r\n]+/).filter(Boolean);
-      args.push("--", ...promptArgs);
-    } else {
-      args.push(input.prompt);
-    }
-  } else {
-    args = [...prefix, "-p", input.prompt, ...config.extraArgs];
-    if (input.model) {
-      args.push("--model", input.model);
-    }
+  const args = config.pipeStdin
+    ? [...prefix, ...config.extraArgs]
+    : config.positionalPrompt
+      ? [...prefix, input.prompt, ...config.extraArgs]
+      : [...prefix, "-p", input.prompt, ...config.extraArgs];
+  if (input.model) {
+    args.push("--model", input.model);
   }
 
   logger.debug({ args, cwd: input.cwd, timeoutMs: input.timeoutMs }, `${config.logLabel} subprocess args`);
@@ -73,6 +63,7 @@ export async function runProviderRequest(
     ({ stdout, stderr } = await spawnCollect(config.binary, args, {
       cwd: input.cwd,
       ...(input.env ? { env: input.env } : {}),
+      ...(config.pipeStdin ? { stdin: input.prompt } : {}),
       timeoutMs: input.timeoutMs,
       maxBuffer: 4 * 1024 * 1024,
     }));
