@@ -26,10 +26,11 @@ export function spawnCollect(
     const child = spawn(file, args, {
       cwd: options.cwd,
       env: options.env,
-      stdio: [options.stdin ? "pipe" : "ignore", "pipe", "pipe"] as const,
+      stdio: [options.stdin !== undefined ? "pipe" : "ignore", "pipe", "pipe"] as const,
     });
 
-    if (options.stdin && child.stdin) {
+    if (options.stdin !== undefined && child.stdin) {
+      child.stdin.on("error", () => {});
       child.stdin.write(options.stdin);
       child.stdin.end();
     }
