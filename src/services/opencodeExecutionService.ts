@@ -57,6 +57,7 @@ export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: 
       binary: "opencode",
       prefixArgs: ["run"],
       positionalPrompt: true,
+      cwdFlag: "--dir",
       extraArgs: ["--dangerously-skip-permissions"],
       logLabel: "OpenCode",
       makeError: (code, message) => new OpencodeExecutionError(code as OpencodeExecutionError["code"], message),

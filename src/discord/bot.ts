@@ -2310,6 +2310,7 @@ Output the result of the command or the link to the created issue.`;
       let effectivePrompt = input.existingWorktreePath
         ? await this.buildThreadPromptWithHistory(channel, input.prompt)
         : input.prompt;
+      effectivePrompt = `Repository: ${input.repo.fullName}\n\n${effectivePrompt}`;
       if (input.promptTransformer && !input.existingWorktreePath) {
         effectivePrompt = input.promptTransformer(effectivePrompt);
       }

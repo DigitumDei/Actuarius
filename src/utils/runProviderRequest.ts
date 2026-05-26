@@ -18,6 +18,13 @@ export interface ProviderRunnerConfig {
   extraArgs: string[];
   /** If true, pass the prompt as a positional arg instead of `-p <prompt>`. */
   positionalPrompt?: boolean;
+  /**
+   * If set, inject `[cwdFlag, input.cwd]` immediately after prefixArgs.
+   * Use for CLIs that don't honor the process cwd as their project root —
+   * notably opencode, which resolves project context via `.git` and gets
+   * confused by git worktrees.
+   */
+  cwdFlag?: string;
   /** Human-readable label used in log messages, e.g. "Codex". */
   logLabel: string;
   makeError: (code: string, message: string) => Error;
@@ -43,9 +50,10 @@ export async function runProviderRequest(
   logger: Logger
 ): Promise<string> {
   const prefix = config.prefixArgs ?? [];
+  const cwdArgs = config.cwdFlag ? [config.cwdFlag, input.cwd] : [];
   const args = config.positionalPrompt
-    ? [...prefix, input.prompt, ...config.extraArgs]
-    : [...prefix, "-p", input.prompt, ...config.extraArgs];
+    ? [...prefix, ...cwdArgs, input.prompt, ...config.extraArgs]
+    : [...prefix, ...cwdArgs, "-p", input.prompt, ...config.extraArgs];
   if (input.model) {
     args.push("--model", input.model);
   }
