@@ -18,8 +18,6 @@ export interface ProviderRunnerConfig {
   extraArgs: string[];
   /** If true, pass the prompt as a positional arg instead of `-p <prompt>`. */
   positionalPrompt?: boolean;
-  /** If true, pipe the prompt via stdin instead of passing as CLI arguments. */
-  pipeStdin?: boolean;
   /** Human-readable label used in log messages, e.g. "Codex". */
   logLabel: string;
   makeError: (code: string, message: string) => Error;
@@ -45,11 +43,9 @@ export async function runProviderRequest(
   logger: Logger
 ): Promise<string> {
   const prefix = config.prefixArgs ?? [];
-  const args = config.pipeStdin
-    ? [...prefix, ...config.extraArgs]
-    : config.positionalPrompt
-      ? [...prefix, input.prompt, ...config.extraArgs]
-      : [...prefix, "-p", input.prompt, ...config.extraArgs];
+  const args = config.positionalPrompt
+    ? [...prefix, input.prompt, ...config.extraArgs]
+    : [...prefix, "-p", input.prompt, ...config.extraArgs];
   if (input.model) {
     args.push("--model", input.model);
   }
@@ -63,7 +59,6 @@ export async function runProviderRequest(
     ({ stdout, stderr } = await spawnCollect(config.binary, args, {
       cwd: input.cwd,
       ...(input.env ? { env: input.env } : {}),
-      ...(config.pipeStdin ? { stdin: input.prompt } : {}),
       timeoutMs: input.timeoutMs,
       maxBuffer: 4 * 1024 * 1024,
     }));
