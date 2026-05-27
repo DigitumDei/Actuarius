@@ -6,6 +6,7 @@ GIT_USER_EMAIL="${GIT_USER_EMAIL:-actuarius-bot@users.noreply.github.com}"
 
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
 mkdir -p "$NPM_CONFIG_PREFIX"
+mkdir -p "${MEMPALACE_PALACE_PATH:-/data/mempalace/palace}"
 
 /app/install-llm-user-instructions.sh
 if ! /app/seed-provider-clis.sh; then

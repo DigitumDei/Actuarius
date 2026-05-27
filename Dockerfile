@@ -35,8 +35,33 @@ FROM base AS runtime
 
 WORKDIR /app
 
+# Download mempalace-mcp binary from the latest successful main build on GitHub Actions.
+# Pass GITHUB_TOKEN at build time: docker build --build-arg GITHUB_TOKEN=... .
+# If the token is absent or the download fails, the binary is simply not installed and
+# MEMPALACE_ENABLED will have no effect at runtime.
+ARG GITHUB_TOKEN
+RUN if [ -n "${GITHUB_TOKEN:-}" ]; then \
+      set -e && \
+      LATEST_RUN=$(GH_TOKEN="${GITHUB_TOKEN}" gh run list \
+        --repo DigitumDei/mempalace-rs \
+        --branch main \
+        --status success \
+        --limit 1 \
+        --json databaseId \
+        -q '.[0].databaseId') && \
+      GH_TOKEN="${GITHUB_TOKEN}" gh run download \
+        --repo DigitumDei/mempalace-rs \
+        "$LATEST_RUN" \
+        -n mempalace-release-binaries \
+        --dir /tmp/mempalace-bin && \
+      cp /tmp/mempalace-bin/mempalace-mcp /usr/local/bin/mempalace-mcp && \
+      chmod 0755 /usr/local/bin/mempalace-mcp && \
+      rm -rf /tmp/mempalace-bin; \
+    fi
+
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/data/app.db
+ENV MEMPALACE_PALACE_PATH=/data/mempalace/palace
 ENV HOME=/data/home/appuser
 ENV NPM_CONFIG_PREFIX=/data/home/appuser/.npm-global
 ENV PATH=/data/home/appuser/.npm-global/bin:$PATH

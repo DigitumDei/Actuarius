@@ -1,6 +1,9 @@
 services:
   actuarius:
-    build: .
+    build:
+      context: .
+      args:
+        GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     image: actuarius:latest
     env_file:
       - .env
