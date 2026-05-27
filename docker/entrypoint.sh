@@ -67,14 +67,13 @@ EOF
   fi
 
   mkdir -p "$HOME/.codex"
-  if ! grep -q '\[\[mcp_servers\]\]' "$HOME/.codex/config.toml" 2>/dev/null; then
+  if ! grep -q '\[mcp_servers\.mempalace\]' "$HOME/.codex/config.toml" 2>/dev/null; then
     cat <<EOF >> "$HOME/.codex/config.toml"
 
-[[mcp_servers]]
-name = "mempalace"
-command = ["$MEMPALACE_BINARY_PATH"]
+[mcp_servers.mempalace]
+command = "$MEMPALACE_BINARY_PATH"
 
-[mcp_servers.env]
+[mcp_servers.mempalace.env]
 MEMPALACE_PALACE_PATH = "$MEMPALACE_PALACE_PATH"
 MEMPALACE_EMBED_ALLOW_DOWNLOADS = "1"
 EOF
