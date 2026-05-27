@@ -53,9 +53,13 @@ export class MemPalaceClient {
     });
 
     const rl = createInterface({ input: this.child.stdout! });
-    rl.on("line", (line) => { this.handleLine(line); });
+    rl.on("line", (line) => {
+      if (this.child?.killed) return;
+      this.handleLine(line);
+    });
 
     this.child.stderr?.on("data", (chunk: Buffer) => {
+      if (this.child?.killed) return;
       this.logger.debug({ stderr: chunk.toString().trim() }, "mempalace-mcp stderr");
     });
 
@@ -139,10 +143,24 @@ export class MemPalaceClient {
     return extractText(result);
   }
 
-  private sendRequest(method: string, params: unknown): Promise<unknown> {
+  private sendRequest(method: string, params: unknown, timeoutMs = 30000): Promise<unknown> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      if (!this.child || !this.child.stdin || this.child.killed) {
+        reject(new Error("MemPalace client is not connected"));
+        return;
+      }
+
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`MCP request ${method} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.pending.set(id, {
+        resolve: (result) => { clearTimeout(timer); resolve(result); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      });
+
       this.sendLine({ jsonrpc: "2.0", id, method, params });
     });
   }
