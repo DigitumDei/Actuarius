@@ -50,9 +50,8 @@ EOF
 fi
 
 if [ -x "$MEMPALACE_BINARY_PATH" ]; then
-  if [ ! -f "$HOME/.claude/settings.json" ]; then
-    mkdir -p "$HOME/.claude"
-    cat <<EOF > "$HOME/.claude/settings.json"
+  if [ ! -f "$HOME/.claude.json" ]; then
+    cat <<EOF > "$HOME/.claude.json"
 {
   "mcpServers": {
     "mempalace": {
