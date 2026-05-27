@@ -66,9 +66,10 @@ if [ -x "$MEMPALACE_BINARY_PATH" ]; then
 EOF
   fi
 
-  if [ ! -f "$HOME/.codex/config.toml" ]; then
-    mkdir -p "$HOME/.codex"
-    cat <<EOF > "$HOME/.codex/config.toml"
+  mkdir -p "$HOME/.codex"
+  if ! grep -q '\[\[mcp_servers\]\]' "$HOME/.codex/config.toml" 2>/dev/null; then
+    cat <<EOF >> "$HOME/.codex/config.toml"
+
 [[mcp_servers]]
 name = "mempalace"
 command = ["$MEMPALACE_BINARY_PATH"]
