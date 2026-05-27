@@ -68,7 +68,7 @@ EOF
 
   OPENCODE_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
   mkdir -p "$OPENCODE_CONFIG_DIR"
-  if ! grep -q '"mempalace"' "$OPENCODE_CONFIG_DIR/config.json" 2>/dev/null; then
+  if ! grep -q '"type"' "$OPENCODE_CONFIG_DIR/config.json" 2>/dev/null; then
     python3 - "$OPENCODE_CONFIG_DIR/config.json" "$MEMPALACE_BINARY_PATH" "$MEMPALACE_PALACE_PATH" <<'PYEOF'
 import json, sys, os
 path, binary, palace = sys.argv[1], sys.argv[2], sys.argv[3]
