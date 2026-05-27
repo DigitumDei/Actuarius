@@ -35,29 +35,13 @@ FROM base AS runtime
 
 WORKDIR /app
 
-# Download mempalace-mcp binary from the latest successful main build on GitHub Actions.
-# Pass GITHUB_TOKEN at build time: docker build --build-arg GITHUB_TOKEN=... .
-# If the token is absent or the download fails, the binary is simply not installed and
-# MEMPALACE_ENABLED will have no effect at runtime.
-ARG GITHUB_TOKEN
-RUN if [ -n "${GITHUB_TOKEN:-}" ]; then \
-      set -e && \
-      LATEST_RUN=$(GH_TOKEN="${GITHUB_TOKEN}" gh run list \
-        --repo DigitumDei/mempalace-rs \
-        --branch main \
-        --status success \
-        --limit 1 \
-        --json databaseId \
-        -q '.[0].databaseId') && \
-      GH_TOKEN="${GITHUB_TOKEN}" gh run download \
-        --repo DigitumDei/mempalace-rs \
-        "$LATEST_RUN" \
-        -n mempalace-release-binaries \
-        --dir /tmp/mempalace-bin && \
-      cp /tmp/mempalace-bin/mempalace-mcp /usr/local/bin/mempalace-mcp && \
-      chmod 0755 /usr/local/bin/mempalace-mcp && \
-      rm -rf /tmp/mempalace-bin; \
-    fi
+# Download mempalace-mcp binary from the public nightly release on mempalace-rs.
+# No auth required — public release assets are unauthenticated.
+# If the download fails the binary is simply not installed and MEMPALACE_ENABLED has no effect.
+RUN curl -fsSL \
+      https://github.com/DigitumDei/mempalace-rs/releases/download/nightly/mempalace-mcp-linux-x86_64 \
+      -o /usr/local/bin/mempalace-mcp \
+    && chmod 0755 /usr/local/bin/mempalace-mcp
 
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/data/app.db
