@@ -151,13 +151,23 @@ describe("seed-provider-clis.sh", () => {
     expect(result.npmLog).toBe(EXPECTED_INSTALLS);
   });
 
-  it("keeps updating the remaining packages when one install fails", () => {
+  it("retries a failed install once after cleaning, then keeps going", () => {
     const result = runSeedProviderClis([], ["@openai/codex"]);
 
-    // All four are still attempted (best-effort, isolated installs)...
-    expect(result.npmLog).toBe(EXPECTED_INSTALLS);
-    // ...but the failure surfaces as a non-zero exit + warning naming the package.
+    // The failing package is attempted twice (clean + reinstall); the others
+    // still install once each, in order.
+    expect(result.npmLog).toBe(
+      [
+        "install -g @anthropic-ai/claude-code@latest",
+        "install -g @openai/codex@latest",
+        "install -g @openai/codex@latest",
+        "install -g @google/gemini-cli@latest",
+        "install -g opencode-ai@latest",
+      ].join("\n") + "\n"
+    );
+    // After both attempts fail it surfaces as a non-zero exit + warning.
     expect(result.status).toBe(1);
+    expect(result.stderr).toContain("cleaning package dir and retrying");
     expect(result.stderr).toContain("@openai/codex");
   });
 
