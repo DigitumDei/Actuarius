@@ -1,30 +1,34 @@
 #!/bin/sh
 set -eu
 
-prefix="${NPM_CONFIG_PREFIX:?NPM_CONFIG_PREFIX must be set}"
-missing_packages=""
+# npm needs a writable global prefix; fail loudly if it is missing.
+: "${NPM_CONFIG_PREFIX:?NPM_CONFIG_PREFIX must be set}"
 
-queue_package_if_missing() {
-  binary_name="$1"
-  package_name="$2"
+# Provider CLIs install into $NPM_CONFIG_PREFIX, which lives on the persisted
+# /data volume. Installing "only when missing" means a CLI that landed on the
+# volume during an earlier container run is never upgraded — it goes stale even
+# after the image is rebuilt. So we always install the latest of each package
+# on startup; a restart then picks up upstream releases.
+#
+# Each install is best-effort and isolated: if one package fails (npm registry
+# unreachable, a yanked version, etc.) we keep going so the others still update
+# and any previously installed CLI stays in place. We exit non-zero when any
+# package failed so the entrypoint logs a warning, but startup still continues.
 
-  if [ -x "$prefix/bin/$binary_name" ]; then
-    return
+packages="@anthropic-ai/claude-code @openai/codex @google/gemini-cli opencode-ai"
+
+failed=""
+for package in $packages; do
+  if ! npm install -g "$package@latest"; then
+    if [ -n "$failed" ]; then
+      failed="$failed $package"
+    else
+      failed="$package"
+    fi
   fi
+done
 
-  if [ -n "$missing_packages" ]; then
-    missing_packages="$missing_packages $package_name"
-  else
-    missing_packages="$package_name"
-  fi
-}
-
-queue_package_if_missing "claude" "@anthropic-ai/claude-code"
-queue_package_if_missing "codex" "@openai/codex"
-queue_package_if_missing "gemini" "@google/gemini-cli"
-queue_package_if_missing "opencode" "opencode-ai"
-
-if [ -n "$missing_packages" ]; then
-  # Intentionally rely on word splitting so npm receives one package per argument.
-  npm install -g $missing_packages
+if [ -n "$failed" ]; then
+  echo "WARNING: failed to install/update provider CLIs:$failed" >&2
+  exit 1
 fi
