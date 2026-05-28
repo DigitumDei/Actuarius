@@ -57,6 +57,7 @@ import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
 import { InstallService, InstallServiceError } from "../services/installService.js";
 import { buildAptPackageId, getAptPackageSpec, isAptPackageId } from "../services/installerRegistry.js";
 import { createRequestWorktree, deleteRequestBranch, RequestWorktreeError } from "../services/requestWorktreeService.js";
+import { MemPalaceClient } from "../services/memPalaceClient.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
 
@@ -328,8 +329,9 @@ export class ActuariusBot {
   private readonly db: AppDatabase;
   private readonly requestQueue: RequestExecutionQueue;
   private readonly installService: InstallService;
+  private readonly memPalace: MemPalaceClient | null;
 
-  public constructor(config: AppConfig, logger: pino.Logger, db: AppDatabase) {
+  public constructor(config: AppConfig, logger: pino.Logger, db: AppDatabase, memPalace: MemPalaceClient | null = null) {
     this.config = config;
     this.logger = logger;
     this.db = db;
@@ -343,6 +345,7 @@ export class ActuariusBot {
       }
     );
     this.installService = new InstallService(config, logger, db);
+    this.memPalace = memPalace;
     this.client = new Client({
       // MessageContent is a privileged intent — must be enabled in the Discord Developer Portal
       intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
@@ -368,6 +371,14 @@ export class ActuariusBot {
 
       for (const guild of this.client.guilds.cache.values()) {
         this.db.upsertGuild(guild.id, guild.name);
+      }
+
+      if (this.memPalace) {
+        this.memPalace.wakeUp("wing_actuarius").then((ctx) => {
+          this.logger.info({ contextLength: ctx.length }, "MemPalace wake-up complete");
+        }).catch((err: unknown) => {
+          this.logger.warn({ error: err }, "MemPalace wake-up failed");
+        });
       }
     });
 
@@ -559,6 +570,9 @@ export class ActuariusBot {
       case "update-clis":
         await this.handleUpdateClis(interaction);
         return;
+      case "memory":
+        await this.handleMemory(interaction);
+        return;
       default:
         await interaction.reply({ content: "Unknown command.", ephemeral: true });
     }
@@ -659,6 +673,12 @@ export class ActuariusBot {
           "Use `/ask prompt:<text>` in that channel."
         ].join("\n")
       );
+
+      if (this.memPalace) {
+        this.memPalace.kgAdd(inserted.full_name, "connected_to_guild", interaction.guildId).catch((err: unknown) => {
+          this.logger.warn({ error: err }, "MemPalace kgAdd failed for connect-repo");
+        });
+      }
     } catch (error) {
       if (error instanceof GitHubRepoLookupError) {
         if (error.code === "NOT_FOUND") {
@@ -2219,6 +2239,40 @@ Output the result of the command or the link to the created issue.`;
     });
   }
 
+  private async handleMemory(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!this.memPalace || !this.memPalace.isReady()) {
+      await interaction.reply({
+        content: "MemPalace is not enabled. Set `MEMPALACE_ENABLED=true` and ensure the `mempalace-mcp` binary is installed.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const subcommand = interaction.options.getSubcommand(true);
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      if (subcommand === "search") {
+        const query = interaction.options.getString("query", true);
+        const result = await this.memPalace.search(query, { wing: "wing_actuarius" });
+        const body = result.trim() || "No results found.";
+        for (const chunk of splitIntoDiscordMessages(body, "MemPalace")) {
+          await interaction.followUp({ content: chunk, ephemeral: true });
+        }
+        await interaction.editReply(`Search results for \`${query}\`:`);
+      } else if (subcommand === "status") {
+        const result = await this.memPalace.status();
+        const body = result.trim() || "No status available.";
+        await interaction.editReply(clipForDiscord(body, DISCORD_MESSAGE_LIMIT));
+      } else {
+        await interaction.editReply("Unknown subcommand.");
+      }
+    } catch (err) {
+      this.logger.error({ error: err }, "MemPalace command failed");
+      await interaction.editReply("MemPalace query failed. Check logs for details.");
+    }
+  }
+
   private async runQueuedRequest(input: {
     requestId: number;
     threadId: string;
@@ -2359,6 +2413,23 @@ Output the result of the command or the link to the created issue.`;
         { requestId: input.requestId, durationMs: Date.now() - startedAt, provider: input.provider },
         "Queued AI request succeeded"
       );
+
+      if (this.memPalace) {
+        const drawerContent = [
+          `# Request #${input.requestId}: ${input.prompt}`,
+          "",
+          `Repo: ${input.repo.fullName}`,
+          `Provider: ${input.provider}${input.model ? ` (${input.model})` : ""}`,
+          `Duration: ${Date.now() - startedAt}ms`,
+          "",
+          "## Result",
+          "",
+          resultText,
+        ].join("\n");
+        this.memPalace.addDrawer(drawerContent, "wing_actuarius", "requests").catch((err: unknown) => {
+          this.logger.warn({ error: err, requestId: input.requestId }, "MemPalace addDrawer failed");
+        });
+      }
     } catch (error) {
       markFailed();
       const message = this.describeExecutionError(error);

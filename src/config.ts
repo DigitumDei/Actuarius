@@ -72,6 +72,12 @@ const envSchema = z.object({
     .default("false")
     .transform((value) => value === "true"),
   DEEPSEEK_API_KEY: optionalNonEmpty,
+  MEMPALACE_ENABLED: z
+    .string()
+    .default("false")
+    .transform((value) => value === "true"),
+  MEMPALACE_PALACE_PATH: z.string().default("/data/mempalace/palace"),
+  MEMPALACE_BINARY_PATH: z.string().default("/usr/local/bin/mempalace-mcp"),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -109,6 +115,9 @@ const databaseDirectory = dirname(rawConfig.DATABASE_PATH);
 mkdirSync(databaseDirectory, { recursive: true });
 mkdirSync(rawConfig.REPOS_ROOT_PATH, { recursive: true });
 mkdirSync(rawConfig.INSTALLS_ROOT_PATH, { recursive: true });
+if (rawConfig.MEMPALACE_ENABLED) {
+  mkdirSync(rawConfig.MEMPALACE_PALACE_PATH, { recursive: true });
+}
 const githubCliConfigPath = resolve(rawConfig.REPOS_ROOT_PATH, "..", ".gh");
 mkdirSync(githubCliConfigPath, { recursive: true });
 
@@ -138,6 +147,9 @@ export const appConfig = {
   enableGeminiExecution: rawConfig.ENABLE_GEMINI_EXECUTION,
   enableOpencodeExecution: rawConfig.ENABLE_OPENCODE_EXECUTION,
   deepseekApiKey: rawConfig.DEEPSEEK_API_KEY,
+  mempalaceEnabled: rawConfig.MEMPALACE_ENABLED,
+  mempalacePalacePath: rawConfig.MEMPALACE_PALACE_PATH,
+  mempalaceBinaryPath: rawConfig.MEMPALACE_BINARY_PATH,
 };
 
 export type AppConfig = typeof appConfig;

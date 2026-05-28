@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS base
+FROM node:22-trixie-slim AS base
 
 WORKDIR /app
 
@@ -35,8 +35,18 @@ FROM base AS runtime
 
 WORKDIR /app
 
+# Download mempalace-mcp binary from the public nightly release on mempalace-rs.
+# No auth required — public release assets are unauthenticated.
+# If the download fails the binary is simply not installed and MEMPALACE_ENABLED has no effect.
+RUN curl -fsSL \
+      https://github.com/DigitumDei/mempalace-rs/releases/download/nightly/mempalace-mcp-linux-x86_64 \
+      -o /usr/local/bin/mempalace-mcp \
+    && chmod 0755 /usr/local/bin/mempalace-mcp \
+    || echo "WARNING: Failed to download mempalace-mcp binary — MemPalace will be unavailable"
+
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/data/app.db
+ENV MEMPALACE_PALACE_PATH=/data/mempalace/palace
 ENV HOME=/data/home/appuser
 ENV NPM_CONFIG_PREFIX=/data/home/appuser/.npm-global
 ENV PATH=/data/home/appuser/.npm-global/bin:$PATH

@@ -27,7 +27,7 @@ function createExecutable(path: string, contents: string) {
   chmodSync(path, 0o755);
 }
 
-function runSeedProviderClis(existingBinaries: string[]): SeedResult {
+function runSeedProviderClis(existingBinaries: string[], failPackages: string[] = []): SeedResult {
   const tempDir = mkdtempSync(join(tmpdir(), "seed-provider-clis-"));
   tempDirs.push(tempDir);
 
@@ -43,10 +43,18 @@ function runSeedProviderClis(existingBinaries: string[]): SeedResult {
     createExecutable(join(prefixBinDir, binary), "#!/bin/sh\nexit 0\n");
   }
 
+  // Mock npm logs each invocation's args. It exits 1 when the args mention any
+  // package listed in failPackages, so tests can exercise the best-effort path.
+  const failCases = failPackages
+    .map((pkg) => `    *${pkg}*) exit 1 ;;`)
+    .join("\n");
   createExecutable(
     join(binDir, "npm"),
     `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> ${JSON.stringify(npmLogPath)}
+case "$*" in
+${failCases}
+esac
 exit 0
 `
   );
@@ -119,29 +127,38 @@ function runEntrypointWithFailingSeed(): { status: number | null; stdout: string
   };
 }
 
+const EXPECTED_INSTALLS = [
+  "install -g @anthropic-ai/claude-code@latest",
+  "install -g @openai/codex@latest",
+  "install -g @google/gemini-cli@latest",
+  "install -g opencode-ai@latest",
+].join("\n") + "\n";
+
 describe("seed-provider-clis.sh", () => {
-  it("skips npm when all provider binaries are already present", () => {
-    const result = runSeedProviderClis(["claude", "codex", "gemini"]);
-
-    expect(result.status).toBe(0);
-    expect(result.stderr).toBe("");
-    expect(result.npmLog).toBe("");
-  });
-
-  it("installs only the missing provider package", () => {
-    const result = runSeedProviderClis(["claude", "gemini"]);
-
-    expect(result.status).toBe(0);
-    expect(result.npmLog).toBe("install -g @openai/codex\n");
-  });
-
-  it("installs every provider package on a fresh volume", () => {
+  it("installs the latest of every provider package on a fresh volume", () => {
     const result = runSeedProviderClis([]);
 
     expect(result.status).toBe(0);
-    expect(result.npmLog).toBe(
-      "install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli\n"
-    );
+    expect(result.stderr).toBe("");
+    expect(result.npmLog).toBe(EXPECTED_INSTALLS);
+  });
+
+  it("re-installs the latest even when the binaries already exist (no stale CLIs)", () => {
+    const result = runSeedProviderClis(["claude", "codex", "gemini", "opencode"]);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.npmLog).toBe(EXPECTED_INSTALLS);
+  });
+
+  it("keeps updating the remaining packages when one install fails", () => {
+    const result = runSeedProviderClis([], ["@openai/codex"]);
+
+    // All four are still attempted (best-effort, isolated installs)...
+    expect(result.npmLog).toBe(EXPECTED_INSTALLS);
+    // ...but the failure surfaces as a non-zero exit + warning naming the package.
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("@openai/codex");
   });
 
   it("continues container startup when provider seeding fails", () => {

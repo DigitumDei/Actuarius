@@ -13,6 +13,7 @@ install_instruction_file() {
   chmod 0644 "$target_path"
 }
 
-for file in ".claude/CLAUDE.md" ".codex/AGENTS.md" ".gemini/GEMINI.md" ".opencode/AGENTS.md"; do
-  install_instruction_file "$SOURCE_ROOT/$file" "$TARGET_HOME/$file"
-done
+install_instruction_file "$SOURCE_ROOT/.claude/CLAUDE.md"   "$TARGET_HOME/.claude/CLAUDE.md"
+install_instruction_file "$SOURCE_ROOT/.codex/AGENTS.md"    "$TARGET_HOME/.codex/AGENTS.md"
+install_instruction_file "$SOURCE_ROOT/.gemini/GEMINI.md"   "$TARGET_HOME/.gemini/GEMINI.md"
+install_instruction_file "$SOURCE_ROOT/.opencode/AGENTS.md" "${XDG_CONFIG_HOME:-$TARGET_HOME/.config}/opencode/AGENTS.md"

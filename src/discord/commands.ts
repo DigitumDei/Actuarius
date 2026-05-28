@@ -209,7 +209,21 @@ export const commandBuilders = [
           { name: "Gemini", value: "gemini" },
           { name: "OpenCode", value: "opencode" }
         )
+    ),
+  new SlashCommandBuilder()
+    .setName("memory")
+    .setDescription("Search or inspect the MemPalace memory store for this server.")
+    .addSubcommand((sub) =>
+      sub
+        .setName("search")
+        .setDescription("Semantic search across past requests, reviews, and findings.")
+        .addStringOption((option) =>
+          option.setName("query").setDescription("What to search for.").setRequired(true)
+        )
     )
+    .addSubcommand((sub) =>
+      sub.setName("status").setDescription("Show MemPalace palace overview and statistics.")
+    ),
 ];
 
 export type CommandName =
