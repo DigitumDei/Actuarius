@@ -93,6 +93,12 @@ variable "enable_opencode_execution" {
   description = "Enable OpenCode CLI execution for /ask requests"
 }
 
+variable "enable_mempalace" {
+  type        = bool
+  default     = false
+  description = "Enable MemPalace persistent cross-request memory (MEMPALACE_ENABLED)"
+}
+
 variable "gemini_api_key" {
   type        = string
   sensitive   = true

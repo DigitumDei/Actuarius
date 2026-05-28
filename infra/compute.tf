@@ -47,6 +47,7 @@ resource "google_compute_instance" "actuarius" {
     env-enable-codex-execution     = var.enable_codex_execution
     env-enable-gemini-execution    = var.enable_gemini_execution
     env-enable-opencode-execution  = var.enable_opencode_execution
+    env-enable-mempalace           = var.enable_mempalace
     env-gemini-api-key             = var.gemini_api_key
     env-redeploy-script            = file("${path.module}/../scripts/redeploy.sh")
     env-startup-script             = file("${path.module}/startup.sh")
