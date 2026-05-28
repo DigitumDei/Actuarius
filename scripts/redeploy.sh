@@ -61,6 +61,7 @@ if [ -z "$ASK_CONCURRENCY" ];        then echo "FATAL: env-ask-concurrency is no
 ENABLE_CODEX=$(get_meta "env-enable-codex-execution" || true)
 ENABLE_GEMINI=$(get_meta "env-enable-gemini-execution" || true)
 ENABLE_OPENCODE=$(get_meta "env-enable-opencode-execution" || true)
+ENABLE_MEMPALACE=$(get_meta "env-enable-mempalace" || true)
 GEMINI_API_KEY=$(get_meta "env-gemini-api-key" || true)
 
 EXTRA_ARGS=()
@@ -87,6 +88,9 @@ if [ "$ENABLE_GEMINI" = "true" ]; then
 fi
 if [ "$ENABLE_OPENCODE" = "true" ]; then
   EXTRA_ARGS+=(-e "ENABLE_OPENCODE_EXECUTION=true")
+fi
+if [ "$ENABLE_MEMPALACE" = "true" ]; then
+  EXTRA_ARGS+=(-e "MEMPALACE_ENABLED=true")
 fi
 if [ -n "$GEMINI_API_KEY" ]; then
   EXTRA_ARGS+=(-e "GEMINI_API_KEY=$GEMINI_API_KEY")

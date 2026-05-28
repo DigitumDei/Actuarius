@@ -29,3 +29,6 @@ claude_oauth_token = "replace_me"
 enable_codex_execution  = true
 enable_gemini_execution = true
 gemini_api_key          = "replace_me"
+
+# Enable MemPalace persistent cross-request memory
+enable_mempalace = true
