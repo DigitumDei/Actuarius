@@ -65,7 +65,6 @@ import { createDraftPullRequest, PullRequestServiceError } from "../services/pul
 import {
   AttachmentError,
   buildAttachmentSummary,
-  formatFileSize,
   processAttachments,
   validateAttachments,
   type PendingAttachment

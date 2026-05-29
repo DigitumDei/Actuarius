@@ -1,7 +1,9 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  buildAttachmentSummary,
   formatFileSize,
   processAttachments,
   sanitizeFilename,
@@ -130,6 +132,25 @@ describe("validateAttachments", () => {
     const att = makeImageAttachment({ contentType: "image/gif", name: "animation.gif" });
     expect(validateAttachments([att], testConfig)).toBeNull();
   });
+
+  it("rejects unsupported image mime values even when the extension is image-like", () => {
+    const att = makeImageAttachment({ contentType: "image/svg+xml", name: "diagram.png" });
+    const result = validateAttachments([att], testConfig);
+    expect(result).toContain("is not supported");
+  });
+});
+
+describe("buildAttachmentSummary", () => {
+  it("summarizes attachments with sizes and content types", () => {
+    expect(buildAttachmentSummary([makeTextAttachment(), makeImageAttachment()])).toBe([
+      "- debug.log (4.0 KiB, text/plain)",
+      "- screenshot.png (512.0 KiB, image/png)",
+    ].join("\n"));
+  });
+
+  it("returns empty string for no attachments", () => {
+    expect(buildAttachmentSummary([])).toBe("");
+  });
 });
 
 describe("processAttachments", () => {
@@ -164,6 +185,42 @@ describe("processAttachments", () => {
     expect(result.promptSection).toContain("line1\nline2\nline3");
   });
 
+  it("adds .actuarius to the git exclude file before saving attachments", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-attachment-worktree-"));
+    const gitDir = join(worktreePath, ".git");
+    await mkdir(join(gitDir, "info"), { recursive: true });
+    await writeFile(join(gitDir, "info", "exclude"), "*.tmp\n");
+
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => new TextEncoder().encode("hello").buffer,
+    } as Response);
+
+    await processAttachments([makeTextAttachment()], 42, worktreePath, testConfig);
+    await processAttachments([makeTextAttachment()], 43, worktreePath, testConfig);
+
+    const exclude = await readFile(join(gitDir, "info", "exclude"), "utf-8");
+    expect(exclude).toContain("*.tmp\n.actuarius/\n");
+    expect(exclude.match(/^\.actuarius\/$/gm)).toHaveLength(1);
+  });
+
+  it("adds .actuarius to the real git dir for linked git worktrees", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-linked-worktree-"));
+    const realGitDir = await mkdtemp(join(tmpdir(), "actuarius-real-gitdir-"));
+    await mkdir(join(realGitDir, "info"), { recursive: true });
+    await writeFile(join(worktreePath, ".git"), `gitdir: ${realGitDir}\n`);
+
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => new TextEncoder().encode("hello").buffer,
+    } as Response);
+
+    await processAttachments([makeTextAttachment()], 44, worktreePath, testConfig);
+
+    const exclude = await readFile(join(realGitDir, "info", "exclude"), "utf-8");
+    expect(exclude).toBe(".actuarius/\n");
+  });
+
   it("downloads image attachment, saves file, and returns path reference", async () => {
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
@@ -181,6 +238,29 @@ describe("processAttachments", () => {
     expect(result.processed[0]!.type).toBe("image");
     expect(result.promptSection).toContain("File: screenshot.png");
     expect(result.promptSection).toContain("Attached image: .actuarius/attachments/request-42/1-screenshot.png");
+  });
+
+  it("processes multiple mixed text and image attachments", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: async () => new TextEncoder().encode("debug output").buffer,
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: async () => new Uint8Array([137, 80, 78, 71]).buffer,
+      } as Response);
+
+    const result = await processAttachments(
+      [makeTextAttachment(), makeImageAttachment()],
+      45,
+      "/tmp/worktree",
+      testConfig
+    );
+
+    expect(result.processed.map((attachment) => attachment.type)).toEqual(["text", "image"]);
+    expect(result.promptSection).toContain("debug output");
+    expect(result.promptSection).toContain("Attached image: .actuarius/attachments/request-45/2-screenshot.png");
   });
 
   it("clips inline text to max", async () => {
@@ -218,5 +298,45 @@ describe("processAttachments", () => {
     await expect(
       processAttachments([att], 1, "/tmp/worktree", testConfig)
     ).rejects.toThrow("is not supported");
+  });
+
+  it("throws when downloaded content exceeds the per-file size limit", async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => new Uint8Array(11).buffer,
+    } as Response);
+
+    await expect(
+      processAttachments(
+        [makeTextAttachment({ size: 5 })],
+        1,
+        "/tmp/worktree",
+        { ...testConfig, maxFileSize: 10 }
+      )
+    ).rejects.toThrow("downloaded as 11 B, above the 10 B per-file limit");
+  });
+
+  it("throws when downloaded content exceeds the total size limit", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: async () => new Uint8Array(8).buffer,
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: async () => new Uint8Array(8).buffer,
+      } as Response);
+
+    await expect(
+      processAttachments(
+        [
+          makeTextAttachment({ id: "att-1", name: "one.log", size: 5 }),
+          makeTextAttachment({ id: "att-2", name: "two.log", size: 5 }),
+        ],
+        1,
+        "/tmp/worktree",
+        { ...testConfig, maxTotalSize: 15 }
+      )
+    ).rejects.toThrow("downloaded total 16 B, above the 15 B total limit");
   });
 });

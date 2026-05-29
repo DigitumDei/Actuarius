@@ -1,4 +1,7 @@
-import { DiscordjsErrorCodes } from "discord.js";
+import { ChannelType, DiscordjsErrorCodes } from "discord.js";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import pino from "pino";
 
@@ -97,7 +100,16 @@ function createBot(dbOverrides: Record<string, unknown> = {}): ActuariusBot {
     installStepTimeoutMs: 1000,
     aptInstallHelperPath: undefined,
     enableCodexExecution: false,
-    enableGeminiExecution: false
+    enableGeminiExecution: false,
+    enableOpencodeExecution: false,
+    deepseekApiKey: undefined,
+    attachmentMaxCount: 5,
+    attachmentMaxFileSize: 10 * 1024 * 1024,
+    attachmentMaxTotalSize: 25 * 1024 * 1024,
+    attachmentMaxInlineText: 256 * 1024,
+    memPalaceEnabled: false,
+    memPalacePalacePath: "/data/mempalace/palace",
+    memPalaceBinaryPath: "/usr/local/bin/mempalace-mcp"
   } as const;
 
   const db = {
@@ -109,6 +121,7 @@ function createBot(dbOverrides: Record<string, unknown> = {}): ActuariusBot {
     getRequestByThreadId: vi.fn(),
     getRepoByFullName: vi.fn(),
     getRepoByChannelId: vi.fn(),
+    listSuccessfulInstallRequestsForScope: vi.fn().mockReturnValue([]),
     listReposByGuild: vi.fn(),
     setGuildReviewConfig: vi.fn(),
     updateRequestWorkspace: vi.fn(),
@@ -146,6 +159,85 @@ function createInteraction(overrides: Record<string, unknown> = {}) {
     ...overrides
   };
 }
+
+describe("ActuariusBot ask command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("creates the request thread with attachment summaries and queues attachments for execution", async () => {
+    const thread = {
+      id: "thread-ask-1",
+      send: vi.fn().mockResolvedValue(undefined)
+    };
+    const seedMessage = {
+      startThread: vi.fn().mockResolvedValue(thread)
+    };
+    const repoChannel = {
+      type: ChannelType.GuildText,
+      send: vi.fn().mockResolvedValue(seedMessage)
+    };
+    const createRequest = vi.fn().mockReturnValue({ id: 104 });
+    const bot = createBot({
+      createRequest,
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      }),
+      getGuildModelConfig: vi.fn().mockReturnValue(undefined)
+    });
+    const enqueue = vi.fn();
+    (bot as any).requestQueue.enqueue = enqueue;
+    const runQueuedRequest = vi.spyOn(bot as any, "runQueuedRequest").mockResolvedValue(undefined);
+
+    const attachment = {
+      id: "att-1",
+      name: "debug.log",
+      url: "https://cdn.discord.com/attachments/debug.log",
+      size: 4096,
+      contentType: "text/plain"
+    };
+    const interaction = createInteraction({
+      user: { id: "user-1", tag: "user#0001" },
+      channelId: "channel-1",
+      channel: { isThread: () => false },
+      guild: {
+        id: "guild-1",
+        name: "Guild",
+        channels: { fetch: vi.fn().mockResolvedValue(repoChannel) }
+      },
+      options: {
+        getString: vi.fn().mockImplementation((name: string) => (name === "prompt" ? "Review this log" : null)),
+        getInteger: vi.fn().mockReturnValue(null),
+        getAttachment: vi.fn().mockImplementation((name: string) => (name === "attachment1" ? attachment : null))
+      },
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined)
+    });
+
+    await (bot as any).handleAsk(interaction);
+
+    expect(thread.send).toHaveBeenCalledWith(expect.stringContaining("**Attachments**"));
+    expect(thread.send).toHaveBeenCalledWith(expect.stringContaining("- debug.log (4.0 KiB, text/plain)"));
+    expect(createRequest).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread-ask-1",
+      prompt: "Review this log",
+      status: "queued"
+    }));
+    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function));
+
+    await enqueue.mock.calls[0]![1]();
+    expect(runQueuedRequest).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: 104,
+      threadId: "thread-ask-1",
+      prompt: "Review this log",
+      attachments: [attachment]
+    }));
+  });
+});
 
 describe("ActuariusBot delete command", () => {
   beforeEach(() => {
@@ -494,6 +586,118 @@ describe("ActuariusBot thread follow-ups", () => {
       expect.stringContaining("is not supported")
     );
     expect(createRequest).not.toHaveBeenCalled();
+  });
+
+  it("appends attachment-only fallback prompts to existing thread history", async () => {
+    const bot = createBot();
+    (bot as any).client.user = { id: "bot-1" };
+    const messages = new Map([
+      ["1", {
+        createdTimestamp: 1,
+        author: { id: "bot-1" },
+        content: "Request by <@user-1>\n\n**Prompt**\nInitial request"
+      }],
+      ["2", {
+        createdTimestamp: 2,
+        author: { id: "bot-1" },
+        content: "**Claude execution completed**\n\n```text\nInitial answer\n```"
+      }],
+    ]);
+
+    const prompt = await (bot as any).buildThreadPromptWithHistory(
+      { messages: { fetch: vi.fn().mockResolvedValue(messages) } },
+      "Please inspect the attached file(s)."
+    );
+
+    expect(prompt).toContain("[User]: Initial request");
+    expect(prompt).toContain("[Assistant]: Initial answer");
+    expect(prompt).toContain("[User]: Please inspect the attached file(s).");
+  });
+
+  it("does not double-append a text follow-up already present in thread history", async () => {
+    const bot = createBot();
+    (bot as any).client.user = { id: "bot-1" };
+    const messages = new Map([
+      ["1", {
+        createdTimestamp: 1,
+        author: { id: "user-1" },
+        content: "follow-up prompt"
+      }],
+    ]);
+
+    const prompt = await (bot as any).buildThreadPromptWithHistory(
+      { messages: { fetch: vi.fn().mockResolvedValue(messages) } },
+      "follow-up prompt"
+    );
+
+    expect(prompt.match(/\[User\]: follow-up prompt/g)).toHaveLength(1);
+  });
+
+  it("passes slash request attachments through to the queued prompt and excludes saved files from git", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-queued-worktree-"));
+    const gitDir = join(worktreePath, ".git");
+    await mkdir(join(gitDir, "info"), { recursive: true });
+    await writeFile(join(gitDir, "info", "exclude"), "");
+
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: worktreePath,
+      branchName: "ask/101-123"
+    });
+    vi.mocked(runClaudeRequest).mockResolvedValue({ text: "done" });
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => new TextEncoder().encode("attachment contents").buffer,
+    } as Response);
+
+    const sent: string[] = [];
+    const thread = {
+      isThread: () => true,
+      send: vi.fn().mockImplementation(async (content: string) => {
+        sent.push(content);
+      }),
+      messages: { fetch: vi.fn().mockResolvedValue(new Map()) }
+    };
+    const bot = createBot({
+      updateRequestStatus: vi.fn(),
+      updateRequestWorkspace: vi.fn()
+    });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue(thread);
+
+    await (bot as any).runQueuedRequest({
+      requestId: 101,
+      threadId: "thread-1",
+      repoId: 1,
+      repo: {
+        owner: "octocat",
+        repo: "hello-world",
+        fullName: "octocat/hello-world"
+      },
+      prompt: "Review the attachment",
+      provider: "claude",
+      attachments: [{
+        id: "att-1",
+        name: "debug.log",
+        url: "https://cdn.discord.com/attachments/debug.log",
+        size: 128,
+        contentType: "text/plain"
+      }]
+    });
+
+    expect(runClaudeRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: worktreePath,
+        prompt: expect.stringContaining("Review the attachment")
+      }),
+      expect.anything()
+    );
+    const prompt = vi.mocked(runClaudeRequest).mock.calls[0]![0].prompt;
+    expect(prompt).toContain("## Attachments");
+    expect(prompt).toContain("File: debug.log");
+    expect(prompt).toContain("attachment contents");
+    expect(await readFile(join(gitDir, "info", "exclude"), "utf-8")).toBe(".actuarius/\n");
+    expect(sent).toContain("Claude execution started.");
+    expect(sent.some((message) => message.includes("done"))).toBe(true);
   });
 });
 

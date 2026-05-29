@@ -1,5 +1,5 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 
 export interface PendingAttachment {
   id: string;
@@ -83,7 +83,7 @@ function detectType(contentType: string | null, filename: string): "text" | "ima
     if (lower.startsWith("text/")) return "text";
     if (IMAGE_MIMES.has(lower)) return "image";
     if (TEXT_LIKE_MIMES.has(lower)) return "text";
-    if (lower.startsWith("image/")) return "image";
+    if (lower.startsWith("image/")) return null;
   }
 
   const ext = extname(filename).toLowerCase();
@@ -132,6 +132,59 @@ export function buildAttachmentSummary(attachments: PendingAttachment[]): string
     .join("\n");
 }
 
+async function resolveGitDir(worktreePath: string): Promise<string | null> {
+  const dotGitPath = join(worktreePath, ".git");
+  try {
+    const dotGitStat = await stat(dotGitPath);
+    if (dotGitStat.isDirectory()) {
+      return dotGitPath;
+    }
+    if (!dotGitStat.isFile()) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  const dotGit = await readFile(dotGitPath, "utf-8");
+  const match = /^gitdir:\s*(.+)\s*$/im.exec(dotGit);
+  if (!match) {
+    return null;
+  }
+
+  const gitDir = match[1]!.trim();
+  return isAbsolute(gitDir) ? gitDir : resolve(dirname(dotGitPath), gitDir);
+}
+
+async function ensureActuariusExcluded(worktreePath: string): Promise<void> {
+  const gitDir = await resolveGitDir(worktreePath);
+  if (!gitDir) {
+    return;
+  }
+
+  const infoDir = join(gitDir, "info");
+  const excludePath = join(infoDir, "exclude");
+  await mkdir(infoDir, { recursive: true });
+
+  let contents = "";
+  try {
+    contents = await readFile(excludePath, "utf-8");
+  } catch {
+    // Missing exclude files are normal for newly-created repositories/worktrees.
+  }
+
+  const hasEntry = contents
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .some((line) => line === ".actuarius/" || line === ".actuarius");
+  if (hasEntry) {
+    return;
+  }
+
+  const prefix = contents.length > 0 && !contents.endsWith("\n") ? "\n" : "";
+  await appendFile(excludePath, `${prefix}.actuarius/\n`);
+}
+
 export async function processAttachments(
   attachments: PendingAttachment[],
   requestId: number,
@@ -140,11 +193,19 @@ export async function processAttachments(
 ): Promise<{ processed: ProcessedAttachment[]; promptSection: string }> {
   if (attachments.length === 0) return { processed: [], promptSection: "" };
 
+  const validationError = validateAttachments(attachments, config);
+  if (validationError) {
+    throw new AttachmentError(validationError);
+  }
+
+  await ensureActuariusExcluded(worktreePath);
+
   const saveDir = join(worktreePath, ".actuarius", "attachments", `request-${requestId}`);
   await mkdir(saveDir, { recursive: true });
 
   const processed: ProcessedAttachment[] = [];
   const promptLines: string[] = ["## Attachments", ""];
+  let actualTotalSize = 0;
 
   for (let i = 0; i < attachments.length; i++) {
     const att = attachments[i]!;
@@ -162,6 +223,15 @@ export async function processAttachments(
     }
 
     const buffer = Buffer.from(await response.arrayBuffer());
+    const actualSize = buffer.length;
+    if (actualSize > config.maxFileSize) {
+      throw new AttachmentError(`Attachment ${att.name} downloaded as ${formatFileSize(actualSize)}, above the ${formatFileSize(config.maxFileSize)} per-file limit.`);
+    }
+    actualTotalSize += actualSize;
+    if (actualTotalSize > config.maxTotalSize) {
+      throw new AttachmentError(`Attachments downloaded total ${formatFileSize(actualTotalSize)}, above the ${formatFileSize(config.maxTotalSize)} total limit.`);
+    }
+
     await writeFile(savePath, buffer);
 
     if (type === "text") {
@@ -174,7 +244,7 @@ export async function processAttachments(
 
       const ext = extname(att.name).toLowerCase().replace(/^\./, "") || "text";
 
-      promptLines.push(`File: ${att.name} (text, ${formatFileSize(att.size)})`);
+      promptLines.push(`File: ${att.name} (text, ${formatFileSize(actualSize)})`);
       promptLines.push("```" + ext);
       promptLines.push(textContent);
       promptLines.push("```");
@@ -190,10 +260,10 @@ export async function processAttachments(
         type: "text",
         savedPath: relativePath,
         inlineContent: textContent,
-        size: att.size,
+        size: actualSize,
       });
     } else {
-      promptLines.push(`File: ${att.name} (image, ${formatFileSize(att.size)})`);
+      promptLines.push(`File: ${att.name} (image, ${formatFileSize(actualSize)})`);
       promptLines.push(`Attached image: ${relativePath}`);
       promptLines.push("");
 
@@ -203,7 +273,7 @@ export async function processAttachments(
         name: safeName,
         type: "image",
         savedPath: relativePath,
-        size: att.size,
+        size: actualSize,
       });
     }
   }
