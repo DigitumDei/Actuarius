@@ -633,6 +633,77 @@ describe("ActuariusBot thread follow-ups", () => {
     expect(prompt.match(/\[User\]: follow-up prompt/g)).toHaveLength(1);
   });
 
+  it("preserves attachment-only follow-ups in later thread history", async () => {
+    const bot = createBot();
+    (bot as any).client.user = { id: "bot-1" };
+    const messages = new Map([
+      ["1", {
+        createdTimestamp: 1,
+        author: { id: "bot-1" },
+        content: "Request by <@user-1>\n\n**Prompt**\nInitial request"
+      }],
+      ["2", {
+        createdTimestamp: 2,
+        author: { id: "user-1" },
+        content: "",
+        attachments: {
+          size: 1,
+          values: () => [{
+            id: "att-1",
+            name: "debug.log",
+            url: "https://cdn.discord.com/attachments/debug.log",
+            size: 4096,
+            contentType: "text/plain"
+          }]
+        }
+      }],
+      ["3", {
+        createdTimestamp: 3,
+        author: { id: "bot-1" },
+        content: "**Claude execution completed**\n\n```text\nI inspected the log.\n```"
+      }]
+    ]);
+
+    const prompt = await (bot as any).buildThreadPromptWithHistory(
+      { messages: { fetch: vi.fn().mockResolvedValue(messages) } },
+      "What did it show?"
+    );
+
+    expect(prompt).toContain("[User]: Please inspect the attached file(s).\n\n**Attachments**\n- debug.log (4.0 KiB, text/plain)");
+    expect(prompt).toContain("[Assistant]: I inspected the log.");
+    expect(prompt).toContain("[User]: What did it show?");
+  });
+
+  it("preserves text follow-up attachment summaries without appending the current prompt twice", async () => {
+    const bot = createBot();
+    (bot as any).client.user = { id: "bot-1" };
+    const messages = new Map([
+      ["1", {
+        createdTimestamp: 1,
+        author: { id: "user-1" },
+        content: "check this log",
+        attachments: {
+          size: 1,
+          values: () => [{
+            id: "att-1",
+            name: "debug.log",
+            url: "https://cdn.discord.com/attachments/debug.log",
+            size: 4096,
+            contentType: "text/plain"
+          }]
+        }
+      }]
+    ]);
+
+    const prompt = await (bot as any).buildThreadPromptWithHistory(
+      { messages: { fetch: vi.fn().mockResolvedValue(messages) } },
+      "check this log"
+    );
+
+    expect(prompt).toContain("[User]: check this log\n\n**Attachments**\n- debug.log (4.0 KiB, text/plain)");
+    expect(prompt.match(/\[User\]: check this log/g)).toHaveLength(1);
+  });
+
   it("passes slash request attachments through to the queued prompt and excludes saved files from git", async () => {
     const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-queued-worktree-"));
     const gitDir = join(worktreePath, ".git");

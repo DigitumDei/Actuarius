@@ -314,7 +314,8 @@ function formatCleanupReply(
 
 function parseThreadEntry(
   content: string,
-  isBot: boolean
+  isBot: boolean,
+  attachments: PendingAttachment[] = []
 ): { role: "user" | "assistant"; text: string } | null {
   if (isBot) {
     // Initial request summary: "Request by @...\n\n**Prompt**\n<text>"
@@ -340,8 +341,32 @@ function parseThreadEntry(
     // Other bot messages are noise ("... execution started.", warnings, etc.)
     return null;
   }
-  const text = content.trim();
+  const text = formatUserThreadEntry(content, attachments);
   return text ? { role: "user", text } : null;
+}
+
+function pendingAttachmentsFromMessage(message: { attachments?: Pick<Message["attachments"], "size" | "values"> }): PendingAttachment[] {
+  if (!message.attachments || message.attachments.size === 0) return [];
+
+  return [...message.attachments.values()].map((attachment) => ({
+    id: attachment.id,
+    name: attachment.name ?? `attachment-${attachment.id}`,
+    url: attachment.url,
+    size: attachment.size,
+    contentType: attachment.contentType,
+  }));
+}
+
+function formatUserThreadEntry(content: string, attachments: PendingAttachment[]): string {
+  const text = content.trim() || (attachments.length > 0 ? "Please inspect the attached file(s)." : "");
+  if (!text) return "";
+  if (attachments.length === 0) return text;
+  return `${text}\n\n**Attachments**\n${buildAttachmentSummary(attachments)}`;
+}
+
+function matchesNewUserMessage(entryText: string, newMessageContent: string): boolean {
+  const normalized = newMessageContent.trim();
+  return entryText === normalized || entryText.startsWith(`${normalized}\n\n**Attachments**\n`);
 }
 
 export class ActuariusBot {
@@ -3078,7 +3103,7 @@ Output the result of the command or the link to the created issue.`;
     const history: Array<{ role: "user" | "assistant"; text: string }> = [];
     for (const msg of sorted) {
       const isBot = msg.author.id === this.client.user?.id;
-      const entry = parseThreadEntry(msg.content, isBot);
+      const entry = parseThreadEntry(msg.content, isBot, isBot ? [] : pendingAttachmentsFromMessage(msg));
       if (!entry) continue;
       const prev = history[history.length - 1];
       if (prev && prev.role === "assistant" && entry.role === "assistant") {
@@ -3103,8 +3128,9 @@ Output the result of the command or the link to the created issue.`;
     }
 
     const lastEntry = history[history.length - 1];
-    if (lastEntry?.role !== "user" || lastEntry.text !== newMessageContent.trim()) {
-      lines.push(`[User]: ${newMessageContent}`);
+    const normalizedNewMessage = newMessageContent.trim();
+    if (lastEntry?.role !== "user" || !matchesNewUserMessage(lastEntry.text, normalizedNewMessage)) {
+      lines.push(`[User]: ${normalizedNewMessage}`);
       lines.push("");
     }
 
@@ -3118,7 +3144,7 @@ Output the result of the command or the link to the created issue.`;
     const lines: string[] = [];
     for (const msg of sorted) {
       const isBot = msg.author.id === this.client.user?.id;
-      const entry = parseThreadEntry(msg.content, isBot);
+      const entry = parseThreadEntry(msg.content, isBot, isBot ? [] : pendingAttachmentsFromMessage(msg));
       if (!entry) continue;
       lines.push(`[${entry.role === "user" ? "User" : "Assistant"}]: ${entry.text}`);
       lines.push("");
