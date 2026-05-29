@@ -145,6 +145,70 @@ describe("AppDatabase request workspace state", () => {
     });
   });
 
+  it("retrieves latest completed review run for a branch", () => {
+    const request = db.createRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      channelId: "channel-1",
+      threadId: "thread-pr",
+      userId: "user-1",
+      prompt: "review target",
+      status: "succeeded"
+    });
+
+    const older = db.createReviewRun({
+      requestId: request.id,
+      threadId: request.thread_id,
+      branchName: "ask/1-123",
+      status: "running",
+      configJson: "{}",
+      diffBase: "origin/main",
+      diffHead: "oldsha"
+    });
+    db.completeReviewRun({
+      reviewRunId: older.id,
+      status: "completed",
+      finalVerdict: "revise",
+      summaryMarkdown: null,
+      rawResultJson: null,
+      artifactPath: null
+    });
+
+    db.createReviewRun({
+      requestId: request.id,
+      threadId: request.thread_id,
+      branchName: "ask/1-123",
+      status: "running",
+      configJson: "{}",
+      diffBase: "origin/main",
+      diffHead: "pendingsha"
+    });
+
+    const newer = db.createReviewRun({
+      requestId: request.id,
+      threadId: request.thread_id,
+      branchName: "ask/1-123",
+      status: "running",
+      configJson: "{}",
+      diffBase: "origin/main",
+      diffHead: "newsha"
+    });
+    db.completeReviewRun({
+      reviewRunId: newer.id,
+      status: "completed",
+      finalVerdict: "ready_for_pr",
+      summaryMarkdown: null,
+      rawResultJson: null,
+      artifactPath: null
+    });
+
+    expect(db.getLatestCompletedReviewRunForBranch(request.id, "ask/1-123")).toMatchObject({
+      id: newer.id,
+      diff_head: "newsha",
+      final_verdict: "ready_for_pr"
+    });
+  });
+
   it("persists install requests and resolves scoped successful installs", () => {
     const request = db.createRequest({
       guildId: "guild-1",

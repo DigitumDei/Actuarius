@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/utils/spawnCollect.js");
+vi.mock("../src/services/githubAuthService.js", () => ({
+  configureRepositoryGitAuth: vi.fn().mockResolvedValue(undefined),
+  ensureGitHubCliAuthenticated: vi.fn().mockResolvedValue(undefined),
+  getGitHubCommandEnvironment: vi.fn(() => process.env)
+}));
 
 const { spawnCollect } = await import("../src/utils/spawnCollect.js");
 const mockSpawnCollect = vi.mocked(spawnCollect);
@@ -12,7 +17,8 @@ const {
   GitWorkspaceError,
   getHeadSha,
   getReviewDiff,
-  listBranches
+  listBranches,
+  pushBranch
 } = await import("../src/services/gitWorkspaceService.js");
 
 describe("gitWorkspaceService", () => {
@@ -188,5 +194,28 @@ describe("gitWorkspaceService", () => {
   it("resolves an arbitrary git ref to a sha", async () => {
     mockSpawnCollect.mockResolvedValueOnce({ stdout: "feedface\n", stderr: "" });
     await expect(getHeadSha("/tmp/repo", "feature/x")).resolves.toBe("feedface");
+  });
+
+  it("pushes a request branch with GitHub credential helper", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    await expect(pushBranch("/tmp/worktree", "ask/1-123")).resolves.toBeUndefined();
+
+    expect(mockSpawnCollect).toHaveBeenCalledWith(
+      "git",
+      [
+        "-c",
+        "credential.helper=!gh auth git-credential",
+        "-c",
+        "credential.useHttpPath=true",
+        "-C",
+        "/tmp/worktree",
+        "push",
+        "-u",
+        "origin",
+        "ask/1-123"
+      ],
+      expect.any(Object)
+    );
   });
 });

@@ -23,10 +23,18 @@ export class GitWorkspaceError extends Error {
     | "MASTER_BRANCH_MISSING"
     | "CHECKOUT_FAILED"
     | "CLEANUP_FAILED"
-    | "DIFF_FAILED";
+    | "DIFF_FAILED"
+    | "PUSH_FAILED";
 
   public constructor(
-    code: "GIT_UNAVAILABLE" | "CLONE_FAILED" | "MASTER_BRANCH_MISSING" | "CHECKOUT_FAILED" | "CLEANUP_FAILED" | "DIFF_FAILED",
+    code:
+      | "GIT_UNAVAILABLE"
+      | "CLONE_FAILED"
+      | "MASTER_BRANCH_MISSING"
+      | "CHECKOUT_FAILED"
+      | "CLEANUP_FAILED"
+      | "DIFF_FAILED"
+      | "PUSH_FAILED",
     message: string
   ) {
     super(message);
@@ -432,6 +440,20 @@ export async function getHeadSha(repoPath: string, ref: string = "HEAD"): Promis
 
     const message = error instanceof Error ? error.message : `Could not resolve git ref ${ref}.`;
     throw new GitWorkspaceError("DIFF_FAILED", message);
+  }
+}
+
+export async function pushBranch(worktreePath: string, branchName: string): Promise<void> {
+  try {
+    await ensureGitHubCliAuthenticated();
+    await runGitWithOutput(["-C", worktreePath, "push", "-u", "origin", branchName], { useCredentialHelper: true });
+  } catch (error) {
+    if (error instanceof GitWorkspaceError) {
+      throw error;
+    }
+
+    const message = error instanceof Error ? error.message : `Could not push branch ${branchName}.`;
+    throw new GitWorkspaceError("PUSH_FAILED", message);
   }
 }
 

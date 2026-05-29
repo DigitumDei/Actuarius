@@ -11,6 +11,7 @@ vi.mock("../src/services/requestWorktreeService.js", async () => {
 
   return {
     ...actual,
+    createRequestWorktree: vi.fn(),
     deleteRequestBranch: vi.fn()
   };
 });
@@ -62,7 +63,7 @@ vi.mock("../src/services/adversarialReviewService.js", async () => {
   };
 });
 
-const { deleteRequestBranch } = await import("../src/services/requestWorktreeService.js");
+const { createRequestWorktree, deleteRequestBranch } = await import("../src/services/requestWorktreeService.js");
 const { ensureRepoCheckedOutToMaster, listBranches, cleanupDeletedRemoteBranches } = await import("../src/services/gitWorkspaceService.js");
 const { spawnCollect } = await import("../src/utils/spawnCollect.js");
 const { listOpenIssues, viewIssueDetail } = await import("../src/services/githubService.js");
@@ -1209,6 +1210,54 @@ describe("ActuariusBot model-select command", () => {
     vi.resetAllMocks();
   });
 
+  it("shows role provider CLI default when role provider differs from the default provider without a role model", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: "gemini",
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      })
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Planner role: **Gemini**, model: `none (CLI default)`."),
+      ephemeral: true
+    });
+  });
+
+  it("does not reuse the default model for a role-specific different provider", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: "gemini",
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      })
+    });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true,
+      geminiApiKey: "key"
+    };
+
+    const roles = await (bot as any).resolvePlanRoleModels("guild-1");
+
+    expect(roles.planner).toEqual({ provider: "gemini" });
+    expect(roles.implementer).toEqual({ provider: "claude", model: "claude-sonnet-4-6" });
+  });
+
   it("rejects Gemini when GEMINI_API_KEY is whitespace only", async () => {
     const bot = createBot({
       setGuildModelConfig: vi.fn(),
@@ -1243,5 +1292,68 @@ describe("ActuariusBot model-select command", () => {
       content: "Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.",
       ephemeral: true
     });
+  });
+});
+
+describe("ActuariusBot plan runner", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("deletes the request worktree when plan execution fails after creation", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const updateRequestStatus = vi.fn();
+    const updateRequestWorkspace = vi.fn();
+    const bot = createBot({
+      updateRequestStatus,
+      updateRequestWorkspace
+    });
+
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan",
+      branchName: "ask/91-123"
+    });
+    vi.mocked(deleteRequestBranch).mockResolvedValue(undefined);
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn().mockRejectedValue(new Error("planner failed"));
+
+    await (bot as any).runPlanRequest({
+      requestId: 91,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: {
+        owner: "octocat",
+        repo: "hello-world",
+        fullName: "octocat/hello-world"
+      },
+      prompt: "Do the thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" }
+    });
+
+    expect(updateRequestStatus).toHaveBeenCalledWith(91, "failed");
+    expect(deleteRequestBranch).toHaveBeenCalledWith(
+      "/data/repos",
+      {
+        owner: "octocat",
+        repo: "hello-world",
+        fullName: "octocat/hello-world"
+      },
+      {
+        branchName: "ask/91-123",
+        worktreePath: "/tmp/worktree-plan"
+      }
+    );
+    expect(updateRequestWorkspace).toHaveBeenNthCalledWith(1, 91, "/tmp/worktree-plan", "ask/91-123");
+    expect(updateRequestWorkspace).toHaveBeenNthCalledWith(2, 91, null, null);
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Plan request failed during planning"));
   });
 });
