@@ -160,6 +160,35 @@ export class AppDatabase {
       );
     `);
 
+    // Migrate: the original schema had `model TEXT NOT NULL`; it must be nullable so
+    // setGuildRoleModelConfig can insert a placeholder row without a default model.
+    // SQLite cannot drop a NOT NULL constraint via ALTER TABLE, so recreate the table.
+    const guildModelConfigModelInfo = this.db.prepare("PRAGMA table_info(guild_model_config)").all() as Array<{
+      name: string;
+      notnull: number;
+    }>;
+    if (guildModelConfigModelInfo.find((c) => c.name === "model")?.notnull === 1) {
+      this.db.exec(`
+        CREATE TABLE guild_model_config_v2 (
+          guild_id TEXT PRIMARY KEY,
+          provider TEXT NOT NULL,
+          model TEXT,
+          planner_provider TEXT,
+          planner_model TEXT,
+          implementer_provider TEXT,
+          implementer_model TEXT,
+          updated_by_user_id TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE
+        );
+        INSERT INTO guild_model_config_v2 (guild_id, provider, model, updated_by_user_id, updated_at)
+          SELECT guild_id, provider, NULLIF(model, ''), updated_by_user_id, updated_at
+          FROM guild_model_config;
+        DROP TABLE guild_model_config;
+        ALTER TABLE guild_model_config_v2 RENAME TO guild_model_config;
+      `);
+    }
+
     const guildModelConfigColumns = new Map([
       ["planner_provider", "TEXT"],
       ["planner_model", "TEXT"],
