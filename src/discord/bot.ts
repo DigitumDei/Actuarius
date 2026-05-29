@@ -23,7 +23,7 @@ import {
 import type pino from "pino";
 import type { AppConfig } from "../config.js";
 import { AppDatabase } from "../db/database.js";
-import type { AiProvider, RepoRow, RequestStatus } from "../db/types.js";
+import type { AiProvider, ModelRole, RepoRow, RequestStatus } from "../db/types.js";
 import { commandBuilders } from "./commands.js";
 import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
@@ -41,8 +41,11 @@ import {
 import {
   GitWorkspaceError,
   cleanupDeletedRemoteBranches,
+  detectDefaultBranch,
   ensureRepoCheckedOutToMaster,
-  listBranches
+  getHeadSha,
+  listBranches,
+  pushBranch
 } from "../services/gitWorkspaceService.js";
 import {
   AdversarialReviewError,
@@ -58,6 +61,7 @@ import { InstallService, InstallServiceError } from "../services/installService.
 import { buildAptPackageId, getAptPackageSpec, isAptPackageId } from "../services/installerRegistry.js";
 import { createRequestWorktree, deleteRequestBranch, RequestWorktreeError } from "../services/requestWorktreeService.js";
 import { MemPalaceClient } from "../services/memPalaceClient.js";
+import { createDraftPullRequest, PullRequestServiceError } from "../services/pullRequestService.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
 
@@ -67,6 +71,12 @@ const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
   gemini: "Gemini",
   opencode: "OpenCode"
 };
+
+interface ResolvedModelRole {
+  provider: AiProvider;
+  model?: string;
+  fallbackReason?: string;
+}
 
 const PROVIDER_NPM_PACKAGES: Record<string, string> = {
   claude: "@anthropic-ai/claude-code",
@@ -531,6 +541,9 @@ export class ActuariusBot {
       case "ask":
         await this.handleAsk(interaction);
         return;
+      case "plan":
+        await this.handlePlan(interaction);
+        return;
       case "install":
         await this.handleInstall(interaction);
         return;
@@ -566,6 +579,9 @@ export class ActuariusBot {
         return;
       case "review":
         await this.handleReview(interaction);
+        return;
+      case "pr":
+        await this.handlePr(interaction);
         return;
       case "update-clis":
         await this.handleUpdateClis(interaction);
@@ -1089,6 +1105,7 @@ export class ActuariusBot {
 
     const rawProvider = interaction.options.getString("provider", true);
     const rawModel = interaction.options.getString("model");
+    const rawRole = interaction.options.getString("role") ?? "default";
     const model = rawModel?.trim() || null;
 
     // Defense-in-depth: Discord already constrains the value via addChoices, but we
@@ -1102,59 +1119,66 @@ export class ActuariusBot {
     }
 
     const provider = rawProvider as AiProvider;
+    const role = rawRole as ModelRole;
 
-    if (provider === "codex" && !this.config.enableCodexExecution) {
+    if (!["default", "planner", "implementer"].includes(role)) {
       await interaction.reply({
-        content: "Codex execution is not enabled on this instance (`ENABLE_CODEX_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
+        content: "Invalid model role. Choose from: `default`, `planner`, `implementer`.",
         ephemeral: true
       });
       return;
     }
 
-    if (provider === "gemini" && !this.config.enableGeminiExecution) {
-      await interaction.reply({
-        content: "Gemini execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
-        ephemeral: true
-      });
-      return;
-    }
-
-    if (provider === "gemini" && !this.config.geminiApiKey?.trim()) {
-      await interaction.reply({
-        content: "Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.",
-        ephemeral: true
-      });
-      return;
-    }
-
-    if (provider === "opencode" && !this.config.enableOpencodeExecution) {
-      await interaction.reply({
-        content: "OpenCode execution is not enabled on this instance (`ENABLE_OPENCODE_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
-        ephemeral: true
-      });
-      return;
-    }
-
-    if (provider === "opencode" && !this.config.deepseekApiKey?.trim() && !(await hasOpencodeAuth())) {
-      await interaction.reply({
-        content: "OpenCode execution requires an API key. Use `/opencode-auth` to configure keys (e.g. `deepseek`, `openai`, `anthropic`), or set `DEEPSEEK_API_KEY` on the instance.",
-        ephemeral: true
-      });
+    const providerUnavailableMessage = await this.getProviderUnavailableMessage(provider);
+    if (providerUnavailableMessage) {
+      await interaction.reply({ content: providerUnavailableMessage, ephemeral: true });
       return;
     }
 
     this.db.upsertGuild(interaction.guild.id, interaction.guild.name);
-    this.db.setGuildModelConfig(interaction.guildId, provider, model, interaction.user.id);
+    if (role === "default") {
+      this.db.setGuildModelConfig(interaction.guildId, provider, model, interaction.user.id);
+    } else {
+      this.db.setGuildRoleModelConfig(interaction.guildId, role, provider, model, interaction.user.id);
+    }
 
     if (model) {
       this.db.addModelToHistory(provider, model);
     }
 
     const modelDisplay = model ? `model \`${model}\`` : "CLI default model";
+    const roleDisplay = role === "default" ? "default AI provider" : `${role} provider`;
+    const affectedCommands =
+      role === "default" ? "future `/ask`, `/bug`, and `/issue` requests" : `future \`/plan\` ${role} stages`;
     await interaction.reply({
-      content: `AI provider set to **${AI_PROVIDER_LABELS[provider]}** with ${modelDisplay}. All future \`/ask\`, \`/bug\`, and \`/issue\` requests will use this configuration.`,
+      content: `${roleDisplay} set to **${AI_PROVIDER_LABELS[provider]}** with ${modelDisplay}. This applies to ${affectedCommands}.`,
       ephemeral: true
     });
+  }
+
+  private async getProviderUnavailableMessage(provider: AiProvider): Promise<string | null> {
+
+    if (provider === "codex" && !this.config.enableCodexExecution) {
+      return "Codex execution is not enabled on this instance (`ENABLE_CODEX_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.";
+    }
+
+    if (provider === "gemini" && !this.config.enableGeminiExecution) {
+      return "Gemini execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.";
+    }
+
+    if (provider === "gemini" && !this.config.geminiApiKey?.trim()) {
+      return "Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.";
+    }
+
+    if (provider === "opencode" && !this.config.enableOpencodeExecution) {
+      return "OpenCode execution is not enabled on this instance (`ENABLE_OPENCODE_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.";
+    }
+
+    if (provider === "opencode" && !this.config.deepseekApiKey?.trim() && !(await hasOpencodeAuth())) {
+      return "OpenCode execution requires an API key. Use `/opencode-auth` to configure keys (e.g. `deepseek`, `openai`, `anthropic`), or set `DEEPSEEK_API_KEY` on the instance.";
+    }
+
+    return null;
   }
 
   private async handleModelCurrent(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -1175,8 +1199,16 @@ export class ActuariusBot {
     const ts = new Date(config.updated_at).getTime();
     const timeStr = Number.isNaN(ts) ? config.updated_at : `<t:${Math.floor(ts / 1000)}:R>`;
     const modelStr = config.model || "none (CLI default)";
+    const plannerProvider = config.planner_provider ?? config.provider;
+    const plannerModel = config.planner_model ?? config.model;
+    const implementerProvider = config.implementer_provider ?? config.provider;
+    const implementerModel = config.implementer_model ?? config.model;
     await interaction.reply({
-      content: `Current AI provider: **${AI_PROVIDER_LABELS[config.provider]}**, model: \`${modelStr}\` (set ${timeStr}).`,
+      content: [
+        `Current default AI provider: **${AI_PROVIDER_LABELS[config.provider]}**, model: \`${modelStr}\` (set ${timeStr}).`,
+        `Planner role: **${AI_PROVIDER_LABELS[plannerProvider]}**, model: \`${plannerModel || "none (CLI default)"}\`.`,
+        `Implementer role: **${AI_PROVIDER_LABELS[implementerProvider]}**, model: \`${implementerModel || "none (CLI default)"}\`.`
+      ].join("\n"),
       ephemeral: true
     });
   }
@@ -1800,6 +1832,114 @@ export class ActuariusBot {
     );
   }
 
+  private async resolvePlanRoleModels(guildId: string): Promise<{ planner: ResolvedModelRole; implementer: ResolvedModelRole }> {
+    const config = this.db.getGuildModelConfig(guildId);
+    const defaultProvider = config?.provider ?? "claude";
+    const defaultModel = config?.model ?? null;
+
+    const resolveRole = async (
+      role: "planner" | "implementer",
+      configuredProvider: AiProvider | null | undefined,
+      configuredModel: string | null | undefined
+    ): Promise<ResolvedModelRole> => {
+      const provider = configuredProvider ?? defaultProvider;
+      const model = configuredModel ?? defaultModel;
+      const unavailable = await this.getProviderUnavailableMessage(provider);
+      if (!unavailable) {
+        return model ? { provider, model } : { provider };
+      }
+
+      return {
+        provider: "claude",
+        ...(model && provider === "claude" ? { model } : {}),
+        fallbackReason: `${role} role requested ${AI_PROVIDER_LABELS[provider]}, but ${unavailable} Falling back to Claude.`
+      };
+    };
+
+    return {
+      planner: await resolveRole("planner", config?.planner_provider, config?.planner_model),
+      implementer: await resolveRole("implementer", config?.implementer_provider, config?.implementer_model)
+    };
+  }
+
+  private async handlePlan(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    const prompt = interaction.options.getString("prompt", true).trim();
+    if (!prompt) {
+      await interaction.reply({ content: "Prompt cannot be empty.", ephemeral: true });
+      return;
+    }
+
+    const resolvedChannelId =
+      interaction.channel && interaction.channel.isThread() ? interaction.channel.parentId : interaction.channelId;
+    if (!resolvedChannelId) {
+      await interaction.reply({ content: "Could not resolve a parent channel for this thread.", ephemeral: true });
+      return;
+    }
+
+    const repo = this.db.getRepoByChannelId(interaction.guildId, resolvedChannelId);
+    if (!repo) {
+      await interaction.reply({
+        content: "This channel (or its parent thread channel) is not mapped to a repository. Run `/connect-repo` first.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const roles = await this.resolvePlanRoleModels(interaction.guildId);
+    const channel = (await interaction.guild.channels.fetch(repo.channel_id)) as GuildTextBasedChannel | null;
+    if (!channel || channel.type !== ChannelType.GuildText) {
+      await interaction.reply({ content: "Mapped repo channel is unavailable or not a text channel.", ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    const seedMessage = await channel.send({
+      content: `New plan request from <@${interaction.user.id}> for \`${repo.full_name}\``
+    });
+    const thread = await seedMessage.startThread({
+      name: buildThreadName(prompt),
+      autoArchiveDuration: this.config.threadAutoArchiveMinutes,
+      reason: `plan thread for ${repo.full_name} by ${interaction.user.tag}`
+    });
+    await thread.send(["Request by <@" + interaction.user.id + ">", "", "**Prompt**", prompt].join("\n"));
+
+    const request = this.db.createRequest({
+      guildId: interaction.guildId,
+      repoId: repo.id,
+      channelId: repo.channel_id,
+      threadId: thread.id,
+      userId: interaction.user.id,
+      prompt,
+      status: "queued"
+    });
+
+    this.requestQueue.enqueue(interaction.guildId, async () => {
+      await this.runPlanRequest({
+        requestId: request.id,
+        threadId: thread.id,
+        repoId: repo.id,
+        repo: {
+          owner: repo.owner,
+          repo: repo.repo,
+          fullName: repo.full_name
+        },
+        prompt,
+        planner: roles.planner,
+        implementer: roles.implementer
+      });
+    });
+
+    await interaction.editReply(
+      `Created plan thread <#${thread.id}>. Planner: ${AI_PROVIDER_LABELS[roles.planner.provider]}; implementer: ${AI_PROVIDER_LABELS[roles.implementer.provider]}.`
+    );
+  }
+
   private async handleIssueCreate(interaction: ChatInputCommandInteraction, type: "bug" | "issue"): Promise<void> {
     if (!(await this.ensureGitHubCliAccess(interaction, ["/bug", "/issue"]))) {
       return;
@@ -2179,6 +2319,130 @@ Output the result of the command or the link to the created issue.`;
     }
   }
 
+  private async handlePr(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.channel?.isThread()) {
+      await interaction.reply({ content: "`/pr` must be run inside a request thread.", ephemeral: true });
+      return;
+    }
+
+    const parentId = interaction.channel.parentId;
+    if (!parentId) {
+      await interaction.reply({ content: "Could not resolve the parent repo channel for this thread.", ephemeral: true });
+      return;
+    }
+
+    const latestRequest = this.db.getLatestRequestWithWorkspaceByThreadId(interaction.channelId);
+    if (!latestRequest?.worktree_path || !latestRequest.branch_name) {
+      await interaction.reply({
+        content: "This thread does not have a tracked request branch. Run `/ask` or `/plan` first and keep the worktree attached.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const isOwner = latestRequest.user_id === interaction.user.id;
+    const canManageGuild = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
+    if (!isOwner && !canManageGuild) {
+      await interaction.reply({
+        content: "Only the original requester or a user with `Manage Server` can open a PR for this branch.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (isActiveRequestStatus(latestRequest.status)) {
+      await interaction.reply({
+        content: "The latest request in this thread is still queued or running. Wait for it to finish before opening a PR.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!existsSync(latestRequest.worktree_path)) {
+      await interaction.reply({
+        content: "The tracked worktree for this thread no longer exists. Start a new `/ask` or `/plan` request before opening a PR.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const repo = this.db.getRepoByChannelId(interaction.guildId, parentId);
+    if (!repo) {
+      await interaction.reply({
+        content: "This thread is not attached to a connected repository channel. Run `/connect-repo` first.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const latestReview = this.db.getLatestCompletedReviewRunForBranch(latestRequest.id, latestRequest.branch_name);
+    if (!latestReview) {
+      await interaction.reply({
+        content: "Run `/review` first. `/pr` requires a completed review for this branch.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (latestReview.final_verdict !== "ready_for_pr") {
+      await interaction.reply({
+        content: `The latest completed review verdict is \`${latestReview.final_verdict ?? "unknown"}\`, not \`ready_for_pr\`. Address the review and run \`/review\` again before \`/pr\`.`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const currentHeadSha = await getHeadSha(latestRequest.worktree_path, latestRequest.branch_name);
+      if (currentHeadSha !== latestReview.diff_head) {
+        await interaction.editReply(
+          `The branch has changed since review. Latest review checked \`${latestReview.diff_head}\`, but current HEAD is \`${currentHeadSha}\`. Run \`/review\` again before \`/pr\`.`
+        );
+        return;
+      }
+
+      await interaction.channel.send(`Creating draft PR for \`${latestRequest.branch_name}\`.`);
+      const base = await detectDefaultBranch(latestRequest.worktree_path);
+      await pushBranch(latestRequest.worktree_path, latestRequest.branch_name);
+
+      const firstPromptLine = latestRequest.prompt.split("\n").map((line) => line.trim()).find(Boolean) ?? `Request #${latestRequest.id}`;
+      const title = clipForDiscord(firstPromptLine, 120).replace(/\n/g, " ");
+      const body = [
+        `Request: #${latestRequest.id}`,
+        `Thread: ${interaction.channel.url}`,
+        `Review run: #${latestReview.id}`,
+        `Reviewed SHA: ${latestReview.diff_head}`,
+        latestReview.artifact_path ? `Review artifact: \`${latestReview.artifact_path}\`` : null,
+        "",
+        "Original prompt:",
+        "",
+        latestRequest.prompt
+      ].filter((line): line is string => line !== null).join("\n");
+
+      const prUrl = await createDraftPullRequest({
+        worktreePath: latestRequest.worktree_path,
+        head: latestRequest.branch_name,
+        base: base.branchName,
+        title,
+        body
+      });
+
+      await interaction.channel.send(`Draft PR opened: ${prUrl}`);
+      await interaction.editReply(`Draft PR opened for \`${repo.full_name}\`: ${prUrl}`);
+    } catch (error) {
+      const message = this.describeExecutionError(error);
+      await interaction.channel.send(`**Draft PR creation failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
+      await interaction.editReply(`PR creation failed: ${message}`);
+    }
+  }
+
   private async handleUpdateClis(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
       await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
@@ -2270,6 +2534,171 @@ Output the result of the command or the link to the created issue.`;
     } catch (err) {
       this.logger.error({ error: err }, "MemPalace command failed");
       await interaction.editReply("MemPalace query failed. Check logs for details.");
+    }
+  }
+
+  private async runPlanRequest(input: {
+    requestId: number;
+    threadId: string;
+    repoId: number;
+    repo: {
+      owner: string;
+      repo: string;
+      fullName: string;
+    };
+    prompt: string;
+    planner: ResolvedModelRole;
+    implementer: ResolvedModelRole;
+  }): Promise<void> {
+    const startedAt = Date.now();
+    let worktreePath: string | null = null;
+    let branchName: string | null = null;
+    let statusFinalized = false;
+    let stage = "init";
+    let threadChannel: Awaited<ReturnType<Client["channels"]["fetch"]>> | null = null;
+
+    const markFailed = (): void => {
+      if (statusFinalized) {
+        return;
+      }
+      this.db.updateRequestStatus(input.requestId, "failed");
+      statusFinalized = true;
+    };
+
+    try {
+      this.db.updateRequestStatus(input.requestId, "running");
+      this.logger.info(
+        {
+          requestId: input.requestId,
+          threadId: input.threadId,
+          repo: input.repo.fullName,
+          planner: input.planner,
+          implementer: input.implementer
+        },
+        "Plan request started"
+      );
+
+      stage = "fetch-thread";
+      const channel = await this.client.channels.fetch(input.threadId);
+      if (!channel || !channel.isThread()) {
+        markFailed();
+        this.logger.error({ requestId: input.requestId, threadId: input.threadId }, "Plan request thread no longer available");
+        return;
+      }
+
+      threadChannel = channel;
+      for (const fallbackReason of [input.planner.fallbackReason, input.implementer.fallbackReason].filter(Boolean)) {
+        await threadChannel.send(`Provider fallback: ${fallbackReason}`);
+      }
+
+      stage = "sync-repo";
+      const checkout = await ensureRepoCheckedOutToMaster(this.config.reposRootPath, {
+        owner: input.repo.owner,
+        repo: input.repo.repo,
+        fullName: input.repo.fullName
+      });
+      this.logger.info({ requestId: input.requestId, checkoutPath: checkout.localPath }, "Repository sync complete for plan request");
+
+      stage = "create-worktree";
+      const worktree = await createRequestWorktree(this.config.reposRootPath, {
+        owner: input.repo.owner,
+        repo: input.repo.repo,
+        fullName: input.repo.fullName
+      }, input.requestId);
+      worktreePath = worktree.path;
+      branchName = worktree.branchName;
+      this.db.updateRequestWorkspace(input.requestId, worktreePath, branchName);
+
+      const executionEnvironment = this.installService.buildExecutionEnvironment({
+        repoId: input.repoId,
+        threadId: input.threadId
+      });
+      const env = executionEnvironment.packages.length > 0 ? executionEnvironment.env : undefined;
+
+      stage = "planning";
+      const plannerLabel = AI_PROVIDER_LABELS[input.planner.provider];
+      await threadChannel.send(`${plannerLabel} planning started.`);
+      const planPrompt = [
+        `Repository: ${input.repo.fullName}`,
+        "",
+        "Produce a structured implementation plan for this request.",
+        "Do not edit files. Do not run the implementation. Inspect the codebase as needed and return only the plan.",
+        "",
+        "Request:",
+        input.prompt
+      ].join("\n");
+      const planText = await this.runProviderText({
+        provider: input.planner.provider,
+        prompt: planPrompt,
+        cwd: worktreePath,
+        timeoutMs: this.config.askExecutionTimeoutMs,
+        ...(input.planner.model ? { model: input.planner.model } : {}),
+        ...(env ? { env } : {})
+      });
+      for (const chunk of splitPlainTextForDiscord(planText, `**${plannerLabel} plan completed**`)) {
+        await threadChannel.send(chunk);
+      }
+
+      stage = "implementing";
+      const implementerLabel = AI_PROVIDER_LABELS[input.implementer.provider];
+      await threadChannel.send(`${implementerLabel} implementation started.`);
+      const implementationPrompt = [
+        `Repository: ${input.repo.fullName}`,
+        "",
+        "Implement the request using the approved plan below. Make code changes in this worktree.",
+        "Do not create or commit a plan file. Keep changes scoped to the request.",
+        "",
+        "Original request:",
+        input.prompt,
+        "",
+        "Plan:",
+        planText
+      ].join("\n");
+      const implementationText = await this.runProviderText({
+        provider: input.implementer.provider,
+        prompt: implementationPrompt,
+        cwd: worktreePath,
+        timeoutMs: this.config.askExecutionTimeoutMs,
+        ...(input.implementer.model ? { model: input.implementer.model } : {}),
+        ...(env ? { env } : {})
+      });
+      for (const chunk of splitIntoDiscordMessages(implementationText, implementerLabel)) {
+        await threadChannel.send(chunk);
+      }
+
+      this.db.updateRequestStatus(input.requestId, "succeeded");
+      statusFinalized = true;
+      await threadChannel.send("Plan implementation complete. Run `/review`, then `/pr` once the verdict is `ready_for_pr`.");
+      this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Plan request succeeded");
+
+      if (this.memPalace) {
+        const drawerContent = [
+          `# Plan request #${input.requestId}: ${input.prompt}`,
+          "",
+          `Repo: ${input.repo.fullName}`,
+          `Planner: ${input.planner.provider}${input.planner.model ? ` (${input.planner.model})` : ""}`,
+          `Implementer: ${input.implementer.provider}${input.implementer.model ? ` (${input.implementer.model})` : ""}`,
+          `Duration: ${Date.now() - startedAt}ms`,
+          "",
+          "## Plan",
+          "",
+          planText,
+          "",
+          "## Implementation Output",
+          "",
+          implementationText
+        ].join("\n");
+        this.memPalace.addDrawer(drawerContent, "wing_actuarius", "requests").catch((err: unknown) => {
+          this.logger.warn({ error: err, requestId: input.requestId }, "MemPalace addDrawer failed");
+        });
+      }
+    } catch (error) {
+      markFailed();
+      const message = this.describeExecutionError(error);
+      if (threadChannel && threadChannel.isThread()) {
+        await threadChannel.send(`**Plan request failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 60)}`);
+      }
+      this.logger.error({ error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage }, "Plan request failed");
     }
   }
 
@@ -2473,6 +2902,10 @@ Output the result of the command or the link to the created issue.`;
     }
 
     if (error instanceof InstallServiceError) {
+      return error.message;
+    }
+
+    if (error instanceof PullRequestServiceError) {
       return error.message;
     }
 

@@ -65,6 +65,10 @@ export const commandBuilders = [
     .setDescription("Create a request thread in the connected repo channel.")
     .addStringOption((option) => option.setName("prompt").setDescription("Request text for this thread.").setRequired(true)),
   new SlashCommandBuilder()
+    .setName("plan")
+    .setDescription("Plan with a deep model, implement with a flash model, then stop for review.")
+    .addStringOption((option) => option.setName("prompt").setDescription("Request text for the plan-and-implement thread.").setRequired(true)),
+  new SlashCommandBuilder()
     .setName("install")
     .setDescription("Install an allowlisted tool or apt package. Requires Manage Server permission.")
     .addStringOption((option) =>
@@ -118,6 +122,17 @@ export const commandBuilders = [
         .setDescription("Model name (e.g. claude-opus-4-5, o4-mini, gemini-2.0-flash). Omit to use the CLI default.")
         .setRequired(false)
         .setAutocomplete(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("role")
+        .setDescription("Which model role to configure.")
+        .setRequired(false)
+        .addChoices(
+          { name: "Default (/ask, /bug, /issue)", value: "default" },
+          { name: "Planner (/plan stage A)", value: "planner" },
+          { name: "Implementer (/plan stage B)", value: "implementer" }
+        )
     ),
   new SlashCommandBuilder()
     .setName("model-current")
@@ -195,6 +210,9 @@ export const commandBuilders = [
     .setName("review")
     .setDescription("Run adversarial code review for the current request thread."),
   new SlashCommandBuilder()
+    .setName("pr")
+    .setDescription("Push the reviewed request branch and open a draft pull request."),
+  new SlashCommandBuilder()
     .setName("update-clis")
     .setDescription("Update provider CLIs (claude, codex, gemini, opencode) to latest. Requires Manage Server permission.")
     .addStringOption((option) =>
@@ -235,6 +253,7 @@ export type CommandName =
   | "repos"
   | "issues"
   | "ask"
+  | "plan"
   | "install"
   | "bug"
   | "issue"
@@ -247,6 +266,7 @@ export type CommandName =
   | "gh-auth-refresh"
   | "delete"
   | "review"
+  | "pr"
   | "update-clis";
 
 export async function registerSlashCommands(config: AppConfig, logger: pino.Logger): Promise<void> {

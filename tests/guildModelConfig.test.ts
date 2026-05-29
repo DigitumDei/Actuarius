@@ -38,6 +38,28 @@ describe("AppDatabase guild model config", () => {
     expect(config!.updated_by_user_id).toBe("user-2");
   });
 
+  it("sets planner config without clobbering default provider", () => {
+    db.setGuildModelConfig("guild-1", "gemini", "gemini-2.0-flash", "user-1");
+    db.setGuildRoleModelConfig("guild-1", "planner", "opencode", "deepseek/deepseek-v4-pro", "user-2");
+
+    const config = db.getGuildModelConfig("guild-1");
+    expect(config!.provider).toBe("gemini");
+    expect(config!.model).toBe("gemini-2.0-flash");
+    expect(config!.planner_provider).toBe("opencode");
+    expect(config!.planner_model).toBe("deepseek/deepseek-v4-pro");
+    expect(config!.updated_by_user_id).toBe("user-2");
+  });
+
+  it("can set implementer config before default config exists", () => {
+    db.setGuildRoleModelConfig("guild-1", "implementer", "claude", "claude-haiku-4-5", "user-1");
+
+    const config = db.getGuildModelConfig("guild-1");
+    expect(config!.provider).toBe("claude");
+    expect(config!.model).toBeNull();
+    expect(config!.implementer_provider).toBe("claude");
+    expect(config!.implementer_model).toBe("claude-haiku-4-5");
+  });
+
   it("sets codex provider config", () => {
     db.setGuildModelConfig("guild-1", "codex", "o4-mini", "user-3");
     const config = db.getGuildModelConfig("guild-1");

@@ -6,6 +6,7 @@ import type {
   InstallRequestRow,
   InstallRequestStatus,
   InstallScope,
+  ModelRole,
   RepoRow,
   RequestRow,
   RequestStatus,
@@ -149,11 +150,35 @@ export class AppDatabase {
         guild_id TEXT PRIMARY KEY,
         provider TEXT NOT NULL,
         model TEXT,
+        planner_provider TEXT,
+        planner_model TEXT,
+        implementer_provider TEXT,
+        implementer_model TEXT,
         updated_by_user_id TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE
       );
     `);
+
+    const guildModelConfigColumns = new Map([
+      ["planner_provider", "TEXT"],
+      ["planner_model", "TEXT"],
+      ["implementer_provider", "TEXT"],
+      ["implementer_model", "TEXT"]
+    ]);
+    const existingGuildModelConfigColumns = new Set(
+      (
+        this.db.prepare("PRAGMA table_info(guild_model_config)").all() as Array<{
+          name: string;
+        }>
+      ).map((column) => column.name)
+    );
+
+    for (const [columnName, columnDefinition] of guildModelConfigColumns) {
+      if (!existingGuildModelConfigColumns.has(columnName)) {
+        this.db.exec(`ALTER TABLE guild_model_config ADD COLUMN ${columnName} ${columnDefinition}`);
+      }
+    }
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS guild_review_config (
@@ -448,6 +473,37 @@ export class AppDatabase {
       .get(guildId, provider, model, updatedByUserId) as unknown as GuildModelConfigRow;
   }
 
+  public setGuildRoleModelConfig(
+    guildId: string,
+    role: Exclude<ModelRole, "default">,
+    provider: AiProvider,
+    model: string | null,
+    updatedByUserId: string
+  ): GuildModelConfigRow {
+    const providerColumn = role === "planner" ? "planner_provider" : "implementer_provider";
+    const modelColumn = role === "planner" ? "planner_model" : "implementer_model";
+
+    return this.db
+      .prepare(
+        `INSERT INTO guild_model_config (
+           guild_id,
+           provider,
+           model,
+           ${providerColumn},
+           ${modelColumn},
+           updated_by_user_id
+         )
+         VALUES (?, 'claude', NULL, ?, ?, ?)
+         ON CONFLICT(guild_id) DO UPDATE
+         SET ${providerColumn} = excluded.${providerColumn},
+             ${modelColumn} = excluded.${modelColumn},
+             updated_by_user_id = excluded.updated_by_user_id,
+             updated_at = CURRENT_TIMESTAMP
+         RETURNING *`
+      )
+      .get(guildId, provider, model, updatedByUserId) as unknown as GuildModelConfigRow;
+  }
+
   public getGuildReviewConfig(guildId: string): GuildReviewConfigRow | undefined {
     return this.db
       .prepare("SELECT * FROM guild_review_config WHERE guild_id = ?")
@@ -565,6 +621,19 @@ export class AppDatabase {
     const row = this.db
       .prepare("SELECT * FROM review_runs WHERE request_id = ? ORDER BY id DESC LIMIT 1")
       .get(requestId) as (ReviewRunRow & { id: number | bigint; request_id: number | bigint }) | undefined;
+
+    return this.mapReviewRunRow(row);
+  }
+
+  public getLatestCompletedReviewRunForBranch(requestId: number, branchName: string): ReviewRunRow | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM review_runs
+         WHERE request_id = ? AND branch_name = ? AND status = 'completed'
+         ORDER BY id DESC
+         LIMIT 1`
+      )
+      .get(requestId, branchName) as (ReviewRunRow & { id: number | bigint; request_id: number | bigint }) | undefined;
 
     return this.mapReviewRunRow(row);
   }

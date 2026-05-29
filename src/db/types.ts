@@ -6,11 +6,16 @@ export interface GuildRow {
 }
 
 export type AiProvider = "claude" | "codex" | "gemini" | "opencode";
+export type ModelRole = "default" | "planner" | "implementer";
 
 export interface GuildModelConfigRow {
   guild_id: string;
   provider: AiProvider;
   model: string | null;
+  planner_provider: AiProvider | null;
+  planner_model: string | null;
+  implementer_provider: AiProvider | null;
+  implementer_model: string | null;
   updated_by_user_id: string;
   updated_at: string;
 }
