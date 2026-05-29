@@ -92,6 +92,10 @@ export const guildModelConfigRowSchema = z.object({
   guild_id: z.string(),
   provider: aiProviderSchema,
   model: z.string().nullable(),
+  planner_provider: aiProviderSchema.nullable(),
+  planner_model: z.string().nullable(),
+  implementer_provider: aiProviderSchema.nullable(),
+  implementer_model: z.string().nullable(),
   updated_by_user_id: z.string(),
   updated_at: z.string(),
 });

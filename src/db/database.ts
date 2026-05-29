@@ -504,25 +504,27 @@ export class AppDatabase {
     const providerColumn = role === "planner" ? "planner_provider" : "implementer_provider";
     const modelColumn = role === "planner" ? "planner_model" : "implementer_model";
 
-    return this.db
-      .prepare(
-        `INSERT INTO guild_model_config (
-           guild_id,
-           provider,
-           model,
-           ${providerColumn},
-           ${modelColumn},
-           updated_by_user_id
-         )
-         VALUES (?, 'claude', NULL, ?, ?, ?)
-         ON CONFLICT(guild_id) DO UPDATE
-         SET ${providerColumn} = excluded.${providerColumn},
-             ${modelColumn} = excluded.${modelColumn},
-             updated_by_user_id = excluded.updated_by_user_id,
-             updated_at = CURRENT_TIMESTAMP
-         RETURNING *`
-      )
-      .get(guildId, provider, model, updatedByUserId) as unknown as GuildModelConfigRow;
+    return guildModelConfigRowSchema.parse(
+      this.db
+        .prepare(
+          `INSERT INTO guild_model_config (
+             guild_id,
+             provider,
+             model,
+             ${providerColumn},
+             ${modelColumn},
+             updated_by_user_id
+           )
+           VALUES (?, 'claude', NULL, ?, ?, ?)
+           ON CONFLICT(guild_id) DO UPDATE
+           SET ${providerColumn} = excluded.${providerColumn},
+               ${modelColumn} = excluded.${modelColumn},
+               updated_by_user_id = excluded.updated_by_user_id,
+               updated_at = CURRENT_TIMESTAMP
+           RETURNING *`
+        )
+        .get(guildId, provider, model, updatedByUserId)
+    );
   }
 
   public getGuildReviewConfig(guildId: string): GuildReviewConfigRow | undefined {
