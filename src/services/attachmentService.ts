@@ -1,0 +1,212 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { extname, join } from "node:path";
+
+export interface PendingAttachment {
+  id: string;
+  name: string;
+  url: string;
+  size: number;
+  contentType: string | null;
+}
+
+export interface ProcessedAttachment {
+  index: number;
+  originalName: string;
+  name: string;
+  type: "text" | "image";
+  savedPath: string;
+  inlineContent?: string;
+  size: number;
+}
+
+export interface AttachmentConfig {
+  maxCount: number;
+  maxFileSize: number;
+  maxTotalSize: number;
+  maxInlineText: number;
+}
+
+const TEXT_LIKE_MIMES = new Set([
+  "application/json",
+  "application/xml",
+  "application/yaml",
+  "application/x-yaml",
+  "application/toml",
+  "application/x-ndjson",
+]);
+
+const IMAGE_MIMES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+]);
+
+const TEXT_EXTENSIONS = new Set([
+  ".txt", ".md", ".json", ".yaml", ".yml", ".xml", ".csv", ".log",
+  ".cfg", ".conf", ".ini", ".toml", ".env",
+  ".sh", ".bash", ".zsh", ".fish",
+  ".py", ".js", ".ts", ".jsx", ".tsx", ".rs", ".go", ".java",
+  ".c", ".cpp", ".cxx", ".h", ".hpp", ".hxx",
+  ".css", ".scss", ".less", ".html", ".htm",
+  ".sql", ".rb", ".php", ".swift", ".kt", ".kts", ".gradle",
+  ".ps1", ".bat", ".cmd",
+  ".diff", ".patch",
+  ".lock", ".toml",
+  ".yaml",
+]);
+
+const IMAGE_EXTENSIONS = new Set([
+  ".png", ".jpg", ".jpeg", ".webp", ".gif",
+]);
+
+export class AttachmentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AttachmentError";
+  }
+}
+
+export function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+export function sanitizeFilename(name: string): string {
+  return name.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/_+/g, "_");
+}
+
+function detectType(contentType: string | null, filename: string): "text" | "image" | null {
+  if (contentType) {
+    const lower = contentType.toLowerCase();
+    if (lower.startsWith("text/")) return "text";
+    if (IMAGE_MIMES.has(lower)) return "image";
+    if (TEXT_LIKE_MIMES.has(lower)) return "text";
+    if (lower.startsWith("image/")) return "image";
+  }
+
+  const ext = extname(filename).toLowerCase();
+  if (IMAGE_EXTENSIONS.has(ext)) return "image";
+  if (TEXT_EXTENSIONS.has(ext)) return "text";
+
+  return null;
+}
+
+export function validateAttachments(
+  attachments: PendingAttachment[],
+  config: AttachmentConfig
+): string | null {
+  if (attachments.length === 0) return null;
+
+  if (attachments.length > config.maxCount) {
+    return `Maximum ${config.maxCount} attachments allowed, but ${attachments.length} were provided.`;
+  }
+
+  let totalSize = 0;
+  for (const att of attachments) {
+    if (att.size > config.maxFileSize) {
+      return `Attachment ${att.name} is ${formatFileSize(att.size)}, above the ${formatFileSize(config.maxFileSize)} per-file limit.`;
+    }
+    totalSize += att.size;
+  }
+
+  if (totalSize > config.maxTotalSize) {
+    return `Attachments total ${formatFileSize(totalSize)}, above the ${formatFileSize(config.maxTotalSize)} total limit.`;
+  }
+
+  for (const att of attachments) {
+    const type = detectType(att.contentType, att.name);
+    if (!type) {
+      return `Attachment ${att.name} is not supported. Supported types: text files and PNG/JPEG/WebP/GIF images.`;
+    }
+  }
+
+  return null;
+}
+
+export function buildAttachmentSummary(attachments: PendingAttachment[]): string {
+  if (attachments.length === 0) return "";
+  return attachments
+    .map((a) => `- ${a.name} (${formatFileSize(a.size)}${a.contentType ? `, ${a.contentType}` : ""})`)
+    .join("\n");
+}
+
+export async function processAttachments(
+  attachments: PendingAttachment[],
+  requestId: number,
+  worktreePath: string,
+  config: AttachmentConfig
+): Promise<{ processed: ProcessedAttachment[]; promptSection: string }> {
+  if (attachments.length === 0) return { processed: [], promptSection: "" };
+
+  const saveDir = join(worktreePath, ".actuarius", "attachments", `request-${requestId}`);
+  await mkdir(saveDir, { recursive: true });
+
+  const processed: ProcessedAttachment[] = [];
+  const promptLines: string[] = ["## Attachments", ""];
+
+  for (let i = 0; i < attachments.length; i++) {
+    const att = attachments[i]!;
+    const safeName = `${i + 1}-${sanitizeFilename(att.name)}`;
+    const savePath = join(saveDir, safeName);
+    const relativePath = join(".actuarius", "attachments", `request-${requestId}`, safeName);
+    const type = detectType(att.contentType, att.name);
+    if (!type) {
+      throw new AttachmentError(`Attachment ${att.name} is not supported. Supported types: text files and PNG/JPEG/WebP/GIF images.`);
+    }
+
+    const response = await fetch(att.url);
+    if (!response.ok) {
+      throw new AttachmentError(`Failed to download attachment ${att.name}: HTTP ${response.status}`);
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    await writeFile(savePath, buffer);
+
+    if (type === "text") {
+      let textContent = buffer.toString("utf-8");
+      let clipped = false;
+      if (textContent.length > config.maxInlineText) {
+        textContent = textContent.slice(0, config.maxInlineText);
+        clipped = true;
+      }
+
+      const ext = extname(att.name).toLowerCase().replace(/^\./, "") || "text";
+
+      promptLines.push(`File: ${att.name} (text, ${formatFileSize(att.size)})`);
+      promptLines.push("```" + ext);
+      promptLines.push(textContent);
+      promptLines.push("```");
+      if (clipped) {
+        promptLines.push(`*[Text clipped to ${formatFileSize(config.maxInlineText)}; full file saved at ${relativePath}]*`);
+      }
+      promptLines.push("");
+
+      processed.push({
+        index: i + 1,
+        originalName: att.name,
+        name: safeName,
+        type: "text",
+        savedPath: relativePath,
+        inlineContent: textContent,
+        size: att.size,
+      });
+    } else {
+      promptLines.push(`File: ${att.name} (image, ${formatFileSize(att.size)})`);
+      promptLines.push(`Attached image: ${relativePath}`);
+      promptLines.push("");
+
+      processed.push({
+        index: i + 1,
+        originalName: att.name,
+        name: safeName,
+        type: "image",
+        savedPath: relativePath,
+        size: att.size,
+      });
+    }
+  }
+
+  return { processed, promptSection: promptLines.join("\n").trim() };
+}

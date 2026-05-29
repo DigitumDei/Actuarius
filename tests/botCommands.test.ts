@@ -374,7 +374,8 @@ describe("ActuariusBot thread follow-ups", () => {
       channelId: "thread-1",
       channel: { isThread: () => true, parentId: "channel-1" },
       content: "follow-up prompt",
-      reply: vi.fn().mockResolvedValue(undefined)
+      reply: vi.fn().mockResolvedValue(undefined),
+      attachments: { size: 0, values: () => [] }
     });
 
     expect(createRequest).toHaveBeenCalledWith(
@@ -385,6 +386,114 @@ describe("ActuariusBot thread follow-ups", () => {
       })
     );
     expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("enqueues a request for attachment-only follow-up messages with fallback prompt", async () => {
+    const createRequest = vi.fn().mockReturnValue({ id: 88 });
+    const bot = createBot({
+      createRequest,
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 35,
+        repo_id: 1,
+        channel_id: "channel-1",
+        thread_id: "thread-1",
+        user_id: "user-1",
+        prompt: "existing",
+        status: "succeeded",
+        worktree_path: "/tmp",
+        branch_name: "ask/35-123"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      })
+    });
+
+    const enqueue = vi.fn();
+    (bot as any).requestQueue.enqueue = enqueue;
+
+    await (bot as any).handleThreadMessage({
+      author: { bot: false, id: "user-1" },
+      guildId: "guild-1",
+      guild: { id: "guild-1" },
+      channelId: "thread-1",
+      channel: { isThread: () => true, parentId: "channel-1" },
+      content: "",
+      reply: vi.fn().mockResolvedValue(undefined),
+      attachments: {
+        size: 1,
+        values: () => [{
+          id: "att-1",
+          name: "debug.log",
+          url: "https://cdn.discord.com/attachments/debug.log",
+          size: 4096,
+          contentType: "text/plain"
+        }]
+      }
+    });
+
+    expect(createRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread-1",
+        prompt: "Please inspect the attached file(s).",
+        status: "queued"
+      })
+    );
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects follow-up with unsupported attachment type", async () => {
+    const createRequest = vi.fn().mockReturnValue({ id: 99 });
+    const bot = createBot({
+      createRequest,
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 35,
+        repo_id: 1,
+        channel_id: "channel-1",
+        thread_id: "thread-1",
+        user_id: "user-1",
+        prompt: "existing",
+        status: "succeeded",
+        worktree_path: "/tmp",
+        branch_name: "ask/35-123"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      })
+    });
+
+    const reply = vi.fn().mockResolvedValue(undefined);
+    await (bot as any).handleThreadMessage({
+      author: { bot: false, id: "user-1" },
+      guildId: "guild-1",
+      guild: { id: "guild-1" },
+      channelId: "thread-1",
+      channel: { isThread: () => true, parentId: "channel-1" },
+      content: "check this file",
+      reply,
+      attachments: {
+        size: 1,
+        values: () => [{
+          id: "att-bad",
+          name: "archive.zip",
+          url: "https://cdn.discord.com/attachments/archive.zip",
+          size: 4096,
+          contentType: "application/zip"
+        }]
+      }
+    });
+
+    expect(reply).toHaveBeenCalledWith(
+      expect.stringContaining("is not supported")
+    );
+    expect(createRequest).not.toHaveBeenCalled();
   });
 });
 

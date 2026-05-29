@@ -72,6 +72,26 @@ const envSchema = z.object({
     .default("false")
     .transform((value) => value === "true"),
   DEEPSEEK_API_KEY: optionalNonEmpty,
+  ATTACHMENT_MAX_COUNT: z
+    .string()
+    .default("5")
+    .transform((value) => Number.parseInt(value, 10))
+    .refine((value) => Number.isFinite(value) && value >= 0, "ATTACHMENT_MAX_COUNT must be a non-negative number"),
+  ATTACHMENT_MAX_FILE_SIZE: z
+    .string()
+    .default("10485760")
+    .transform((value) => Number.parseInt(value, 10))
+    .refine((value) => Number.isFinite(value) && value > 0, "ATTACHMENT_MAX_FILE_SIZE must be a positive number"),
+  ATTACHMENT_MAX_TOTAL_SIZE: z
+    .string()
+    .default("26214400")
+    .transform((value) => Number.parseInt(value, 10))
+    .refine((value) => Number.isFinite(value) && value > 0, "ATTACHMENT_MAX_TOTAL_SIZE must be a positive number"),
+  ATTACHMENT_MAX_INLINE_TEXT: z
+    .string()
+    .default("262144")
+    .transform((value) => Number.parseInt(value, 10))
+    .refine((value) => Number.isFinite(value) && value > 0, "ATTACHMENT_MAX_INLINE_TEXT must be a positive number"),
   MEMPALACE_ENABLED: z
     .string()
     .default("false")
@@ -147,6 +167,10 @@ export const appConfig = {
   enableGeminiExecution: rawConfig.ENABLE_GEMINI_EXECUTION,
   enableOpencodeExecution: rawConfig.ENABLE_OPENCODE_EXECUTION,
   deepseekApiKey: rawConfig.DEEPSEEK_API_KEY,
+  attachmentMaxCount: rawConfig.ATTACHMENT_MAX_COUNT,
+  attachmentMaxFileSize: rawConfig.ATTACHMENT_MAX_FILE_SIZE,
+  attachmentMaxTotalSize: rawConfig.ATTACHMENT_MAX_TOTAL_SIZE,
+  attachmentMaxInlineText: rawConfig.ATTACHMENT_MAX_INLINE_TEXT,
   mempalaceEnabled: rawConfig.MEMPALACE_ENABLED,
   mempalacePalacePath: rawConfig.MEMPALACE_PALACE_PATH,
   mempalaceBinaryPath: rawConfig.MEMPALACE_BINARY_PATH,
