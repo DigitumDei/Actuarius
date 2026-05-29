@@ -156,13 +156,27 @@ async function resolveGitDir(worktreePath: string): Promise<string | null> {
   return isAbsolute(gitDir) ? gitDir : resolve(dirname(dotGitPath), gitDir);
 }
 
-async function ensureActuariusExcluded(worktreePath: string): Promise<void> {
+async function resolveCommonGitDir(worktreePath: string): Promise<string | null> {
   const gitDir = await resolveGitDir(worktreePath);
   if (!gitDir) {
+    return null;
+  }
+
+  try {
+    const commonDir = (await readFile(join(gitDir, "commondir"), "utf-8")).trim();
+    return isAbsolute(commonDir) ? commonDir : resolve(gitDir, commonDir);
+  } catch {
+    return gitDir;
+  }
+}
+
+async function ensureActuariusExcluded(worktreePath: string): Promise<void> {
+  const commonGitDir = await resolveCommonGitDir(worktreePath);
+  if (!commonGitDir) {
     return;
   }
 
-  const infoDir = join(gitDir, "info");
+  const infoDir = join(commonGitDir, "info");
   const excludePath = join(infoDir, "exclude");
   await mkdir(infoDir, { recursive: true });
 

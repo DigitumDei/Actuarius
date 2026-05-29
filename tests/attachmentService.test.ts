@@ -1,6 +1,8 @@
+import { execFile as execFileCallback } from "node:child_process";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
   buildAttachmentSummary,
@@ -17,6 +19,8 @@ const testConfig = {
   maxTotalSize: 25 * 1024 * 1024,
   maxInlineText: 256 * 1024,
 };
+
+const execFile = promisify(execFileCallback);
 
 function makeTextAttachment(overrides: Partial<PendingAttachment> = {}): PendingAttachment {
   return {
@@ -204,11 +208,17 @@ describe("processAttachments", () => {
     expect(exclude.match(/^\.actuarius\/$/gm)).toHaveLength(1);
   });
 
-  it("adds .actuarius to the real git dir for linked git worktrees", async () => {
+  it("makes saved attachments ignored in real linked git worktrees", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "actuarius-source-repo-"));
     const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-linked-worktree-"));
-    const realGitDir = await mkdtemp(join(tmpdir(), "actuarius-real-gitdir-"));
-    await mkdir(join(realGitDir, "info"), { recursive: true });
-    await writeFile(join(worktreePath, ".git"), `gitdir: ${realGitDir}\n`);
+
+    await execFile("git", ["-C", repoPath, "init"]);
+    await execFile("git", ["-C", repoPath, "config", "user.name", "Actuarius Test"]);
+    await execFile("git", ["-C", repoPath, "config", "user.email", "test@example.com"]);
+    await writeFile(join(repoPath, "README.md"), "# test\n");
+    await execFile("git", ["-C", repoPath, "add", "README.md"]);
+    await execFile("git", ["-C", repoPath, "commit", "-m", "Initial commit"]);
+    await execFile("git", ["-C", repoPath, "worktree", "add", worktreePath, "-b", "attachment-test"]);
 
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
@@ -217,8 +227,10 @@ describe("processAttachments", () => {
 
     await processAttachments([makeTextAttachment()], 44, worktreePath, testConfig);
 
-    const exclude = await readFile(join(realGitDir, "info", "exclude"), "utf-8");
-    expect(exclude).toBe(".actuarius/\n");
+    const savedPath = ".actuarius/attachments/request-44/1-debug.log";
+    await expect(execFile("git", ["-C", worktreePath, "check-ignore", savedPath])).resolves.toBeDefined();
+    const { stdout } = await execFile("git", ["-C", worktreePath, "status", "--short", "--untracked-files=all"]);
+    expect(stdout).not.toContain(".actuarius/");
   });
 
   it("downloads image attachment, saves file, and returns path reference", async () => {
