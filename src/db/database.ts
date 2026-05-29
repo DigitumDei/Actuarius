@@ -179,11 +179,9 @@ export class AppDatabase {
       ["implementer_model", "TEXT"]
     ]);
     const existingGuildModelConfigColumns = new Set(
-      (
-        this.db.prepare("PRAGMA table_info(guild_model_config)").all() as Array<{
-          name: string;
-        }>
-      ).map((column) => column.name)
+      z.array(tableInfoRowSchema)
+        .parse(this.db.prepare("PRAGMA table_info(guild_model_config)").all())
+        .map((column) => column.name)
     );
 
     for (const [columnName, columnDefinition] of guildModelConfigColumns) {
@@ -673,14 +671,16 @@ export class AppDatabase {
   }
 
   public getLatestCompletedReviewRunForBranch(requestId: number, branchName: string): ReviewRunRow | undefined {
-    const row = this.db
-      .prepare(
-        `SELECT * FROM review_runs
-         WHERE request_id = ? AND branch_name = ? AND status = 'completed'
-         ORDER BY id DESC
-         LIMIT 1`
-      )
-      .get(requestId, branchName) as (ReviewRunRow & { id: number | bigint; request_id: number | bigint }) | undefined;
+    const row = reviewRunRowRawSchema.optional().parse(
+      this.db
+        .prepare(
+          `SELECT * FROM review_runs
+           WHERE request_id = ? AND branch_name = ? AND status = 'completed'
+           ORDER BY id DESC
+           LIMIT 1`
+        )
+        .get(requestId, branchName)
+    );
 
     return this.mapReviewRunRow(row);
   }
