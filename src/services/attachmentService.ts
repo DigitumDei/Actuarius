@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 
 export interface PendingAttachment {
@@ -60,6 +60,8 @@ const IMAGE_EXTENSIONS = new Set([
   ".png", ".jpg", ".jpeg", ".webp", ".gif",
 ]);
 
+const DOWNLOAD_TIMEOUT_MS = 30_000;
+
 export class AttachmentError extends Error {
   constructor(message: string) {
     super(message);
@@ -79,11 +81,11 @@ export function sanitizeFilename(name: string): string {
 
 function detectType(contentType: string | null, filename: string): "text" | "image" | null {
   if (contentType) {
-    const lower = contentType.toLowerCase();
-    if (lower.startsWith("text/")) return "text";
-    if (IMAGE_MIMES.has(lower)) return "image";
-    if (TEXT_LIKE_MIMES.has(lower)) return "text";
-    if (lower.startsWith("image/")) return null;
+    const mime = contentType.split(";")[0]!.trim().toLowerCase();
+    if (mime.startsWith("text/")) return "text";
+    if (IMAGE_MIMES.has(mime)) return "image";
+    if (TEXT_LIKE_MIMES.has(mime)) return "text";
+    if (mime.startsWith("image/")) return null;
   }
 
   const ext = extname(filename).toLowerCase();
@@ -173,7 +175,12 @@ async function resolveCommonGitDir(worktreePath: string): Promise<string | null>
 async function ensureActuariusExcluded(worktreePath: string): Promise<void> {
   const commonGitDir = await resolveCommonGitDir(worktreePath);
   if (!commonGitDir) {
-    return;
+    try {
+      await stat(join(worktreePath, ".git"));
+    } catch {
+      return;
+    }
+    throw new AttachmentError("Unable to resolve Git directory for attachment exclusion.");
   }
 
   const infoDir = join(commonGitDir, "info");
@@ -199,6 +206,24 @@ async function ensureActuariusExcluded(worktreePath: string): Promise<void> {
   await appendFile(excludePath, `${prefix}.actuarius/\n`);
 }
 
+async function downloadAttachment(att: PendingAttachment): Promise<Buffer> {
+  try {
+    const response = await fetch(att.url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+    if (!response.ok) {
+      throw new AttachmentError(`Failed to download attachment ${att.name}: HTTP ${response.status}`);
+    }
+
+    return Buffer.from(await response.arrayBuffer());
+  } catch (err) {
+    if (err instanceof AttachmentError) {
+      throw err;
+    }
+
+    const message = err instanceof Error ? err.message : String(err);
+    throw new AttachmentError(`Failed to download attachment ${att.name}: ${message}`);
+  }
+}
+
 export async function processAttachments(
   attachments: PendingAttachment[],
   requestId: number,
@@ -221,75 +246,75 @@ export async function processAttachments(
   const promptLines: string[] = ["## Attachments", ""];
   let actualTotalSize = 0;
 
-  for (let i = 0; i < attachments.length; i++) {
-    const att = attachments[i]!;
-    const safeName = `${i + 1}-${sanitizeFilename(att.name)}`;
-    const savePath = join(saveDir, safeName);
-    const relativePath = join(".actuarius", "attachments", `request-${requestId}`, safeName);
-    const type = detectType(att.contentType, att.name);
-    if (!type) {
-      throw new AttachmentError(`Attachment ${att.name} is not supported. Supported types: text files and PNG/JPEG/WebP/GIF images.`);
-    }
-
-    const response = await fetch(att.url);
-    if (!response.ok) {
-      throw new AttachmentError(`Failed to download attachment ${att.name}: HTTP ${response.status}`);
-    }
-
-    const buffer = Buffer.from(await response.arrayBuffer());
-    const actualSize = buffer.length;
-    if (actualSize > config.maxFileSize) {
-      throw new AttachmentError(`Attachment ${att.name} downloaded as ${formatFileSize(actualSize)}, above the ${formatFileSize(config.maxFileSize)} per-file limit.`);
-    }
-    actualTotalSize += actualSize;
-    if (actualTotalSize > config.maxTotalSize) {
-      throw new AttachmentError(`Attachments downloaded total ${formatFileSize(actualTotalSize)}, above the ${formatFileSize(config.maxTotalSize)} total limit.`);
-    }
-
-    await writeFile(savePath, buffer);
-
-    if (type === "text") {
-      let textContent = buffer.toString("utf-8");
-      let clipped = false;
-      if (textContent.length > config.maxInlineText) {
-        textContent = textContent.slice(0, config.maxInlineText);
-        clipped = true;
+  try {
+    for (let i = 0; i < attachments.length; i++) {
+      const att = attachments[i]!;
+      const safeName = `${i + 1}-${sanitizeFilename(att.name)}`;
+      const savePath = join(saveDir, safeName);
+      const relativePath = join(".actuarius", "attachments", `request-${requestId}`, safeName);
+      const type = detectType(att.contentType, att.name);
+      if (!type) {
+        throw new AttachmentError(`Attachment ${att.name} is not supported. Supported types: text files and PNG/JPEG/WebP/GIF images.`);
       }
 
-      const ext = extname(att.name).toLowerCase().replace(/^\./, "") || "text";
-
-      promptLines.push(`File: ${att.name} (text, ${formatFileSize(actualSize)})`);
-      promptLines.push("```" + ext);
-      promptLines.push(textContent);
-      promptLines.push("```");
-      if (clipped) {
-        promptLines.push(`*[Text clipped to ${formatFileSize(config.maxInlineText)}; full file saved at ${relativePath}]*`);
+      const buffer = await downloadAttachment(att);
+      const actualSize = buffer.length;
+      if (actualSize > config.maxFileSize) {
+        throw new AttachmentError(`Attachment ${att.name} downloaded as ${formatFileSize(actualSize)}, above the ${formatFileSize(config.maxFileSize)} per-file limit.`);
       }
-      promptLines.push("");
+      actualTotalSize += actualSize;
+      if (actualTotalSize > config.maxTotalSize) {
+        throw new AttachmentError(`Attachments downloaded total ${formatFileSize(actualTotalSize)}, above the ${formatFileSize(config.maxTotalSize)} total limit.`);
+      }
 
-      processed.push({
-        index: i + 1,
-        originalName: att.name,
-        name: safeName,
-        type: "text",
-        savedPath: relativePath,
-        inlineContent: textContent,
-        size: actualSize,
-      });
-    } else {
-      promptLines.push(`File: ${att.name} (image, ${formatFileSize(actualSize)})`);
-      promptLines.push(`Attached image: ${relativePath}`);
-      promptLines.push("");
+      await writeFile(savePath, buffer);
 
-      processed.push({
-        index: i + 1,
-        originalName: att.name,
-        name: safeName,
-        type: "image",
-        savedPath: relativePath,
-        size: actualSize,
-      });
+      if (type === "text") {
+        let textContent = buffer.toString("utf-8");
+        let clipped = false;
+        if (textContent.length > config.maxInlineText) {
+          textContent = textContent.slice(0, config.maxInlineText);
+          clipped = true;
+        }
+
+        const ext = extname(att.name).toLowerCase().replace(/^\./, "") || "text";
+
+        promptLines.push(`File: ${att.name} (text, ${formatFileSize(actualSize)})`);
+        promptLines.push("```" + ext);
+        promptLines.push(textContent);
+        promptLines.push("```");
+        if (clipped) {
+          promptLines.push(`*[Text clipped to ${formatFileSize(config.maxInlineText)}; full file saved at ${relativePath}]*`);
+        }
+        promptLines.push("");
+
+        processed.push({
+          index: i + 1,
+          originalName: att.name,
+          name: safeName,
+          type: "text",
+          savedPath: relativePath,
+          inlineContent: textContent,
+          size: actualSize,
+        });
+      } else {
+        promptLines.push(`File: ${att.name} (image, ${formatFileSize(actualSize)})`);
+        promptLines.push(`Attached image: ${relativePath}`);
+        promptLines.push("");
+
+        processed.push({
+          index: i + 1,
+          originalName: att.name,
+          name: safeName,
+          type: "image",
+          savedPath: relativePath,
+          size: actualSize,
+        });
+      }
     }
+  } catch (err) {
+    await rm(saveDir, { recursive: true, force: true });
+    throw err;
   }
 
   return { processed, promptSection: promptLines.join("\n").trim() };

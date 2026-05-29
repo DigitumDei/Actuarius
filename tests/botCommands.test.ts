@@ -107,9 +107,9 @@ function createBot(dbOverrides: Record<string, unknown> = {}): ActuariusBot {
     attachmentMaxFileSize: 10 * 1024 * 1024,
     attachmentMaxTotalSize: 25 * 1024 * 1024,
     attachmentMaxInlineText: 256 * 1024,
-    memPalaceEnabled: false,
-    memPalacePalacePath: "/data/mempalace/palace",
-    memPalaceBinaryPath: "/usr/local/bin/mempalace-mcp"
+    mempalaceEnabled: false,
+    mempalacePalacePath: "/data/mempalace/palace",
+    mempalaceBinaryPath: "/usr/local/bin/mempalace-mcp"
   } as const;
 
   const db = {

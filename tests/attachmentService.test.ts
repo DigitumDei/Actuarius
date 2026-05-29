@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -122,6 +122,14 @@ describe("validateAttachments", () => {
     expect(validateAttachments([att], testConfig)).toBeNull();
   });
 
+  it("accepts supported mime values with parameters", () => {
+    const atts = [
+      makeTextAttachment({ contentType: "application/json; charset=utf-8", name: "data.json" }),
+      makeImageAttachment({ contentType: "image/png; boundary=abc", name: "screenshot.png" }),
+    ];
+    expect(validateAttachments(atts, testConfig)).toBeNull();
+  });
+
   it("accepts jpeg images", () => {
     const att = makeImageAttachment({ contentType: "image/jpeg", name: "photo.jpg" });
     expect(validateAttachments([att], testConfig)).toBeNull();
@@ -189,6 +197,18 @@ describe("processAttachments", () => {
     expect(result.promptSection).toContain("line1\nline2\nline3");
   });
 
+  it("sets an abort signal when downloading attachments", async () => {
+    vi.mocked(fetch).mockImplementation(async (_url, init) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return {
+        ok: true,
+        arrayBuffer: async () => new TextEncoder().encode("hello").buffer,
+      } as Response;
+    });
+
+    await processAttachments([makeTextAttachment()], 42, "/tmp/worktree", testConfig);
+  });
+
   it("adds .actuarius to the git exclude file before saving attachments", async () => {
     const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-attachment-worktree-"));
     const gitDir = join(worktreePath, ".git");
@@ -231,6 +251,22 @@ describe("processAttachments", () => {
     await expect(execFile("git", ["-C", worktreePath, "check-ignore", savedPath])).resolves.toBeDefined();
     const { stdout } = await execFile("git", ["-C", worktreePath, "status", "--short", "--untracked-files=all"]);
     expect(stdout).not.toContain(".actuarius/");
+  });
+
+  it("throws when a malformed git file prevents attachment exclusion", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-malformed-git-"));
+    await writeFile(join(worktreePath, ".git"), "not a gitdir file\n");
+    vi.mocked(fetch).mockClear();
+
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => new TextEncoder().encode("hello").buffer,
+    } as Response);
+
+    await expect(
+      processAttachments([makeTextAttachment()], 46, worktreePath, testConfig)
+    ).rejects.toThrow("Unable to resolve Git directory for attachment exclusion.");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("downloads image attachment, saves file, and returns path reference", async () => {
@@ -350,5 +386,32 @@ describe("processAttachments", () => {
         { ...testConfig, maxTotalSize: 15 }
       )
     ).rejects.toThrow("downloaded total 16 B, above the 15 B total limit");
+  });
+
+  it("cleans up files already written when a later attachment fails", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-partial-cleanup-"));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: async () => new TextEncoder().encode("first").buffer,
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+      } as Response);
+
+    await expect(
+      processAttachments(
+        [
+          makeTextAttachment({ id: "att-1", name: "one.log", size: 5 }),
+          makeTextAttachment({ id: "att-2", name: "two.log", size: 5 }),
+        ],
+        47,
+        worktreePath,
+        testConfig
+      )
+    ).rejects.toThrow("Failed to download attachment two.log: HTTP 500");
+
+    await expect(stat(join(worktreePath, ".actuarius", "attachments", "request-47"))).rejects.toThrow();
   });
 });
