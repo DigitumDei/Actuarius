@@ -1209,6 +1209,54 @@ describe("ActuariusBot model-select command", () => {
     vi.resetAllMocks();
   });
 
+  it("shows role provider CLI default when role provider differs from the default provider without a role model", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: "gemini",
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      })
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Planner role: **Gemini**, model: `none (CLI default)`."),
+      ephemeral: true
+    });
+  });
+
+  it("does not reuse the default model for a role-specific different provider", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: "gemini",
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      })
+    });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true,
+      geminiApiKey: "key"
+    };
+
+    const roles = await (bot as any).resolvePlanRoleModels("guild-1");
+
+    expect(roles.planner).toEqual({ provider: "gemini" });
+    expect(roles.implementer).toEqual({ provider: "claude", model: "claude-sonnet-4-6" });
+  });
+
   it("rejects Gemini when GEMINI_API_KEY is whitespace only", async () => {
     const bot = createBot({
       setGuildModelConfig: vi.fn(),

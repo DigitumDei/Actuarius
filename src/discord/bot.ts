@@ -64,6 +64,7 @@ import { MemPalaceClient } from "../services/memPalaceClient.js";
 import { createDraftPullRequest, PullRequestServiceError } from "../services/pullRequestService.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
+const PR_TITLE_LIMIT = 120;
 
 const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
   claude: "Claude",
@@ -116,6 +117,10 @@ function clipForDiscord(input: string, maxLength: number): string {
   }
 
   return `${text.slice(0, maxLength - 15).trimEnd()}\n...(truncated)`;
+}
+
+function clipForPullRequestTitle(input: string): string {
+  return input.replace(/\s+/gu, " ").trim().slice(0, PR_TITLE_LIMIT);
 }
 
 function splitIntoDiscordMessages(text: string, providerLabel: string = "Claude"): string[] {
@@ -1200,9 +1205,9 @@ export class ActuariusBot {
     const timeStr = Number.isNaN(ts) ? config.updated_at : `<t:${Math.floor(ts / 1000)}:R>`;
     const modelStr = config.model || "none (CLI default)";
     const plannerProvider = config.planner_provider ?? config.provider;
-    const plannerModel = config.planner_model ?? config.model;
+    const plannerModel = config.planner_model ?? (plannerProvider === config.provider ? config.model : null);
     const implementerProvider = config.implementer_provider ?? config.provider;
-    const implementerModel = config.implementer_model ?? config.model;
+    const implementerModel = config.implementer_model ?? (implementerProvider === config.provider ? config.model : null);
     await interaction.reply({
       content: [
         `Current default AI provider: **${AI_PROVIDER_LABELS[config.provider]}**, model: \`${modelStr}\` (set ${timeStr}).`,
@@ -1843,7 +1848,7 @@ export class ActuariusBot {
       configuredModel: string | null | undefined
     ): Promise<ResolvedModelRole> => {
       const provider = configuredProvider ?? defaultProvider;
-      const model = configuredModel ?? defaultModel;
+      const model = configuredModel ?? (provider === defaultProvider ? defaultModel : null);
       const unavailable = await this.getProviderUnavailableMessage(provider);
       if (!unavailable) {
         return model ? { provider, model } : { provider };
@@ -1852,7 +1857,7 @@ export class ActuariusBot {
       return {
         provider: "claude",
         ...(model && provider === "claude" ? { model } : {}),
-        fallbackReason: `${role} role requested ${AI_PROVIDER_LABELS[provider]}, but ${unavailable} Falling back to Claude.`
+        fallbackReason: `${role} role requested ${AI_PROVIDER_LABELS[provider]}, but that provider is unavailable (${unavailable.replace(/\.$/u, "")}); falling back to Claude.`
       };
     };
 
@@ -1890,14 +1895,15 @@ export class ActuariusBot {
       return;
     }
 
-    const roles = await this.resolvePlanRoleModels(interaction.guildId);
+    await interaction.deferReply({ ephemeral: true });
+
     const channel = (await interaction.guild.channels.fetch(repo.channel_id)) as GuildTextBasedChannel | null;
     if (!channel || channel.type !== ChannelType.GuildText) {
-      await interaction.reply({ content: "Mapped repo channel is unavailable or not a text channel.", ephemeral: true });
+      await interaction.editReply("Mapped repo channel is unavailable or not a text channel.");
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    const roles = await this.resolvePlanRoleModels(interaction.guildId);
 
     const seedMessage = await channel.send({
       content: `New plan request from <@${interaction.user.id}> for \`${repo.full_name}\``
@@ -2413,7 +2419,7 @@ Output the result of the command or the link to the created issue.`;
       await pushBranch(latestRequest.worktree_path, latestRequest.branch_name);
 
       const firstPromptLine = latestRequest.prompt.split("\n").map((line) => line.trim()).find(Boolean) ?? `Request #${latestRequest.id}`;
-      const title = clipForDiscord(firstPromptLine, 120).replace(/\n/g, " ");
+      const title = clipForPullRequestTitle(firstPromptLine);
       const body = [
         `Request: #${latestRequest.id}`,
         `Thread: ${interaction.channel.url}`,
@@ -2565,6 +2571,30 @@ Output the result of the command or the link to the created issue.`;
       statusFinalized = true;
     };
 
+    const cleanupFailedWorktree = async (): Promise<void> => {
+      if (!worktreePath || !branchName) {
+        return;
+      }
+
+      try {
+        await deleteRequestBranch(
+          this.config.reposRootPath,
+          {
+            owner: input.repo.owner,
+            repo: input.repo.repo,
+            fullName: input.repo.fullName
+          },
+          {
+            branchName,
+            worktreePath
+          }
+        );
+        this.db.updateRequestWorkspace(input.requestId, null, null);
+      } catch (cleanupError) {
+        this.logger.warn({ error: cleanupError, requestId: input.requestId, worktreePath, branchName }, "Plan request worktree cleanup failed");
+      }
+    };
+
     try {
       this.db.updateRequestStatus(input.requestId, "running");
       this.logger.info(
@@ -2635,6 +2665,14 @@ Output the result of the command or the link to the created issue.`;
         ...(input.planner.model ? { model: input.planner.model } : {}),
         ...(env ? { env } : {})
       });
+      if (!planText.trim()) {
+        markFailed();
+        await threadChannel.send("Planner produced no output; aborting before implementation.");
+        await cleanupFailedWorktree();
+        this.logger.error({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Plan request failed with empty planner output");
+        return;
+      }
+
       for (const chunk of splitPlainTextForDiscord(planText, `**${plannerLabel} plan completed**`)) {
         await threadChannel.send(chunk);
       }
@@ -2698,6 +2736,7 @@ Output the result of the command or the link to the created issue.`;
       if (threadChannel && threadChannel.isThread()) {
         await threadChannel.send(`**Plan request failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 60)}`);
       }
+      await cleanupFailedWorktree();
       this.logger.error({ error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage }, "Plan request failed");
     }
   }

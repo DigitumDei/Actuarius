@@ -14,7 +14,7 @@ function extractUrl(stdout: string): string {
 
 function isAlreadyExistsError(message: string): boolean {
   const lowered = message.toLowerCase();
-  return lowered.includes("pull request") && (lowered.includes("already exists") || lowered.includes("already exists for"));
+  return lowered.includes("pull request") && lowered.includes("already exists");
 }
 
 export async function createDraftPullRequest(input: {
