@@ -12,6 +12,13 @@ vi.mock("../src/utils/spawnCollect.js");
 const { spawnCollect } = await import("../src/utils/spawnCollect.js");
 const mockSpawnCollect = vi.mocked(spawnCollect);
 
+// The InstallService targets the Linux container: it builds POSIX install paths
+// (path.join → "/data/..."), inspects process.getuid, and shells out to sudo/apt.
+// On Windows path.join yields "\data\..." and process.getuid is undefined, so these
+// assertions can only hold on POSIX. They run in CI (Linux); skipped on win32 so a
+// local `npm test` reports them as skipped rather than spuriously failing.
+const itLinuxOnly = it.skipIf(process.platform === "win32");
+
 function createInMemoryDb(): AppDatabase {
   const db = new AppDatabase(":memory:");
   db.runMigrations();
@@ -77,7 +84,7 @@ describe("InstallService", () => {
     writeFileSync(filePath, content, "utf8");
   }
 
-  it("creates approved install requests in scoped directories", () => {
+  itLinuxOnly("creates approved install requests in scoped directories", () => {
     const request = db.createRequest({
       guildId: "guild-1",
       repoId: 1,
@@ -172,7 +179,7 @@ describe("InstallService", () => {
     expect(execution.env.PATH).toContain("/data/tool-installs/request/thread-1/rustup-default-stable/bin");
   });
 
-  it("updates request lifecycle states while running a request-scoped install", async () => {
+  itLinuxOnly("updates request lifecycle states while running a request-scoped install", async () => {
     const request = db.createRequest({
       guildId: "guild-1",
       repoId: 1,
@@ -207,7 +214,7 @@ describe("InstallService", () => {
     );
   });
 
-  it("bootstraps rustup inside the scoped install root instead of requiring a system rustup", async () => {
+  itLinuxOnly("bootstraps rustup inside the scoped install root instead of requiring a system rustup", async () => {
     const install = db.createInstallRequest({
       guildId: "guild-1",
       repoId: 1,
@@ -327,7 +334,7 @@ describe("InstallService", () => {
     ).toThrowError(expect.objectContaining({ code: "UNKNOWN_PACKAGE" }));
   });
 
-  it("accepts apt package requests and stores them in a shared system install root", () => {
+  itLinuxOnly("accepts apt package requests and stores them in a shared system install root", () => {
     const install = service.createApprovedInstallRequest({
       guildId: "guild-1",
       repoId: 1,
@@ -479,7 +486,7 @@ describe("InstallService", () => {
     expect(install.package_version).toBe("34");
   });
 
-  it("passes prior repo-scope install env into later install steps", async () => {
+  itLinuxOnly("passes prior repo-scope install env into later install steps", async () => {
     const priorInstall = db.createInstallRequest({
       guildId: "guild-1",
       repoId: 1,
@@ -555,7 +562,7 @@ describe("InstallService", () => {
     ).toThrowError(expect.objectContaining({ code: "CONFIG_INVALID" }));
   });
 
-  it("fails apt installs early when the process is not running as root", async () => {
+  itLinuxOnly("fails apt installs early when the process is not running as root", async () => {
     const getuidSpy = vi.spyOn(process, "getuid").mockReturnValue(1001);
     const install = db.createInstallRequest({
       guildId: "guild-1",
@@ -577,7 +584,7 @@ describe("InstallService", () => {
     getuidSpy.mockRestore();
   });
 
-  it("uses the configured apt helper via sudo when the process is not running as root", async () => {
+  itLinuxOnly("uses the configured apt helper via sudo when the process is not running as root", async () => {
     const helperPath = join(tmpdir(), "actuarius-apt-install-test-helper");
     writeFileSync(helperPath, "#!/usr/bin/env bash\nexit 0\n", { encoding: "utf8", mode: 0o755 });
     const getuidSpy = vi.spyOn(process, "getuid").mockReturnValue(1001);

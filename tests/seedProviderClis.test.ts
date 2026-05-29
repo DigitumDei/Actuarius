@@ -171,7 +171,10 @@ describe("seed-provider-clis.sh", () => {
     expect(result.stderr).toContain("@openai/codex");
   });
 
-  it("continues container startup when provider seeding fails", () => {
+  // Runs the real container entrypoint via `sh`, which invokes Linux-only commands
+  // (returns 127 "command not found" on a Windows shell). Runs in CI (Linux);
+  // skipped on win32 so local `npm test` reports it skipped, not failed.
+  it.skipIf(process.platform === "win32")("continues container startup when provider seeding fails", () => {
     const result = runEntrypointWithFailingSeed();
 
     expect(result.status).toBe(0);
