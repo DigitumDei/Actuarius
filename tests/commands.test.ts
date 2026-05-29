@@ -57,6 +57,47 @@ describe("command registration", () => {
     ]);
   });
 
+  it("registers /ask with prompt and attachment options", () => {
+    const askCommand = commandBuilders.find((builder) => builder.name === "ask");
+    expect(askCommand).toBeDefined();
+
+    const json = askCommand!.toJSON();
+    expect(json.options).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "prompt",
+          required: true,
+          type: 3
+        }),
+        expect.objectContaining({
+          name: "attachment1",
+          required: false,
+          type: 11
+        }),
+        expect.objectContaining({
+          name: "attachment2",
+          required: false,
+          type: 11
+        }),
+        expect.objectContaining({
+          name: "attachment3",
+          required: false,
+          type: 11
+        }),
+        expect.objectContaining({
+          name: "attachment4",
+          required: false,
+          type: 11
+        }),
+        expect.objectContaining({
+          name: "attachment5",
+          required: false,
+          type: 11
+        })
+      ])
+    );
+  });
+
   it("registers /install with allowlisted and apt package options", () => {
     const installCommand = commandBuilders.find((builder) => builder.name === "install");
     expect(installCommand).toBeDefined();

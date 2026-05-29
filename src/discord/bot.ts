@@ -62,6 +62,13 @@ import { buildAptPackageId, getAptPackageSpec, isAptPackageId } from "../service
 import { createRequestWorktree, deleteRequestBranch, RequestWorktreeError } from "../services/requestWorktreeService.js";
 import { MemPalaceClient } from "../services/memPalaceClient.js";
 import { createDraftPullRequest, PullRequestServiceError } from "../services/pullRequestService.js";
+import {
+  AttachmentError,
+  buildAttachmentSummary,
+  processAttachments,
+  validateAttachments,
+  type PendingAttachment
+} from "../services/attachmentService.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
 const PR_TITLE_LIMIT = 120;
@@ -307,7 +314,8 @@ function formatCleanupReply(
 
 function parseThreadEntry(
   content: string,
-  isBot: boolean
+  isBot: boolean,
+  attachments: PendingAttachment[] = []
 ): { role: "user" | "assistant"; text: string } | null {
   if (isBot) {
     // Initial request summary: "Request by @...\n\n**Prompt**\n<text>"
@@ -333,8 +341,32 @@ function parseThreadEntry(
     // Other bot messages are noise ("... execution started.", warnings, etc.)
     return null;
   }
-  const text = content.trim();
+  const text = formatUserThreadEntry(content, attachments);
   return text ? { role: "user", text } : null;
+}
+
+function pendingAttachmentsFromMessage(message: { attachments?: Pick<Message["attachments"], "size" | "values"> }): PendingAttachment[] {
+  if (!message.attachments || message.attachments.size === 0) return [];
+
+  return [...message.attachments.values()].map((attachment) => ({
+    id: attachment.id,
+    name: attachment.name ?? `attachment-${attachment.id}`,
+    url: attachment.url,
+    size: attachment.size,
+    contentType: attachment.contentType,
+  }));
+}
+
+function formatUserThreadEntry(content: string, attachments: PendingAttachment[]): string {
+  const text = content.trim() || (attachments.length > 0 ? "Please inspect the attached file(s)." : "");
+  if (!text) return "";
+  if (attachments.length === 0) return text;
+  return `${text}\n\n**Attachments**\n${buildAttachmentSummary(attachments)}`;
+}
+
+function matchesNewUserMessage(entryText: string, newMessageContent: string): boolean {
+  const normalized = newMessageContent.trim();
+  return entryText === normalized || entryText.startsWith(`${normalized}\n\n**Attachments**\n`);
 }
 
 export class ActuariusBot {
@@ -489,7 +521,32 @@ export class ActuariusBot {
     if (!repo) return;
 
     const prompt = message.content.trim();
-    if (!prompt) return;
+    const discordAttachments = message.attachments.size > 0 ? [...message.attachments.values()] : [];
+
+    if (!prompt && discordAttachments.length === 0) return;
+
+    const pendingAttachments: PendingAttachment[] = discordAttachments.map((a) => ({
+      id: a.id,
+      name: a.name ?? `attachment-${a.id}`,
+      url: a.url,
+      size: a.size,
+      contentType: a.contentType,
+    }));
+
+    if (pendingAttachments.length > 0) {
+      const error = validateAttachments(pendingAttachments, {
+        maxCount: this.config.attachmentMaxCount,
+        maxFileSize: this.config.attachmentMaxFileSize,
+        maxTotalSize: this.config.attachmentMaxTotalSize,
+        maxInlineText: this.config.attachmentMaxInlineText,
+      });
+      if (error) {
+        await message.reply(error);
+        return;
+      }
+    }
+
+    const effectivePrompt = prompt || "Please inspect the attached file(s).";
 
     const modelConfig = this.db.getGuildModelConfig(message.guildId);
     const provider: AiProvider = modelConfig?.provider ?? "claude";
@@ -501,22 +558,35 @@ export class ActuariusBot {
       channelId: repo.channel_id,
       threadId: message.channelId,
       userId: message.author.id,
-      prompt,
+      prompt: effectivePrompt,
       status: "queued"
     });
 
     this.requestQueue.enqueue(message.guildId, async () => {
-      await this.runQueuedRequest({
+      const followUpInput: {
+        requestId: number;
+        threadId: string;
+        repoId: number;
+        repo: { owner: string; repo: string; fullName: string };
+        prompt: string;
+        provider: AiProvider;
+        model?: string;
+        existingWorktreePath: string;
+        existingBranchName?: string;
+        attachments?: PendingAttachment[];
+      } = {
         requestId: request.id,
         threadId: message.channelId,
         repoId: repo.id,
         repo: { owner: repo.owner, repo: repo.repo, fullName: repo.full_name },
-        prompt,
+        prompt: effectivePrompt,
         provider,
-        ...(model ? { model } : {}),
         existingWorktreePath,
-        ...(latestRequest.branch_name ? { existingBranchName: latestRequest.branch_name } : {})
-      });
+      };
+      if (model) followUpInput.model = model;
+      if (latestRequest.branch_name) followUpInput.existingBranchName = latestRequest.branch_name;
+      if (pendingAttachments.length > 0) followUpInput.attachments = pendingAttachments;
+      await this.runQueuedRequest(followUpInput);
     });
   }
 
@@ -1601,7 +1671,34 @@ export class ActuariusBot {
   }
 
   private async handleAsk(interaction: ChatInputCommandInteraction): Promise<void> {
-    await this.handleRepoCommand(interaction, { label: "request" });
+    const attachments: PendingAttachment[] = [];
+    for (let i = 1; i <= 5; i++) {
+      const att = interaction.options.getAttachment(`attachment${i}`);
+      if (att) {
+        attachments.push({
+          id: att.id,
+          name: att.name ?? `attachment-${i}`,
+          url: att.url,
+          size: att.size,
+          contentType: att.contentType,
+        });
+      }
+    }
+
+    if (attachments.length > 0) {
+      const error = validateAttachments(attachments, {
+        maxCount: this.config.attachmentMaxCount,
+        maxFileSize: this.config.attachmentMaxFileSize,
+        maxTotalSize: this.config.attachmentMaxTotalSize,
+        maxInlineText: this.config.attachmentMaxInlineText,
+      });
+      if (error) {
+        await interaction.reply({ content: error, ephemeral: true });
+        return;
+      }
+    }
+
+    await this.handleRepoCommand(interaction, { label: "request", attachments });
   }
 
   private async handleInstall(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -1738,6 +1835,7 @@ export class ActuariusBot {
       promptTransformer?: (prompt: string) => string;
       rawOutput?: boolean;
       detachWorktree?: boolean;
+      attachments?: PendingAttachment[];
     }
   ): Promise<void> {
     if (!interaction.guild || !interaction.guildId) {
@@ -1794,14 +1892,16 @@ export class ActuariusBot {
       reason: `${options.label} thread for ${repo.full_name} by ${interaction.user.tag}`
     });
 
-    await thread.send(
-      [
-        `Request by <@${interaction.user.id}>`,
-        "",
-        `**Prompt**`,
-        prompt
-      ].join("\n")
-    );
+    const seedLines = [
+      `Request by <@${interaction.user.id}>`,
+      "",
+      `**Prompt**`,
+      prompt
+    ];
+    if (options.attachments && options.attachments.length > 0) {
+      seedLines.push("", "**Attachments**", buildAttachmentSummary(options.attachments));
+    }
+    await thread.send(seedLines.join("\n"));
 
     const request = this.db.createRequest({
       guildId: interaction.guildId,
@@ -1814,22 +1914,32 @@ export class ActuariusBot {
     });
 
     this.requestQueue.enqueue(interaction.guildId, async () => {
-      await this.runQueuedRequest({
+      const queuedInput: {
+        requestId: number;
+        threadId: string;
+        repoId: number;
+        repo: { owner: string; repo: string; fullName: string };
+        prompt: string;
+        provider: AiProvider;
+        model?: string;
+        promptTransformer?: (prompt: string) => string;
+        rawOutput?: boolean;
+        detachWorktree?: boolean;
+        attachments?: PendingAttachment[];
+      } = {
         requestId: request.id,
         threadId: thread.id,
         repoId: repo.id,
-        repo: {
-          owner: repo.owner,
-          repo: repo.repo,
-          fullName: repo.full_name
-        },
+        repo: { owner: repo.owner, repo: repo.repo, fullName: repo.full_name },
         prompt,
         provider,
-        ...(model ? { model } : {}),
-        ...(options.promptTransformer ? { promptTransformer: options.promptTransformer } : {}),
-        ...(options.rawOutput ? { rawOutput: true } : {}),
-        ...(options.detachWorktree ? { detachWorktree: true } : {})
-      });
+      };
+      if (model) queuedInput.model = model;
+      if (options.promptTransformer) queuedInput.promptTransformer = options.promptTransformer;
+      if (options.rawOutput) queuedInput.rawOutput = true;
+      if (options.detachWorktree) queuedInput.detachWorktree = true;
+      if (options.attachments?.length) queuedInput.attachments = options.attachments;
+      await this.runQueuedRequest(queuedInput);
     });
 
     await interaction.editReply(
@@ -2758,6 +2868,7 @@ Output the result of the command or the link to the created issue.`;
     promptTransformer?: (prompt: string) => string;
     rawOutput?: boolean;
     detachWorktree?: boolean;
+    attachments?: PendingAttachment[];
   }): Promise<void> {
     const startedAt = Date.now();
     const providerLabel = AI_PROVIDER_LABELS[input.provider];
@@ -2835,6 +2946,23 @@ Output the result of the command or the link to the created issue.`;
       effectivePrompt = `Repository: ${input.repo.fullName}\n\n${effectivePrompt}`;
       if (input.promptTransformer && !input.existingWorktreePath) {
         effectivePrompt = input.promptTransformer(effectivePrompt);
+      }
+
+      if (input.attachments && input.attachments.length > 0) {
+        const { promptSection } = await processAttachments(
+          input.attachments,
+          input.requestId,
+          worktreePath!,
+          {
+            maxCount: this.config.attachmentMaxCount,
+            maxFileSize: this.config.attachmentMaxFileSize,
+            maxTotalSize: this.config.attachmentMaxTotalSize,
+            maxInlineText: this.config.attachmentMaxInlineText,
+          }
+        );
+        if (promptSection) {
+          effectivePrompt += "\n\n" + promptSection;
+        }
       }
       this.logger.info(
         {
@@ -2948,6 +3076,10 @@ Output the result of the command or the link to the created issue.`;
       return error.message;
     }
 
+    if (error instanceof AttachmentError) {
+      return error.message;
+    }
+
     if (error instanceof Error) {
       return error.message;
     }
@@ -2971,7 +3103,7 @@ Output the result of the command or the link to the created issue.`;
     const history: Array<{ role: "user" | "assistant"; text: string }> = [];
     for (const msg of sorted) {
       const isBot = msg.author.id === this.client.user?.id;
-      const entry = parseThreadEntry(msg.content, isBot);
+      const entry = parseThreadEntry(msg.content, isBot, isBot ? [] : pendingAttachmentsFromMessage(msg));
       if (!entry) continue;
       const prev = history[history.length - 1];
       if (prev && prev.role === "assistant" && entry.role === "assistant") {
@@ -2994,6 +3126,14 @@ Output the result of the command or the link to the created issue.`;
       lines.push(`[${entry.role === "user" ? "User" : "Assistant"}]: ${entry.text}`);
       lines.push("");
     }
+
+    const lastEntry = history[history.length - 1];
+    const normalizedNewMessage = newMessageContent.trim();
+    if (lastEntry?.role !== "user" || !matchesNewUserMessage(lastEntry.text, normalizedNewMessage)) {
+      lines.push(`[User]: ${normalizedNewMessage}`);
+      lines.push("");
+    }
+
     return lines.join("\n").trim();
   }
 
@@ -3004,7 +3144,7 @@ Output the result of the command or the link to the created issue.`;
     const lines: string[] = [];
     for (const msg of sorted) {
       const isBot = msg.author.id === this.client.user?.id;
-      const entry = parseThreadEntry(msg.content, isBot);
+      const entry = parseThreadEntry(msg.content, isBot, isBot ? [] : pendingAttachmentsFromMessage(msg));
       if (!entry) continue;
       lines.push(`[${entry.role === "user" ? "User" : "Assistant"}]: ${entry.text}`);
       lines.push("");

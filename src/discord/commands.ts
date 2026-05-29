@@ -63,7 +63,12 @@ export const commandBuilders = [
   new SlashCommandBuilder()
     .setName("ask")
     .setDescription("Create a request thread in the connected repo channel.")
-    .addStringOption((option) => option.setName("prompt").setDescription("Request text for this thread.").setRequired(true)),
+    .addStringOption((option) => option.setName("prompt").setDescription("Request text for this thread.").setRequired(true))
+    .addAttachmentOption((option) => option.setName("attachment1").setDescription("Optional file attachment").setRequired(false))
+    .addAttachmentOption((option) => option.setName("attachment2").setDescription("Optional file attachment").setRequired(false))
+    .addAttachmentOption((option) => option.setName("attachment3").setDescription("Optional file attachment").setRequired(false))
+    .addAttachmentOption((option) => option.setName("attachment4").setDescription("Optional file attachment").setRequired(false))
+    .addAttachmentOption((option) => option.setName("attachment5").setDescription("Optional file attachment").setRequired(false)),
   new SlashCommandBuilder()
     .setName("plan")
     .setDescription("Plan with a deep model, implement with a flash model, then stop for review.")
