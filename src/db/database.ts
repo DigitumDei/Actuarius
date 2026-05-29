@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { z } from "zod";
 import type {
   AiProvider,
   GuildModelConfigRow,
@@ -14,6 +15,17 @@ import type {
   ReviewRunStatus,
   ReviewVerdict
 } from "./types.js";
+import {
+  guildModelConfigRowSchema,
+  guildReviewConfigRowRawSchema,
+  installRequestRowRawSchema,
+  modelHistoryRowSchema,
+  repoRowRawSchema,
+  requestRowRawSchema,
+  reviewRunRowRawSchema,
+  tableInfoRowSchema,
+  worktreePathRowSchema,
+} from "./schemas.js";
 
 function toNumber(value: number | bigint): number {
   if (typeof value === "bigint") {
@@ -167,11 +179,9 @@ export class AppDatabase {
       ["implementer_model", "TEXT"]
     ]);
     const existingGuildModelConfigColumns = new Set(
-      (
-        this.db.prepare("PRAGMA table_info(guild_model_config)").all() as Array<{
-          name: string;
-        }>
-      ).map((column) => column.name)
+      z.array(tableInfoRowSchema)
+        .parse(this.db.prepare("PRAGMA table_info(guild_model_config)").all())
+        .map((column) => column.name)
     );
 
     for (const [columnName, columnDefinition] of guildModelConfigColumns) {
@@ -213,11 +223,9 @@ export class AppDatabase {
       ["completed_at", "TEXT"]
     ]);
     const existingInstallRequestColumns = new Set(
-      (
-        this.db.prepare("PRAGMA table_info(install_requests)").all() as Array<{
-          name: string;
-        }>
-      ).map((column) => column.name)
+      z.array(tableInfoRowSchema)
+        .parse(this.db.prepare("PRAGMA table_info(install_requests)").all())
+        .map((column) => column.name)
     );
 
     for (const [columnName, columnDefinition] of installRequestColumns) {
@@ -245,52 +253,58 @@ export class AppDatabase {
 
   public getRepoByFullName(guildId: string, fullName: string): RepoRow | undefined {
     const normalizedFullName = normalizeRepoFullName(fullName);
-    const row = this.db
-      .prepare("SELECT * FROM repos WHERE guild_id = ? AND lower(full_name) = lower(?)")
-      .get(guildId, normalizedFullName) as (RepoRow & { id: number | bigint }) | undefined;
+    const raw = repoRowRawSchema.optional().parse(
+      this.db
+        .prepare("SELECT * FROM repos WHERE guild_id = ? AND lower(full_name) = lower(?)")
+        .get(guildId, normalizedFullName)
+    );
 
-    if (!row) {
+    if (!raw) {
       return undefined;
     }
 
     return {
-      ...row,
-      id: toNumber(row.id)
+      ...raw,
+      id: toNumber(raw.id)
     };
   }
 
   public getRepoByChannelId(guildId: string, channelId: string): RepoRow | undefined {
-    const row = this.db
-      .prepare("SELECT * FROM repos WHERE guild_id = ? AND channel_id = ?")
-      .get(guildId, channelId) as (RepoRow & { id: number | bigint }) | undefined;
+    const raw = repoRowRawSchema.optional().parse(
+      this.db
+        .prepare("SELECT * FROM repos WHERE guild_id = ? AND channel_id = ?")
+        .get(guildId, channelId)
+    );
 
-    if (!row) {
+    if (!raw) {
       return undefined;
     }
 
     return {
-      ...row,
-      id: toNumber(row.id)
+      ...raw,
+      id: toNumber(raw.id)
     };
   }
 
   public getRepoById(repoId: number): RepoRow | undefined {
-    const row = this.db.prepare("SELECT * FROM repos WHERE id = ?").get(repoId) as (RepoRow & { id: number | bigint }) | undefined;
+    const raw = repoRowRawSchema.optional().parse(
+      this.db.prepare("SELECT * FROM repos WHERE id = ?").get(repoId)
+    );
 
-    if (!row) {
+    if (!raw) {
       return undefined;
     }
 
     return {
-      ...row,
-      id: toNumber(row.id)
+      ...raw,
+      id: toNumber(raw.id)
     };
   }
 
   public listReposByGuild(guildId: string): RepoRow[] {
-    const rows = this.db.prepare("SELECT * FROM repos WHERE guild_id = ? ORDER BY created_at ASC").all(guildId) as unknown as Array<
-      RepoRow & { id: number | bigint }
-    >;
+    const rows = z.array(repoRowRawSchema).parse(
+      this.db.prepare("SELECT * FROM repos WHERE guild_id = ? ORDER BY created_at ASC").all(guildId)
+    );
 
     return rows.map((row) => ({
       ...row,
@@ -307,25 +321,27 @@ export class AppDatabase {
     channelId: string;
     linkedByUserId: string;
   }): RepoRow {
-    const row = this.db
-      .prepare(
-        `INSERT INTO repos (guild_id, owner, repo, full_name, visibility, channel_id, linked_by_user_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         RETURNING *`
-      )
-      .get(
-        input.guildId,
-        input.owner,
-        input.repo,
-        normalizeRepoFullName(input.fullName),
-        input.visibility,
-        input.channelId,
-        input.linkedByUserId
-      ) as unknown as RepoRow & { id: number | bigint };
+    const raw = repoRowRawSchema.parse(
+      this.db
+        .prepare(
+          `INSERT INTO repos (guild_id, owner, repo, full_name, visibility, channel_id, linked_by_user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           RETURNING *`
+        )
+        .get(
+          input.guildId,
+          input.owner,
+          input.repo,
+          normalizeRepoFullName(input.fullName),
+          input.visibility,
+          input.channelId,
+          input.linkedByUserId
+        )
+    );
 
     return {
-      ...row,
-      id: toNumber(row.id)
+      ...raw,
+      id: toNumber(raw.id)
     };
   }
 
@@ -338,78 +354,69 @@ export class AppDatabase {
     prompt: string;
     status: RequestStatus;
   }): RequestRow {
-    const row = this.db
-      .prepare(
-        `INSERT INTO requests (guild_id, repo_id, channel_id, thread_id, user_id, prompt, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         RETURNING *`
-      )
-      .get(
-        input.guildId,
-        input.repoId,
-        input.channelId,
-        input.threadId,
-        input.userId,
-        input.prompt,
-        input.status
-      ) as unknown as RequestRow & { id: number | bigint; repo_id: number | bigint };
+    const raw = requestRowRawSchema.parse(
+      this.db
+        .prepare(
+          `INSERT INTO requests (guild_id, repo_id, channel_id, thread_id, user_id, prompt, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           RETURNING *`
+        )
+        .get(
+          input.guildId,
+          input.repoId,
+          input.channelId,
+          input.threadId,
+          input.userId,
+          input.prompt,
+          input.status
+        )
+    );
 
     return {
-      ...row,
-      id: toNumber(row.id),
-      repo_id: toNumber(row.repo_id)
+      ...raw,
+      id: toNumber(raw.id),
+      repo_id: toNumber(raw.repo_id)
     };
   }
 
-  private mapRequestRow(row: (RequestRow & { id: number | bigint; repo_id: number | bigint }) | undefined): RequestRow | undefined {
-    if (!row) {
+  private mapRequestRow(raw: z.infer<typeof requestRowRawSchema> | undefined): RequestRow | undefined {
+    if (!raw) {
       return undefined;
     }
 
     return {
-      ...row,
-      id: toNumber(row.id),
-      repo_id: toNumber(row.repo_id)
+      ...raw,
+      id: toNumber(raw.id),
+      repo_id: toNumber(raw.repo_id)
     };
   }
 
   private mapReviewRunRow(
-    row:
-      | (ReviewRunRow & {
-        id: number | bigint;
-        request_id: number | bigint;
-      })
-      | undefined
+    raw: z.infer<typeof reviewRunRowRawSchema> | undefined
   ): ReviewRunRow | undefined {
-    if (!row) {
+    if (!raw) {
       return undefined;
     }
 
     return {
-      ...row,
-      id: toNumber(row.id),
-      request_id: toNumber(row.request_id)
+      ...raw,
+      id: toNumber(raw.id),
+      request_id: toNumber(raw.request_id)
     };
   }
 
   private mapInstallRequestRow(
-    row:
-      | (InstallRequestRow & {
-        id: number | bigint;
-        repo_id: number | bigint;
-        request_id: number | bigint | null;
-      })
-      | undefined
+    raw: z.infer<typeof installRequestRowRawSchema> | undefined
   ): InstallRequestRow | undefined {
-    if (!row) {
+    if (!raw) {
       return undefined;
     }
 
     return {
-      ...row,
-      id: toNumber(row.id),
-      repo_id: toNumber(row.repo_id),
-      request_id: row.request_id === null ? null : toNumber(row.request_id)
+      ...raw,
+      id: toNumber(raw.id),
+      repo_id: toNumber(raw.repo_id),
+      request_id: raw.request_id === null ? null : toNumber(raw.request_id)
     };
   }
 
@@ -422,55 +429,67 @@ export class AppDatabase {
   }
 
   public getWorktreeForThread(threadId: string): string | null {
-    const row = this.db
-      .prepare("SELECT worktree_path FROM requests WHERE thread_id = ? AND worktree_path IS NOT NULL ORDER BY id DESC LIMIT 1")
-      .get(threadId) as { worktree_path: string } | undefined;
+    const row = worktreePathRowSchema.optional().parse(
+      this.db
+        .prepare("SELECT worktree_path FROM requests WHERE thread_id = ? AND worktree_path IS NOT NULL ORDER BY id DESC LIMIT 1")
+        .get(threadId)
+    );
     return row?.worktree_path ?? null;
   }
 
   public getLatestRequestWithWorkspaceByThreadId(threadId: string): RequestRow | undefined {
-    const row = this.db
-      .prepare("SELECT * FROM requests WHERE thread_id = ? AND worktree_path IS NOT NULL ORDER BY id DESC LIMIT 1")
-      .get(threadId) as (RequestRow & { id: number | bigint; repo_id: number | bigint }) | undefined;
+    const raw = requestRowRawSchema.optional().parse(
+      this.db
+        .prepare("SELECT * FROM requests WHERE thread_id = ? AND worktree_path IS NOT NULL ORDER BY id DESC LIMIT 1")
+        .get(threadId)
+    );
 
-    return this.mapRequestRow(row);
+    return this.mapRequestRow(raw);
   }
 
   public getRequestByThreadId(threadId: string): RequestRow | undefined {
-    const row = this.db
-      .prepare("SELECT * FROM requests WHERE thread_id = ? ORDER BY id DESC LIMIT 1")
-      .get(threadId) as (RequestRow & { id: number | bigint; repo_id: number | bigint }) | undefined;
+    const raw = requestRowRawSchema.optional().parse(
+      this.db
+        .prepare("SELECT * FROM requests WHERE thread_id = ? ORDER BY id DESC LIMIT 1")
+        .get(threadId)
+    );
 
-    return this.mapRequestRow(row);
+    return this.mapRequestRow(raw);
   }
 
   public getRequestById(requestId: number): RequestRow | undefined {
-    const row = this.db
-      .prepare("SELECT * FROM requests WHERE id = ?")
-      .get(requestId) as (RequestRow & { id: number | bigint; repo_id: number | bigint }) | undefined;
+    const raw = requestRowRawSchema.optional().parse(
+      this.db
+        .prepare("SELECT * FROM requests WHERE id = ?")
+        .get(requestId)
+    );
 
-    return this.mapRequestRow(row);
+    return this.mapRequestRow(raw);
   }
 
   public getGuildModelConfig(guildId: string): GuildModelConfigRow | undefined {
-    return this.db
-      .prepare("SELECT * FROM guild_model_config WHERE guild_id = ?")
-      .get(guildId) as GuildModelConfigRow | undefined;
+    return guildModelConfigRowSchema.optional().parse(
+      this.db
+        .prepare("SELECT * FROM guild_model_config WHERE guild_id = ?")
+        .get(guildId)
+    );
   }
 
   public setGuildModelConfig(guildId: string, provider: AiProvider, model: string | null, updatedByUserId: string): GuildModelConfigRow {
-    return this.db
-      .prepare(
-        `INSERT INTO guild_model_config (guild_id, provider, model, updated_by_user_id)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(guild_id) DO UPDATE
-         SET provider = excluded.provider,
-             model = excluded.model,
-             updated_by_user_id = excluded.updated_by_user_id,
-             updated_at = CURRENT_TIMESTAMP
-         RETURNING *`
-      )
-      .get(guildId, provider, model, updatedByUserId) as unknown as GuildModelConfigRow;
+    return guildModelConfigRowSchema.parse(
+      this.db
+        .prepare(
+          `INSERT INTO guild_model_config (guild_id, provider, model, updated_by_user_id)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(guild_id) DO UPDATE
+           SET provider = excluded.provider,
+               model = excluded.model,
+               updated_by_user_id = excluded.updated_by_user_id,
+               updated_at = CURRENT_TIMESTAMP
+           RETURNING *`
+        )
+        .get(guildId, provider, model, updatedByUserId)
+    );
   }
 
   public setGuildRoleModelConfig(
@@ -483,45 +502,65 @@ export class AppDatabase {
     const providerColumn = role === "planner" ? "planner_provider" : "implementer_provider";
     const modelColumn = role === "planner" ? "planner_model" : "implementer_model";
 
-    return this.db
-      .prepare(
-        `INSERT INTO guild_model_config (
-           guild_id,
-           provider,
-           model,
-           ${providerColumn},
-           ${modelColumn},
-           updated_by_user_id
-         )
-         VALUES (?, 'claude', NULL, ?, ?, ?)
-         ON CONFLICT(guild_id) DO UPDATE
-         SET ${providerColumn} = excluded.${providerColumn},
-             ${modelColumn} = excluded.${modelColumn},
-             updated_by_user_id = excluded.updated_by_user_id,
-             updated_at = CURRENT_TIMESTAMP
-         RETURNING *`
-      )
-      .get(guildId, provider, model, updatedByUserId) as unknown as GuildModelConfigRow;
+    return guildModelConfigRowSchema.parse(
+      this.db
+        .prepare(
+          `INSERT INTO guild_model_config (
+             guild_id,
+             provider,
+             model,
+             ${providerColumn},
+             ${modelColumn},
+             updated_by_user_id
+           )
+           VALUES (?, 'claude', NULL, ?, ?, ?)
+           ON CONFLICT(guild_id) DO UPDATE
+           SET ${providerColumn} = excluded.${providerColumn},
+               ${modelColumn} = excluded.${modelColumn},
+               updated_by_user_id = excluded.updated_by_user_id,
+               updated_at = CURRENT_TIMESTAMP
+           RETURNING *`
+        )
+        .get(guildId, provider, model, updatedByUserId)
+    );
   }
 
   public getGuildReviewConfig(guildId: string): GuildReviewConfigRow | undefined {
-    return this.db
-      .prepare("SELECT * FROM guild_review_config WHERE guild_id = ?")
-      .get(guildId) as GuildReviewConfigRow | undefined;
+    const raw = guildReviewConfigRowRawSchema.optional().parse(
+      this.db
+        .prepare("SELECT * FROM guild_review_config WHERE guild_id = ?")
+        .get(guildId)
+    );
+
+    if (!raw) {
+      return undefined;
+    }
+
+    return {
+      ...raw,
+      rounds: toNumber(raw.rounds)
+    };
   }
 
   public setGuildReviewConfig(guildId: string, rounds: number, updatedByUserId: string): GuildReviewConfigRow {
-    return this.db
-      .prepare(
-        `INSERT INTO guild_review_config (guild_id, rounds, updated_by_user_id)
-         VALUES (?, ?, ?)
-         ON CONFLICT(guild_id) DO UPDATE
-         SET rounds = excluded.rounds,
-             updated_by_user_id = excluded.updated_by_user_id,
-             updated_at = CURRENT_TIMESTAMP
-         RETURNING *`
-      )
-      .get(guildId, rounds, updatedByUserId) as unknown as GuildReviewConfigRow;
+    const raw = guildReviewConfigRowRawSchema.parse(
+      this.db
+        .prepare(
+          `INSERT INTO guild_review_config (guild_id, rounds, updated_by_user_id)
+           VALUES (?, ?, ?)
+           ON CONFLICT(guild_id) DO UPDATE
+           SET rounds = excluded.rounds,
+               updated_by_user_id = excluded.updated_by_user_id,
+               updated_at = CURRENT_TIMESTAMP
+           RETURNING *`
+        )
+        .get(guildId, rounds, updatedByUserId)
+    );
+
+    return {
+      ...raw,
+      rounds: toNumber(raw.rounds)
+    };
   }
 
   public addModelToHistory(provider: AiProvider, model: string): void {
@@ -554,9 +593,11 @@ export class AppDatabase {
   }
 
   public getModelHistory(provider: AiProvider): string[] {
-    const rows = this.db
-      .prepare("SELECT model FROM model_history WHERE provider = ? ORDER BY used_at DESC LIMIT 3")
-      .all(provider) as Array<{ model: string }>;
+    const rows = z.array(modelHistoryRowSchema).parse(
+      this.db
+        .prepare("SELECT model FROM model_history WHERE provider = ? ORDER BY used_at DESC LIMIT 3")
+        .all(provider)
+    );
     return rows.map((row) => row.model);
   }
 
@@ -569,23 +610,25 @@ export class AppDatabase {
     diffBase: string;
     diffHead: string;
   }): ReviewRunRow {
-    const row = this.db
-      .prepare(
-        `INSERT INTO review_runs (request_id, thread_id, branch_name, status, config_json, diff_base, diff_head)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         RETURNING *`
-      )
-      .get(
-        input.requestId,
-        input.threadId,
-        input.branchName,
-        input.status,
-        input.configJson,
-        input.diffBase,
-        input.diffHead
-      ) as unknown as ReviewRunRow & { id: number | bigint; request_id: number | bigint };
+    const raw = reviewRunRowRawSchema.parse(
+      this.db
+        .prepare(
+          `INSERT INTO review_runs (request_id, thread_id, branch_name, status, config_json, diff_base, diff_head)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           RETURNING *`
+        )
+        .get(
+          input.requestId,
+          input.threadId,
+          input.branchName,
+          input.status,
+          input.configJson,
+          input.diffBase,
+          input.diffHead
+        )
+    );
 
-    return this.mapReviewRunRow(row)!;
+    return this.mapReviewRunRow(raw)!;
   }
 
   public completeReviewRun(input: {
@@ -618,22 +661,26 @@ export class AppDatabase {
   }
 
   public getLatestReviewRunForRequest(requestId: number): ReviewRunRow | undefined {
-    const row = this.db
-      .prepare("SELECT * FROM review_runs WHERE request_id = ? ORDER BY id DESC LIMIT 1")
-      .get(requestId) as (ReviewRunRow & { id: number | bigint; request_id: number | bigint }) | undefined;
+    const raw = reviewRunRowRawSchema.optional().parse(
+      this.db
+        .prepare("SELECT * FROM review_runs WHERE request_id = ? ORDER BY id DESC LIMIT 1")
+        .get(requestId)
+    );
 
-    return this.mapReviewRunRow(row);
+    return this.mapReviewRunRow(raw);
   }
 
   public getLatestCompletedReviewRunForBranch(requestId: number, branchName: string): ReviewRunRow | undefined {
-    const row = this.db
-      .prepare(
-        `SELECT * FROM review_runs
-         WHERE request_id = ? AND branch_name = ? AND status = 'completed'
-         ORDER BY id DESC
-         LIMIT 1`
-      )
-      .get(requestId, branchName) as (ReviewRunRow & { id: number | bigint; request_id: number | bigint }) | undefined;
+    const row = reviewRunRowRawSchema.optional().parse(
+      this.db
+        .prepare(
+          `SELECT * FROM review_runs
+           WHERE request_id = ? AND branch_name = ? AND status = 'completed'
+           ORDER BY id DESC
+           LIMIT 1`
+        )
+        .get(requestId, branchName)
+    );
 
     return this.mapReviewRunRow(row);
   }
@@ -651,43 +698,41 @@ export class AppDatabase {
     approvedByUserId?: string | null;
     installRoot: string;
   }): InstallRequestRow {
-    const row = this.db
-      .prepare(
-        `INSERT INTO install_requests (
-          guild_id,
-          repo_id,
-          request_id,
-          thread_id,
-          package_id,
-          package_version,
-          scope,
-          status,
-          requested_by_user_id,
-          approved_by_user_id,
-          install_root
+    const raw = installRequestRowRawSchema.parse(
+      this.db
+        .prepare(
+          `INSERT INTO install_requests (
+            guild_id,
+            repo_id,
+            request_id,
+            thread_id,
+            package_id,
+            package_version,
+            scope,
+            status,
+            requested_by_user_id,
+            approved_by_user_id,
+            install_root
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          RETURNING *`
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        RETURNING *`
-      )
-      .get(
-        input.guildId,
-        input.repoId,
-        input.requestId ?? null,
-        input.threadId ?? null,
-        input.packageId,
-        input.packageVersion,
-        input.scope,
-        input.status,
-        input.requestedByUserId,
-        input.approvedByUserId ?? null,
-        input.installRoot
-      ) as unknown as InstallRequestRow & {
-        id: number | bigint;
-        repo_id: number | bigint;
-        request_id: number | bigint | null;
-      };
+        .get(
+          input.guildId,
+          input.repoId,
+          input.requestId ?? null,
+          input.threadId ?? null,
+          input.packageId,
+          input.packageVersion,
+          input.scope,
+          input.status,
+          input.requestedByUserId,
+          input.approvedByUserId ?? null,
+          input.installRoot
+        )
+    );
 
-    return this.mapInstallRequestRow(row)!;
+    return this.mapInstallRequestRow(raw)!;
   }
 
   public updateInstallRequest(input: {
@@ -726,56 +771,50 @@ export class AppDatabase {
   }
 
   public getInstallRequestById(installRequestId: number): InstallRequestRow | undefined {
-    const row = this.db
-      .prepare("SELECT * FROM install_requests WHERE id = ?")
-      .get(installRequestId) as (InstallRequestRow & {
-        id: number | bigint;
-        repo_id: number | bigint;
-        request_id: number | bigint | null;
-      }) | undefined;
+    const raw = installRequestRowRawSchema.optional().parse(
+      this.db
+        .prepare("SELECT * FROM install_requests WHERE id = ?")
+        .get(installRequestId)
+    );
 
-    return this.mapInstallRequestRow(row);
+    return this.mapInstallRequestRow(raw);
   }
 
   public getActiveInstallRequestByRoot(installRoot: string): InstallRequestRow | undefined {
-    const row = this.db
-      .prepare(
-        `SELECT *
-         FROM install_requests
-         WHERE install_root = ?
-           AND status IN ('approved', 'running')
-         ORDER BY id DESC
-         LIMIT 1`
-      )
-      .get(installRoot) as (InstallRequestRow & {
-      id: number | bigint;
-      repo_id: number | bigint;
-      request_id: number | bigint | null;
-    }) | undefined;
+    const raw = installRequestRowRawSchema.optional().parse(
+      this.db
+        .prepare(
+          `SELECT *
+           FROM install_requests
+           WHERE install_root = ?
+             AND status IN ('approved', 'running')
+           ORDER BY id DESC
+           LIMIT 1`
+        )
+        .get(installRoot)
+    );
 
-    return this.mapInstallRequestRow(row);
+    return this.mapInstallRequestRow(raw);
   }
 
   public listSuccessfulInstallRequestsForScope(input: {
     repoId: number;
     threadId?: string | null;
   }): InstallRequestRow[] {
-    const rows = this.db
-      .prepare(
-        `SELECT *
-         FROM install_requests
-         WHERE status = 'succeeded'
-           AND (
-             (scope = 'repo' AND repo_id = ?)
-             OR (scope = 'request' AND thread_id = ?)
-           )
-         ORDER BY id ASC`
-      )
-      .all(input.repoId, input.threadId ?? null) as unknown as Array<InstallRequestRow & {
-      id: number | bigint;
-      repo_id: number | bigint;
-      request_id: number | bigint | null;
-    }>;
+    const rows = z.array(installRequestRowRawSchema).parse(
+      this.db
+        .prepare(
+          `SELECT *
+           FROM install_requests
+           WHERE status = 'succeeded'
+             AND (
+               (scope = 'repo' AND repo_id = ?)
+               OR (scope = 'request' AND thread_id = ?)
+             )
+           ORDER BY id ASC`
+        )
+        .all(input.repoId, input.threadId ?? null)
+    );
 
     return rows
       .map((row) => this.mapInstallRequestRow(row))
