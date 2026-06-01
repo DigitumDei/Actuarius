@@ -2567,24 +2567,25 @@ Output the result of the command or the link to the created issue.`;
     const branchName: string = latestRequest.branch_name;
     const sourceRequestId = latestRequest.id;
 
-    await interaction.deferReply({ ephemeral: true });
-
-    const roles = await this.resolvePlanRoleModels(interaction.guildId);
-
     let revisionRequestId: number | null = null;
+    let roles: Awaited<ReturnType<typeof this.resolvePlanRoleModels>>;
     try {
-      const revisionRequest = this.db.createRequest({
+      const revisionRequest = this.db.createRequest({ 
         guildId: interaction.guildId,
         repoId: repo.id,
         channelId: parentId,
         threadId: interaction.channelId,
-        userId: interaction.user.id,
+        userId: latestRequest.user_id,
         prompt: latestRequest.prompt,
         status: "queued",
         revisionOfRequestId: sourceRequestId
       });
       revisionRequestId = revisionRequest.id;
       this.db.updateRequestWorkspace(revisionRequest.id, worktreePath, branchName);
+
+      await interaction.deferReply({ ephemeral: true });
+
+      roles = await this.resolvePlanRoleModels(interaction.guildId);
 
       this.requestQueue.enqueue(interaction.guildId, async () => {
         await this.runReviseRequest({
