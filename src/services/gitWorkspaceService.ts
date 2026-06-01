@@ -165,6 +165,24 @@ async function runGitDiffWithOverflowFallback(args: string[], cwd: string): Prom
   }
 }
 
+async function runGitNoIndexDiffWithOverflowFallback(args: string[], cwd: string): Promise<string> {
+  try {
+    const result = await runGitWithOutput(args, { cwd });
+    return result.stdout;
+  } catch (error) {
+    const spawnError = error as { code?: string; message?: string; stdout?: string };
+    if (spawnError.code === "EMSGSIZE") {
+      return clipOverflowedDiff(spawnError.stdout ?? "");
+    }
+
+    if ((spawnError.stdout ?? "").length > 0 && (spawnError.message ?? "").includes("code 1")) {
+      return spawnError.stdout ?? "";
+    }
+
+    throw error;
+  }
+}
+
 function isMissingRemoteRefError(message: string): boolean {
   const lowered = message.toLowerCase();
   return lowered.includes("couldn't find remote ref") || lowered.includes("remote ref does not exist");
@@ -498,7 +516,27 @@ export async function getReviewDiff(
 
 export async function getDiffSinceRef(repoPath: string, baseRef: string): Promise<string> {
   try {
-    return await runGitDiffWithOverflowFallback(["diff", baseRef], repoPath);
+    const [trackedDiff, untrackedResult] = await Promise.all([
+      runGitDiffWithOverflowFallback(["diff", baseRef], repoPath),
+      runGitWithOutput(["ls-files", "--others", "--exclude-standard", "-z"], { cwd: repoPath })
+    ]);
+
+    const untrackedFiles = untrackedResult.stdout
+      .split("\0")
+      .map((path) => path.trim())
+      .filter(Boolean);
+
+    if (untrackedFiles.length === 0) {
+      return trackedDiff;
+    }
+
+    const untrackedDiffs = await Promise.all(
+      untrackedFiles.map((path) => runGitNoIndexDiffWithOverflowFallback(["diff", "--no-index", "--", "/dev/null", path], repoPath))
+    );
+
+    return [trackedDiff.trimEnd(), ...untrackedDiffs.map((diff) => diff.trimEnd()).filter(Boolean)]
+      .filter(Boolean)
+      .join("\n");
   } catch (error) {
     if (error instanceof GitWorkspaceError) {
       throw error;

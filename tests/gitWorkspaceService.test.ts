@@ -198,13 +198,49 @@ describe("gitWorkspaceService", () => {
   });
 
   it("returns a diff since a given ref", async () => {
-    mockSpawnCollect.mockResolvedValueOnce({ stdout: "diff --git a/src/index.ts b/src/index.ts\n+new code", stderr: "" });
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "diff --git a/src/index.ts b/src/index.ts\n+new code", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" });
 
     await expect(getDiffSinceRef("/tmp/repo", "abc123")).resolves.toBe("diff --git a/src/index.ts b/src/index.ts\n+new code");
 
-    expect(mockSpawnCollect).toHaveBeenCalledWith(
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(
+      1,
       "git",
       ["diff", "abc123"],
+      expect.objectContaining({ cwd: "/tmp/repo" })
+    );
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(
+      2,
+      "git",
+      ["ls-files", "--others", "--exclude-standard", "-z"],
+      expect.objectContaining({ cwd: "/tmp/repo" })
+    );
+  });
+
+  it("includes untracked files in a diff since a given ref", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "diff --git a/src/index.ts b/src/index.ts\n+tracked", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "src/new.ts\0tests/new.test.ts\0", stderr: "" })
+      .mockRejectedValueOnce(Object.assign(new Error("Process exited with code 1"), {
+        stdout: "diff --git a/src/new.ts b/src/new.ts\n+new source",
+        stderr: ""
+      }))
+      .mockRejectedValueOnce(Object.assign(new Error("Process exited with code 1"), {
+        stdout: "diff --git a/tests/new.test.ts b/tests/new.test.ts\n+new test",
+        stderr: ""
+      }));
+
+    await expect(getDiffSinceRef("/tmp/repo", "abc123")).resolves.toBe([
+      "diff --git a/src/index.ts b/src/index.ts\n+tracked",
+      "diff --git a/src/new.ts b/src/new.ts\n+new source",
+      "diff --git a/tests/new.test.ts b/tests/new.test.ts\n+new test"
+    ].join("\n"));
+
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(
+      3,
+      "git",
+      ["diff", "--no-index", "--", "/dev/null", "src/new.ts"],
       expect.objectContaining({ cwd: "/tmp/repo" })
     );
   });
@@ -214,7 +250,9 @@ describe("gitWorkspaceService", () => {
     overflowError.code = "EMSGSIZE";
     overflowError.stdout = "diff --git a/src/index.ts b/src/index.ts\n+very large output";
 
-    mockSpawnCollect.mockRejectedValueOnce(overflowError);
+    mockSpawnCollect
+      .mockRejectedValueOnce(overflowError)
+      .mockResolvedValueOnce({ stdout: "", stderr: "" });
 
     await expect(getDiffSinceRef("/tmp/repo", "abc123")).resolves.toBe(
       "diff --git a/src/index.ts b/src/index.ts\n+very large output\n...(truncated after git diff exceeded maxBuffer)"
@@ -223,7 +261,9 @@ describe("gitWorkspaceService", () => {
 
   it("maps git ENOENT to GitWorkspaceError in getDiffSinceRef", async () => {
     const error = Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" });
-    mockSpawnCollect.mockRejectedValueOnce(error);
+    mockSpawnCollect
+      .mockRejectedValueOnce(error)
+      .mockResolvedValueOnce({ stdout: "", stderr: "" });
 
     await expect(getDiffSinceRef("/tmp/repo", "abc123")).rejects.toMatchObject({
       code: "GIT_UNAVAILABLE",

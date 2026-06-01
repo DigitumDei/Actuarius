@@ -1,4 +1,4 @@
-import type { Logger } from "pino";
+import type { AiProvider } from "../db/types.js";
 
 export interface IterativePlanTask {
   title: string;
@@ -22,14 +22,12 @@ export interface IterativeTaskLoopInput {
   repoFullName: string;
   worktreePath: string;
   threadChannel: { send: (content: string) => Promise<unknown> };
-  plannerProvider: string;
+  plannerProvider: AiProvider;
   plannerModel: string | undefined;
-  implementerProvider: string;
+  implementerProvider: AiProvider;
   implementerModel: string | undefined;
-  plannerLabel: string;
-  implementerLabel: string;
   runProviderText: (input: {
-    provider: string;
+    provider: AiProvider;
     prompt: string;
     cwd: string;
     timeoutMs: number;
@@ -38,12 +36,25 @@ export interface IterativeTaskLoopInput {
   }) => Promise<string>;
   timeoutMs: number;
   env: NodeJS.ProcessEnv | undefined;
-  logger: Logger;
   getHeadSha: (repoPath: string, ref?: string) => Promise<string>;
   getDiffSinceRef: (repoPath: string, baseRef: string) => Promise<string>;
 }
 
 const MAX_TWEAKS_PER_TASK = 3;
+const TASK_TITLE_MESSAGE_LIMIT = 160;
+
+function formatTaskTitleForMessage(title: string): string {
+  const singleLine = title.replace(/\s+/g, " ").trim();
+  if (singleLine.length <= TASK_TITLE_MESSAGE_LIMIT) {
+    return singleLine;
+  }
+  return `${singleLine.slice(0, TASK_TITLE_MESSAGE_LIMIT - 3).trimEnd()}...`;
+}
+
+function isApprovedVerification(output: string): boolean {
+  const firstLine = output.trim().split("\n")[0]?.trim() ?? "";
+  return /\bAPPROVED\b/iu.test(firstLine);
+}
 
 export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promise<{
   taskResults: IterativeTaskOutput[];
@@ -60,12 +71,12 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
     let implementerOutput = "";
     let diff = "";
     let approved = false;
+    const preTaskSha = await input.getHeadSha(worktreePath);
+    const taskTitle = formatTaskTitleForMessage(task.title);
 
     while (tweakAttempts < MAX_TWEAKS_PER_TASK && !approved) {
       const attemptLabel = tweakAttempts > 0 ? ` (tweak ${tweakAttempts}/${MAX_TWEAKS_PER_TASK})` : "";
-      await threadChannel.send(`Task ${taskIndex}/${taskCount}: ${task.title} - implementing${attemptLabel}...`);
-
-      const preTaskSha = await input.getHeadSha(worktreePath);
+      await threadChannel.send(`Task ${taskIndex}/${taskCount}: ${taskTitle} - implementing${attemptLabel}...`);
 
       const completedSummaries = taskResults
         .map((r, idx) => `  ${idx + 1}. ${r.title} - ${r.approved ? "approved" : "completed with issues"}`)
@@ -91,6 +102,7 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
         "",
         "Implement this task. Make code changes in this worktree.",
         "Do not create or commit a plan file. Keep changes scoped to the request.",
+        "Commit all changes for this task before responding. If this is a tweak attempt, amend or add commits so HEAD includes the complete task result.",
         priorFeedback
       ].filter(Boolean).join("\n");
 
@@ -105,9 +117,22 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
 
       diff = await input.getDiffSinceRef(worktreePath, preTaskSha);
 
-      await threadChannel.send(`Task ${taskIndex}/${taskCount}: ${task.title} - planner verifying...`);
+      await threadChannel.send(`Task ${taskIndex}/${taskCount}: ${taskTitle} - planner verifying...`);
+
+      const verificationCompletedSummaries = taskResults
+        .map((r, idx) => `  ${idx + 1}. ${r.title} - ${r.approved ? "approved" : "completed with issues"}`)
+        .join("\n");
 
       const verificationPrompt = [
+        `Repository: ${repoFullName}`,
+        "",
+        "Original request:",
+        originalPrompt,
+        "",
+        "Plan overview:",
+        overview,
+        "",
+        verificationCompletedSummaries ? `Completed tasks:\n${verificationCompletedSummaries}\n` : "",
         `Task: ${task.title}`,
         `Description: ${task.description}`,
         "",
@@ -133,16 +158,17 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
       });
 
       lastVerificationOutput = verificationOutput;
-      const firstLine = verificationOutput.trim().split("\n")[0]?.trim().toUpperCase() ?? "";
-      approved = firstLine === "APPROVED";
+      approved = isApprovedVerification(verificationOutput);
 
       if (!approved) {
         tweakAttempts++;
         if (tweakAttempts >= MAX_TWEAKS_PER_TASK) {
           await threadChannel.send(
-            `Task ${taskIndex}/${taskCount}: ${task.title} - max tweaks reached (${MAX_TWEAKS_PER_TASK}). Proceeding to next task.`
+            `Task ${taskIndex}/${taskCount}: ${taskTitle} - max tweaks reached (${MAX_TWEAKS_PER_TASK}). Proceeding to next task.`
           );
         }
+      } else {
+        await threadChannel.send(`Task ${taskIndex}/${taskCount}: ${taskTitle} - approved.`);
       }
     }
 

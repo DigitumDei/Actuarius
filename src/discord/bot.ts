@@ -72,8 +72,7 @@ import {
 } from "../services/attachmentService.js";
 import {
   runIterativeTaskLoop,
-  type IterativePlanTask,
-  type IterativeTaskOutput
+  type IterativePlanTask
 } from "../services/iterativeTaskLoopService.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
@@ -199,30 +198,47 @@ function fitDiscordMessage(lines: string[], truncationNotice: string): string {
 }
 
 const MAX_TASKS = 20;
-const MAX_TWEAKS_PER_TASK = 3;
+const ITERATIVE_TASK_TITLE_LIMIT = 120;
+const ITERATIVE_TASK_DESCRIPTION_LIMIT = 8_000;
+const ITERATIVE_OVERVIEW_LIMIT = 2_000;
 
-function stripMarkdownJsonFence(text: string): string {
+export function stripMarkdownJsonFence(text: string): string {
   const trimmed = text.trim();
-  const jsonMatch = /^```(?:json)?\s*\n?([\s\S]*?)\n?```$/u.exec(trimmed);
+  const jsonMatch = /^```(?:json)?[^\S\r\n]*\r?\n?([\s\S]*?)\r?\n?```/iu.exec(trimmed);
   if (jsonMatch?.[1]) {
     return jsonMatch[1].trim();
   }
   return trimmed;
 }
 
-function parseIterativePlan(text: string): { overview: string; tasks: IterativePlanTask[] } | null {
+function truncateText(text: string, limit: number): string {
+  const normalized = text.trim();
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, limit - 3).trimEnd()}...`;
+}
+
+export function parseIterativePlan(text: string): { overview: string; tasks: IterativePlanTask[] } | null {
   const stripped = stripMarkdownJsonFence(text);
   try {
     const parsed = JSON.parse(stripped) as { overview?: string; tasks?: IterativePlanTask[] };
-    if (!parsed.overview || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
+    if (typeof parsed.overview !== "string" || parsed.overview.trim().length === 0 || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
       return null;
     }
-    const tasks = parsed.tasks.filter((t): t is IterativePlanTask =>
-      typeof t.title === "string" && t.title.length > 0
-      && typeof t.description === "string" && t.description.length > 0
-    );
+    const tasks = parsed.tasks.flatMap((task) => {
+      if (!task || typeof task.title !== "string" || typeof task.description !== "string") {
+        return [];
+      }
+      const title = truncateText(task.title.replace(/\s+/g, " "), ITERATIVE_TASK_TITLE_LIMIT);
+      const description = truncateText(task.description, ITERATIVE_TASK_DESCRIPTION_LIMIT);
+      if (!title || !description) {
+        return [];
+      }
+      return [{ title, description }];
+    });
     if (tasks.length === 0) return null;
-    return { overview: parsed.overview, tasks };
+    return { overview: truncateText(parsed.overview, ITERATIVE_OVERVIEW_LIMIT), tasks };
   } catch {
     return null;
   }
@@ -2805,6 +2821,7 @@ Output the result of the command or the link to the created issue.`;
           `Repository: ${input.repo.fullName}`,
           "",
           "Produce a structured iterative implementation plan for this request.",
+          "Do not edit files. Do not run the implementation. Inspect the codebase as needed and return only the plan JSON.",
           "Return ONLY valid JSON with no markdown formatting, no code fences, no prose outside the JSON.",
           "",
           'The JSON must have this exact shape:',
@@ -2857,7 +2874,7 @@ Output the result of the command or the link to the created issue.`;
       if (input.iterative) {
         const parsed = parseIterativePlan(planText);
         if (!parsed || parsed.tasks.length === 0) {
-          await threadChannel.send("Could not parse iterative plan as JSON. Falling back to single-task implementation.");
+          await threadChannel.send("Could not parse iterative plan as JSON. Running iterative mode with one task containing the planner output.");
         }
 
         let tasks: IterativePlanTask[];
@@ -2875,8 +2892,11 @@ Output the result of the command or the link to the created issue.`;
           tasks = [{ title: "Implement request", description: planText }];
         }
 
-        const taskListSummary = tasks.map((t, i) => `  ${i + 1}. ${t.title}`).join("\n");
-        await threadChannel.send(`Plan completed. ${tasks.length} tasks:\n${taskListSummary}`);
+        const taskListMessage = fitDiscordMessage(
+          [`Plan completed. ${tasks.length} tasks:`, ...tasks.map((t, i) => `  ${i + 1}. ${t.title}`)],
+          "Plan completed, but the task list was too long to display."
+        );
+        await threadChannel.send(taskListMessage);
 
         stage = "iterative-loop";
         const iterativeResult = await runIterativeTaskLoop({
@@ -2890,19 +2910,21 @@ Output the result of the command or the link to the created issue.`;
           plannerModel: input.planner.model,
           implementerProvider: input.implementer.provider,
           implementerModel: input.implementer.model,
-          plannerLabel,
-          implementerLabel,
-          runProviderText: async (opts) => this.runProviderText({ ...opts, provider: opts.provider as AiProvider }),
+          runProviderText: async (opts) => this.runProviderText(opts),
           timeoutMs: this.config.askExecutionTimeoutMs,
           env,
-          logger: this.logger,
           getHeadSha,
           getDiffSinceRef
         });
 
         this.db.updateRequestStatus(input.requestId, "succeeded");
         statusFinalized = true;
-        await threadChannel.send("Plan implementation complete. Run `/review`, then `/pr` once the verdict is `ready_for_pr`.");
+        const approvedCount = iterativeResult.taskResults.filter((result) => result.approved).length;
+        const issueCount = iterativeResult.taskResults.length - approvedCount;
+        const outcomeLine = issueCount > 0
+          ? `Plan implementation complete: ${approvedCount}/${iterativeResult.taskResults.length} tasks approved, ${issueCount} reached max tweaks.`
+          : `Plan implementation complete: ${approvedCount}/${iterativeResult.taskResults.length} tasks approved.`;
+        await threadChannel.send(`${outcomeLine} Run \`/review\`, then \`/pr\` once the verdict is \`ready_for_pr\`.`);
         this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Iterative plan request succeeded");
 
         if (this.memPalace) {
