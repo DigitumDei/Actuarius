@@ -15,6 +15,7 @@ const {
   cleanupDeletedRemoteBranches,
   detectDefaultBranch,
   GitWorkspaceError,
+  getDiffSinceRef,
   getHeadSha,
   getReviewDiff,
   listBranches,
@@ -194,6 +195,40 @@ describe("gitWorkspaceService", () => {
   it("resolves an arbitrary git ref to a sha", async () => {
     mockSpawnCollect.mockResolvedValueOnce({ stdout: "feedface\n", stderr: "" });
     await expect(getHeadSha("/tmp/repo", "feature/x")).resolves.toBe("feedface");
+  });
+
+  it("returns a diff since a given ref", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "diff --git a/src/index.ts b/src/index.ts\n+new code", stderr: "" });
+
+    await expect(getDiffSinceRef("/tmp/repo", "abc123")).resolves.toBe("diff --git a/src/index.ts b/src/index.ts\n+new code");
+
+    expect(mockSpawnCollect).toHaveBeenCalledWith(
+      "git",
+      ["diff", "abc123"],
+      expect.objectContaining({ cwd: "/tmp/repo" })
+    );
+  });
+
+  it("falls back to truncated diff for EMSGSIZE in getDiffSinceRef", async () => {
+    const overflowError = new Error("Process output exceeded maxBuffer") as Error & { code: string; stdout: string };
+    overflowError.code = "EMSGSIZE";
+    overflowError.stdout = "diff --git a/src/index.ts b/src/index.ts\n+very large output";
+
+    mockSpawnCollect.mockRejectedValueOnce(overflowError);
+
+    await expect(getDiffSinceRef("/tmp/repo", "abc123")).resolves.toBe(
+      "diff --git a/src/index.ts b/src/index.ts\n+very large output\n...(truncated after git diff exceeded maxBuffer)"
+    );
+  });
+
+  it("maps git ENOENT to GitWorkspaceError in getDiffSinceRef", async () => {
+    const error = Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" });
+    mockSpawnCollect.mockRejectedValueOnce(error);
+
+    await expect(getDiffSinceRef("/tmp/repo", "abc123")).rejects.toMatchObject({
+      code: "GIT_UNAVAILABLE",
+      name: "GitWorkspaceError"
+    } satisfies Partial<GitWorkspaceError>);
   });
 
   it("pushes a request branch with GitHub credential helper", async () => {

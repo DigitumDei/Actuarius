@@ -495,3 +495,15 @@ export async function getReviewDiff(
     throw new GitWorkspaceError("DIFF_FAILED", message);
   }
 }
+
+export async function getDiffSinceRef(repoPath: string, baseRef: string): Promise<string> {
+  try {
+    return await runGitDiffWithOverflowFallback(["diff", baseRef], repoPath);
+  } catch (error) {
+    if (error instanceof GitWorkspaceError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : `Could not compute diff since ${baseRef}.`;
+    throw new GitWorkspaceError("DIFF_FAILED", message);
+  }
+}

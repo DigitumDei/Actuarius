@@ -72,7 +72,10 @@ export const commandBuilders = [
   new SlashCommandBuilder()
     .setName("plan")
     .setDescription("Plan with a deep model, implement with a flash model, then stop for review.")
-    .addStringOption((option) => option.setName("prompt").setDescription("Request text for the plan-and-implement thread.").setRequired(true)),
+    .addStringOption((option) => option.setName("prompt").setDescription("Request text for the plan-and-implement thread.").setRequired(true))
+    .addBooleanOption((option) =>
+      option.setName("iterative").setDescription("Break the plan into iterative tasks with per-task verification.").setRequired(false)
+    ),
   new SlashCommandBuilder()
     .setName("install")
     .setDescription("Install an allowlisted tool or apt package. Requires Manage Server permission.")

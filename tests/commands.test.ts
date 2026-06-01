@@ -98,6 +98,22 @@ describe("command registration", () => {
     );
   });
 
+  it("registers /plan with optional boolean iterative option", () => {
+    const planCommand = commandBuilders.find((builder) => builder.name === "plan");
+    expect(planCommand).toBeDefined();
+
+    const json = planCommand!.toJSON();
+    expect(json.options).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "iterative",
+          required: false,
+          type: 5
+        })
+      ])
+    );
+  });
+
   it("registers /install with allowlisted and apt package options", () => {
     const installCommand = commandBuilders.find((builder) => builder.name === "install");
     expect(installCommand).toBeDefined();
