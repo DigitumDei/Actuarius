@@ -218,6 +218,15 @@ export const commandBuilders = [
     .setName("review")
     .setDescription("Run adversarial code review for the current request thread."),
   new SlashCommandBuilder()
+    .setName("revise")
+    .setDescription("Revise the existing request branch in the current request thread.")
+    .addStringOption((option) =>
+      option
+        .setName("findings")
+        .setDescription("Optional findings to address. If omitted, the latest review summary is used.")
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
     .setName("pr")
     .setDescription("Push the reviewed request branch and open a draft pull request."),
   new SlashCommandBuilder()
@@ -274,6 +283,7 @@ export type CommandName =
   | "gh-auth-refresh"
   | "delete"
   | "review"
+  | "revise"
   | "pr"
   | "update-clis";
 

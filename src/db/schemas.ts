@@ -46,6 +46,7 @@ export const requestRowRawSchema = z.object({
   status: requestStatusSchema,
   worktree_path: z.string().nullable(),
   branch_name: z.string().nullable(),
+  revision_of_request_id: dbInteger.nullable(),
   created_at: z.string(),
 });
 

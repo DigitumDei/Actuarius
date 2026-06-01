@@ -54,6 +54,45 @@ describe("AppDatabase request workspace state", () => {
     });
   });
 
+  it("round-trips revision_of_request_id through request APIs", () => {
+    const source = db.createRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      channelId: "channel-1",
+      threadId: "thread-revise",
+      userId: "user-1",
+      prompt: "source",
+      status: "succeeded"
+    });
+    db.updateRequestWorkspace(source.id, "/tmp/worktree-revise", "ask/41-123");
+
+    const revision = db.createRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      channelId: "channel-1",
+      threadId: "thread-revise",
+      userId: "user-1",
+      prompt: "source",
+      status: "queued",
+      revisionOfRequestId: source.id
+    });
+    db.updateRequestWorkspace(revision.id, "/tmp/worktree-revise", "ask/41-123");
+
+    expect(revision.revision_of_request_id).toBe(source.id);
+    expect(db.getRequestById(revision.id)).toMatchObject({
+      id: revision.id,
+      revision_of_request_id: source.id
+    });
+    expect(db.getRequestByThreadId("thread-revise")).toMatchObject({
+      id: revision.id,
+      revision_of_request_id: source.id
+    });
+    expect(db.getLatestRequestWithWorkspaceByThreadId("thread-revise")).toMatchObject({
+      id: revision.id,
+      revision_of_request_id: source.id
+    });
+  });
+
   it("retrieves the latest request that still has workspace state", () => {
     const first = db.createRequest({
       guildId: "guild-1",
