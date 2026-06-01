@@ -52,8 +52,9 @@ function formatTaskTitleForMessage(title: string): string {
 }
 
 function isApprovedVerification(output: string): boolean {
-  const firstLine = output.trim().split("\n")[0]?.trim() ?? "";
-  return /\bAPPROVED\b/iu.test(firstLine);
+  const firstLine = output.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ?? "";
+  const normalized = firstLine.replace(/^[*_`~\s]+|[*_`~\s.:-]+$/gu, "");
+  return /^APPROVED$/iu.test(normalized);
 }
 
 export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promise<{
@@ -83,8 +84,8 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
         .join("\n");
 
       const priorFeedback = tweakAttempts > 0
-        ? `\nPrior planner feedback for this task:\n${lastVerificationOutput}`
-        : "";
+        ? ["", "Prior planner feedback for this task:", lastVerificationOutput]
+        : [];
 
       const implementerPrompt = [
         `Repository: ${repoFullName}`,
@@ -95,7 +96,7 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
         "Plan overview:",
         overview,
         "",
-        completedSummaries ? `Completed tasks:\n${completedSummaries}\n` : "",
+        ...(completedSummaries ? [`Completed tasks:\n${completedSummaries}`, ""] : []),
         "Current task to implement:",
         `Title: ${task.title}`,
         `Description: ${task.description}`,
@@ -103,8 +104,8 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
         "Implement this task. Make code changes in this worktree.",
         "Do not create or commit a plan file. Keep changes scoped to the request.",
         "Commit all changes for this task before responding. If this is a tweak attempt, amend or add commits so HEAD includes the complete task result.",
-        priorFeedback
-      ].filter(Boolean).join("\n");
+        ...priorFeedback
+      ].join("\n");
 
       implementerOutput = await input.runProviderText({
         provider: input.implementerProvider,
@@ -119,10 +120,6 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
 
       await threadChannel.send(`Task ${taskIndex}/${taskCount}: ${taskTitle} - planner verifying...`);
 
-      const verificationCompletedSummaries = taskResults
-        .map((r, idx) => `  ${idx + 1}. ${r.title} - ${r.approved ? "approved" : "completed with issues"}`)
-        .join("\n");
-
       const verificationPrompt = [
         `Repository: ${repoFullName}`,
         "",
@@ -132,7 +129,7 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
         "Plan overview:",
         overview,
         "",
-        verificationCompletedSummaries ? `Completed tasks:\n${verificationCompletedSummaries}\n` : "",
+        ...(completedSummaries ? [`Completed tasks:\n${completedSummaries}`, ""] : []),
         `Task: ${task.title}`,
         `Description: ${task.description}`,
         "",

@@ -51,6 +51,17 @@ describe("runIterativeTaskLoop", () => {
     expect(mockRunProviderText).toHaveBeenCalledTimes(4);
   });
 
+  it("handles an empty task list without provider calls", async () => {
+    const result = await runIterativeTaskLoop({
+      ...defaultInput,
+      tasks: []
+    });
+
+    expect(result.taskResults).toEqual([]);
+    expect(mockGetHeadSha).not.toHaveBeenCalled();
+    expect(mockRunProviderText).not.toHaveBeenCalled();
+  });
+
   it("verification approval stops retries", async () => {
     mockRunProviderText
       .mockResolvedValueOnce("implementer output")
@@ -90,7 +101,7 @@ describe("runIterativeTaskLoop", () => {
   it("accepts APPROVED when the first verification line has punctuation or markdown", async () => {
     mockRunProviderText
       .mockResolvedValueOnce("implementer output")
-      .mockResolvedValueOnce("**APPROVED.** Looks good.");
+      .mockResolvedValueOnce("**APPROVED.**\nLooks good.");
 
     const result = await runIterativeTaskLoop({
       ...defaultInput,
@@ -99,6 +110,39 @@ describe("runIterativeTaskLoop", () => {
 
     expect(result.taskResults[0]!.approved).toBe(true);
     expect(result.taskResults[0]!.tweakAttempts).toBe(0);
+  });
+
+  it("does not treat negated approval output as approved", async () => {
+    mockRunProviderText
+      .mockResolvedValueOnce("implementer output 1")
+      .mockResolvedValueOnce("NOT APPROVED - missing error handling")
+      .mockResolvedValueOnce("implementer output 2")
+      .mockResolvedValueOnce("APPROVED");
+
+    const result = await runIterativeTaskLoop({
+      ...defaultInput,
+      tasks: [{ title: "Task 1", description: "First task" }]
+    });
+
+    expect(result.taskResults[0]!.approved).toBe(true);
+    expect(result.taskResults[0]!.tweakAttempts).toBe(1);
+    expect(mockRunProviderText).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not treat qualified approval output as approved", async () => {
+    mockRunProviderText
+      .mockResolvedValueOnce("implementer output 1")
+      .mockResolvedValueOnce("APPROVED in part, but tests are missing")
+      .mockResolvedValueOnce("implementer output 2")
+      .mockResolvedValueOnce("APPROVED");
+
+    const result = await runIterativeTaskLoop({
+      ...defaultInput,
+      tasks: [{ title: "Task 1", description: "First task" }]
+    });
+
+    expect(result.taskResults[0]!.approved).toBe(true);
+    expect(result.taskResults[0]!.tweakAttempts).toBe(1);
   });
 
   it("max tweaks proceeds instead of failing", async () => {
@@ -200,6 +244,22 @@ describe("runIterativeTaskLoop", () => {
     expect(implementerPrompt).toContain("Commit all changes for this task before responding");
   });
 
+  it("preserves blank-line separators in implementer prompts", async () => {
+    mockRunProviderText
+      .mockResolvedValueOnce("impl 1")
+      .mockResolvedValueOnce("APPROVED");
+
+    await runIterativeTaskLoop({
+      ...defaultInput,
+      tasks: [{ title: "Task 1", description: "First task" }]
+    });
+
+    const implementerPrompt = mockRunProviderText.mock.calls[0]![0].prompt;
+    expect(implementerPrompt).toContain("Repository: octocat/hello-world\n\nOriginal request:");
+    expect(implementerPrompt).toContain("Do the thing\n\nPlan overview:");
+    expect(implementerPrompt).toContain("Test overview\n\nCurrent task to implement:");
+  });
+
   it("includes completed task summaries in subsequent implementer prompts", async () => {
     mockRunProviderText
       .mockResolvedValueOnce("impl 1")
@@ -258,6 +318,21 @@ describe("runIterativeTaskLoop", () => {
     }));
   });
 
+  it("omits env from provider calls when env is undefined", async () => {
+    mockRunProviderText
+      .mockResolvedValueOnce("impl 1")
+      .mockResolvedValueOnce("APPROVED");
+
+    await runIterativeTaskLoop({
+      ...defaultInput,
+      tasks: [{ title: "Task 1", description: "First task" }],
+      env: undefined
+    });
+
+    expect(mockRunProviderText.mock.calls[0]![0]).not.toHaveProperty("env");
+    expect(mockRunProviderText.mock.calls[1]![0]).not.toHaveProperty("env");
+  });
+
   it("propagates loop errors", async () => {
     mockGetDiffSinceRef.mockRejectedValueOnce(new Error("diff failed"));
     mockRunProviderText.mockResolvedValueOnce("impl 1");
@@ -266,6 +341,26 @@ describe("runIterativeTaskLoop", () => {
       ...defaultInput,
       tasks: [{ title: "Task 1", description: "First task" }]
     })).rejects.toThrow("diff failed");
+  });
+
+  it("propagates getHeadSha errors before starting a task", async () => {
+    mockGetHeadSha.mockRejectedValueOnce(new Error("head failed"));
+
+    await expect(runIterativeTaskLoop({
+      ...defaultInput,
+      tasks: [{ title: "Task 1", description: "First task" }]
+    })).rejects.toThrow("head failed");
+
+    expect(mockRunProviderText).not.toHaveBeenCalled();
+  });
+
+  it("propagates provider errors inside the loop", async () => {
+    mockRunProviderText.mockRejectedValueOnce(new Error("provider failed"));
+
+    await expect(runIterativeTaskLoop({
+      ...defaultInput,
+      tasks: [{ title: "Task 1", description: "First task" }]
+    })).rejects.toThrow("provider failed");
   });
 
   it("sends task progress messages to the thread channel", async () => {

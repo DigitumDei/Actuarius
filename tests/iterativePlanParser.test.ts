@@ -12,6 +12,17 @@ describe("iterative plan parsing", () => {
     });
   });
 
+  it("ignores unknown top-level JSON fields", () => {
+    expect(parseIterativePlan(JSON.stringify({
+      overview: "Build the feature",
+      tasks: [{ title: "Add service", description: "Implement the service layer" }],
+      extra: "ignored"
+    }))).toEqual({
+      overview: "Build the feature",
+      tasks: [{ title: "Add service", description: "Implement the service layer" }]
+    });
+  });
+
   it("strips json and bare markdown fences", () => {
     expect(stripMarkdownJsonFence("```json\n{\"ok\":true}\n```")).toBe("{\"ok\":true}");
     expect(stripMarkdownJsonFence("```\n{\"ok\":true}\n```")).toBe("{\"ok\":true}");
@@ -24,6 +35,20 @@ describe("iterative plan parsing", () => {
       overview: "Plan",
       tasks: [{ title: "Task", description: "Do it" }]
     });
+  });
+
+  it("strips the first fenced JSON block when leading prose precedes it", () => {
+    const text = "Here is the plan:\n```json\n{\"overview\":\"Plan\",\"tasks\":[{\"title\":\"Task\",\"description\":\"Do it\"}]}\n```\nTrailing note.";
+
+    expect(parseIterativePlan(text)).toEqual({
+      overview: "Plan",
+      tasks: [{ title: "Task", description: "Do it" }]
+    });
+  });
+
+  it("returns null for non-object JSON primitives", () => {
+    expect(parseIterativePlan("null")).toBeNull();
+    expect(parseIterativePlan("\"hello\"")).toBeNull();
   });
 
   it("returns null for empty tasks or malformed task entries", () => {

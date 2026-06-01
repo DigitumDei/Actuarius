@@ -45,6 +45,7 @@ import {
   ensureRepoCheckedOutToMaster,
   getDiffSinceRef,
   getHeadSha,
+  hasUncommittedChanges,
   listBranches,
   pushBranch
 } from "../services/gitWorkspaceService.js";
@@ -204,7 +205,7 @@ const ITERATIVE_OVERVIEW_LIMIT = 2_000;
 
 export function stripMarkdownJsonFence(text: string): string {
   const trimmed = text.trim();
-  const jsonMatch = /^```(?:json)?[^\S\r\n]*\r?\n?([\s\S]*?)\r?\n?```/iu.exec(trimmed);
+  const jsonMatch = /```(?:json)?[^\S\r\n]*\r?\n?([\s\S]*?)\r?\n?```/iu.exec(trimmed);
   if (jsonMatch?.[1]) {
     return jsonMatch[1].trim();
   }
@@ -2571,6 +2572,13 @@ Output the result of the command or the link to the created issue.`;
     await interaction.deferReply({ ephemeral: true });
 
     try {
+      if (await hasUncommittedChanges(latestRequest.worktree_path)) {
+        await interaction.editReply(
+          "The worktree has uncommitted changes. `/review` includes working-tree changes, but `/pr` can only push commits. Commit the reviewed changes, then run `/review` again before `/pr`."
+        );
+        return;
+      }
+
       const currentHeadSha = await getHeadSha(latestRequest.worktree_path, latestRequest.branch_name);
       if (currentHeadSha !== latestReview.diff_head) {
         await interaction.editReply(
@@ -2924,13 +2932,13 @@ Output the result of the command or the link to the created issue.`;
         const outcomeLine = issueCount > 0
           ? `Plan implementation complete: ${approvedCount}/${iterativeResult.taskResults.length} tasks approved, ${issueCount} reached max tweaks.`
           : `Plan implementation complete: ${approvedCount}/${iterativeResult.taskResults.length} tasks approved.`;
-        await threadChannel.send(`${outcomeLine} Run \`/review\`, then \`/pr\` once the verdict is \`ready_for_pr\`.`);
+        await threadChannel.send(`${outcomeLine} Run \`/review\` to review the working tree. Commit any remaining changes before \`/pr\`, then run \`/review\` again once the committed branch is ready.`);
         this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Iterative plan request succeeded");
 
         if (this.memPalace) {
           const taskSummaries = iterativeResult.taskResults.map((r) => {
             const status = r.approved ? "approved" : `max-tweaks (${r.tweakAttempts})`;
-            return `### ${r.title}\n- Status: ${status}\n- Implementer output:\n${r.implementerOutput}\n- Verification output:\n${r.verificationOutput}`;
+            return `### ${r.title}\n- Status: ${status}\n- Implementer output:\n${r.implementerOutput}\n- Verification output:\n${r.verificationOutput}\n- Diff:\n${r.diff}`;
           }).join("\n\n");
           const drawerContent = [
             `# Iterative plan request #${input.requestId}: ${input.prompt}`,
@@ -2985,7 +2993,7 @@ Output the result of the command or the link to the created issue.`;
 
         this.db.updateRequestStatus(input.requestId, "succeeded");
         statusFinalized = true;
-        await threadChannel.send("Plan implementation complete. Run `/review`, then `/pr` once the verdict is `ready_for_pr`.");
+        await threadChannel.send("Plan implementation complete. Run `/review` to review the working tree. Commit any remaining changes before `/pr`, then run `/review` again once the committed branch is ready.");
         this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Plan request succeeded");
 
         if (this.memPalace) {
