@@ -2291,16 +2291,19 @@ describe("ActuariusBot revise command", () => {
         status: "queued",
         worktree_path: null,
         branch_name: null,
+        revision_of_request_id: 41,
         created_at: "2026-06-01T00:00:00.000Z"
       }),
       updateRequestWorkspace: vi.fn(),
+      updateRequestStatus: vi.fn(),
       getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
         id: 41,
         user_id: "user-1",
         worktree_path: "/tmp/worktree-revise",
         branch_name: "ask/41-123",
         status: "succeeded",
-        prompt: "Original request prompt"
+        prompt: "Original request prompt",
+        revision_of_request_id: null
       }),
       getRepoByChannelId: vi.fn().mockReturnValue({
         id: 5,
@@ -2309,6 +2312,9 @@ describe("ActuariusBot revise command", () => {
         full_name: "octocat/hello-world",
         channel_id: "channel-1"
       }),
+      getRequestById: vi.fn().mockImplementation((requestId: number) => requestId === 41
+        ? { id: 41, revision_of_request_id: null }
+        : undefined),
       getLatestCompletedReviewRunForBranch: vi.fn().mockReturnValue(undefined),
       ...overrides
     };
@@ -2394,11 +2400,13 @@ describe("ActuariusBot revise command", () => {
   });
 
   it("rejects when tracked worktree path no longer exists", async () => {
+    const staleWorktreePath = await createTempWorktree("actuarius-revise-missing-worktree-");
+    await rm(staleWorktreePath, { recursive: true, force: true });
     const bot = createBot(createReviseDb({
       getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
         id: 41,
         user_id: "user-1",
-        worktree_path: join(tmpdir(), "actuarius-revise-missing-worktree"),
+        worktree_path: staleWorktreePath,
         branch_name: "ask/41-123",
         status: "succeeded",
         prompt: "Original request prompt"
@@ -2414,6 +2422,32 @@ describe("ActuariusBot revise command", () => {
     });
   });
 
+  it("rejects before creating a request when the repo channel is missing", async () => {
+    const worktreePath = await createTempWorktree("actuarius-revise-no-repo-");
+    const createRequest = vi.fn();
+    const bot = createBot(createReviseDb({
+      createRequest,
+      getRepoByChannelId: vi.fn().mockReturnValue(undefined),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "user-1",
+        worktree_path: worktreePath,
+        branch_name: "ask/41-123",
+        status: "succeeded",
+        prompt: "Original request prompt"
+      })
+    }));
+    const interaction = createInteraction();
+
+    await (bot as any).handleRevise(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "This thread is not attached to a connected repository channel. Run `/connect-repo` first.",
+      ephemeral: true
+    });
+    expect(createRequest).not.toHaveBeenCalled();
+  });
+
   it("creates a queued revision request before enqueuing work", async () => {
     const worktreePath = await createTempWorktree("actuarius-revise-queued-");
     const createRequest = vi.fn().mockReturnValue({
@@ -2427,6 +2461,7 @@ describe("ActuariusBot revise command", () => {
       status: "queued",
       worktree_path: null,
       branch_name: null,
+      revision_of_request_id: 41,
       created_at: "2026-06-01T00:00:00.000Z"
     });
     const updateRequestWorkspace = vi.fn();
@@ -2459,9 +2494,37 @@ describe("ActuariusBot revise command", () => {
       revisionOfRequestId: 41
     });
     expect(updateRequestWorkspace).toHaveBeenCalledWith(42, worktreePath, "ask/41-123");
-    expect(createRequest.mock.invocationCallOrder[0]).toBeLessThan(interaction.deferReply.mock.invocationCallOrder[0]);
+    expect(interaction.deferReply.mock.invocationCallOrder[0]).toBeLessThan(createRequest.mock.invocationCallOrder[0]);
     expect(createRequest.mock.invocationCallOrder[0]).toBeLessThan(enqueue.mock.invocationCallOrder[0]);
     expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Revision queued as request #42 for request #41"));
+  });
+
+  it("marks a revision request failed when workspace attachment fails during setup", async () => {
+    const worktreePath = await createTempWorktree("actuarius-revise-setup-fail-");
+    const updateRequestStatus = vi.fn();
+    const bot = createBot(createReviseDb({
+      updateRequestWorkspace: vi.fn().mockImplementation(() => {
+        throw new Error("workspace write failed");
+      }),
+      updateRequestStatus,
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "user-1",
+        worktree_path: worktreePath,
+        branch_name: "ask/41-123",
+        status: "succeeded",
+        prompt: "Original request prompt"
+      })
+    }));
+    const enqueue = vi.fn();
+    (bot as any).requestQueue.enqueue = enqueue;
+    const interaction = createInteraction();
+
+    await (bot as any).handleRevise(interaction);
+
+    expect(updateRequestStatus).toHaveBeenCalledWith(42, "failed");
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Revision setup failed"));
   });
 
   it("uses explicit findings in planner prompt when provided", async () => {
@@ -2592,6 +2655,168 @@ describe("ActuariusBot revise command", () => {
     expect(planPrompt).toContain("Review summary markdown content");
     expect(planPrompt).toContain("Latest review summary");
     expect(getLatestCompletedReviewRunForBranch).toHaveBeenCalledWith(41, "ask/41-123");
+  });
+
+  it("treats whitespace-only findings as omitted", async () => {
+    const worktreePath = await createTempWorktree("actuarius-revise-whitespace-");
+    const send = vi.fn().mockResolvedValue(undefined);
+    const getLatestCompletedReviewRunForBranch = vi.fn().mockReturnValue({
+      id: 12,
+      summary_markdown: "Review summary for whitespace findings"
+    });
+    const bot = createBot(createReviseDb({
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "user-1",
+        worktree_path: worktreePath,
+        branch_name: "ask/41-123",
+        status: "succeeded",
+        prompt: "Original request prompt"
+      }),
+      getLatestCompletedReviewRunForBranch
+    }));
+    const enqueue = vi.fn();
+    (bot as any).requestQueue.enqueue = enqueue;
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn().mockResolvedValue(JSON.stringify({
+      overview: "Fix bugs",
+      tasks: [{ title: "Fix bug 1", description: "Fix the first bug" }]
+    }));
+    vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
+
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn().mockImplementation((name: string) => (name === "findings" ? "   \n\t" : null)),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleRevise(interaction);
+
+    await enqueue.mock.calls[0]![1]();
+
+    const runCalls = vi.mocked(bot.runProviderText as any).mock.calls;
+    const planPrompt = runCalls[0]![0].prompt;
+    expect(planPrompt).toContain("Review summary for whitespace findings");
+    expect(planPrompt).toContain("Latest review summary");
+    expect(planPrompt).not.toContain("Findings to address:");
+  });
+
+  it("walks revision ancestry to find the original review summary", async () => {
+    const worktreePath = await createTempWorktree("actuarius-revise-chain-");
+    const send = vi.fn().mockResolvedValue(undefined);
+    const getLatestCompletedReviewRunForBranch = vi.fn().mockImplementation((requestId: number) => {
+      if (requestId === 41) {
+        return { id: 12, summary_markdown: "Original request review summary" };
+      }
+      return undefined;
+    });
+    const bot = createBot(createReviseDb({
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 42,
+        user_id: "user-1",
+        worktree_path: worktreePath,
+        branch_name: "ask/41-123",
+        status: "succeeded",
+        prompt: "Original request prompt",
+        revision_of_request_id: 41
+      }),
+      getRequestById: vi.fn().mockImplementation((requestId: number) => {
+        if (requestId === 42) return { id: 42, revision_of_request_id: 41 };
+        if (requestId === 41) return { id: 41, revision_of_request_id: null };
+        return undefined;
+      }),
+      getLatestCompletedReviewRunForBranch
+    }));
+    const enqueue = vi.fn();
+    (bot as any).requestQueue.enqueue = enqueue;
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn().mockResolvedValue(JSON.stringify({
+      overview: "Fix bugs",
+      tasks: [{ title: "Fix bug 1", description: "Fix the first bug" }]
+    }));
+    vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
+
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn().mockReturnValue(null),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleRevise(interaction);
+
+    await enqueue.mock.calls[0]![1]();
+
+    const runCalls = vi.mocked(bot.runProviderText as any).mock.calls;
+    expect(runCalls[0]![0].prompt).toContain("Original request review summary");
+    expect(getLatestCompletedReviewRunForBranch).toHaveBeenNthCalledWith(1, 42, "ask/41-123");
+    expect(getLatestCompletedReviewRunForBranch).toHaveBeenNthCalledWith(2, 41, "ask/41-123");
+  });
+
+  it("continues revision planning when no findings or review summary exist", async () => {
+    const worktreePath = await createTempWorktree("actuarius-revise-no-summary-");
+    const send = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot(createReviseDb({
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "user-1",
+        worktree_path: worktreePath,
+        branch_name: "ask/41-123",
+        status: "succeeded",
+        prompt: "Original request prompt"
+      }),
+      getLatestCompletedReviewRunForBranch: vi.fn().mockReturnValue(undefined)
+    }));
+    const enqueue = vi.fn();
+    (bot as any).requestQueue.enqueue = enqueue;
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn().mockResolvedValue(JSON.stringify({
+      overview: "Fix bugs",
+      tasks: [{ title: "Fix bug 1", description: "Fix the first bug" }]
+    }));
+    vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
+
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn().mockReturnValue(null),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleRevise(interaction);
+
+    await enqueue.mock.calls[0]![1]();
+
+    const runCalls = vi.mocked(bot.runProviderText as any).mock.calls;
+    const planPrompt = runCalls[0]![0].prompt;
+    expect(planPrompt).not.toContain("Latest review summary:");
+    expect(planPrompt).not.toContain("Findings to address:");
+    expect(runIterativeTaskLoop).toHaveBeenCalled();
   });
 
   it("calls runIterativeTaskLoop with parsed tasks on existing worktree", async () => {
@@ -2811,5 +3036,30 @@ describe("ActuariusBot revise command", () => {
     expect(updateRequestStatus).not.toHaveBeenCalledWith(41, expect.any(String));
     expect(send).toHaveBeenCalledWith("Planner produced no output; aborting revision.");
     expect(deleteRequestBranch).not.toHaveBeenCalled();
+  });
+
+  it("marks the revision failed when the thread is unavailable during execution", async () => {
+    const worktreePath = await createTempWorktree("actuarius-revise-thread-missing-");
+    const updateRequestStatus = vi.fn();
+    const bot = createBot(createReviseDb({ updateRequestStatus }));
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue(null);
+
+    await (bot as any).runReviseRequest({
+      requestId: 42,
+      sourceRequestId: 41,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Original request prompt",
+      worktreePath,
+      branchName: "ask/41-123",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      findings: "finding text"
+    });
+
+    expect(updateRequestStatus).toHaveBeenCalledWith(42, "running");
+    expect(updateRequestStatus).toHaveBeenCalledWith(42, "failed");
+    expect(getReviewDiff).not.toHaveBeenCalled();
   });
 });

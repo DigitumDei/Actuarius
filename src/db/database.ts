@@ -427,7 +427,10 @@ export class AppDatabase {
     return {
       ...raw,
       id: toNumber(raw.id),
-      repo_id: toNumber(raw.repo_id)
+      repo_id: toNumber(raw.repo_id),
+      revision_of_request_id: raw.revision_of_request_id === null
+        ? null
+        : toNumber(raw.revision_of_request_id)
     };
   }
 
@@ -439,7 +442,10 @@ export class AppDatabase {
     return {
       ...raw,
       id: toNumber(raw.id),
-      repo_id: toNumber(raw.repo_id)
+      repo_id: toNumber(raw.repo_id),
+      revision_of_request_id: raw.revision_of_request_id === null
+        ? null
+        : toNumber(raw.revision_of_request_id)
     };
   }
 

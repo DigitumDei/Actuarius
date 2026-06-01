@@ -2566,48 +2566,69 @@ Output the result of the command or the link to the created issue.`;
     const worktreePath: string = latestRequest.worktree_path;
     const branchName: string = latestRequest.branch_name;
     const sourceRequestId = latestRequest.id;
-    const revisionRequest = this.db.createRequest({
-      guildId: interaction.guildId,
-      repoId: repo.id,
-      channelId: parentId,
-      threadId: interaction.channelId,
-      userId: interaction.user.id,
-      prompt: latestRequest.prompt,
-      status: "queued",
-      revisionOfRequestId: sourceRequestId
-    });
-    this.db.updateRequestWorkspace(revisionRequest.id, worktreePath, branchName);
 
     await interaction.deferReply({ ephemeral: true });
 
     const roles = await this.resolvePlanRoleModels(interaction.guildId);
 
-    await interaction.channel!.send(`Revision started for request #${sourceRequestId}.`);
-
-    this.requestQueue.enqueue(interaction.guildId, async () => {
-      await this.runReviseRequest({
-        requestId: revisionRequest.id,
-        sourceRequestId,
-        threadId: interaction.channelId,
+    let revisionRequestId: number | null = null;
+    try {
+      const revisionRequest = this.db.createRequest({
+        guildId: interaction.guildId,
         repoId: repo.id,
-        repo: {
-          owner: repo.owner,
-          repo: repo.repo,
-          fullName: repo.full_name
-        },
+        channelId: parentId,
+        threadId: interaction.channelId,
+        userId: interaction.user.id,
         prompt: latestRequest.prompt,
-        worktreePath,
-        branchName,
-        planner: roles.planner,
-        implementer: roles.implementer,
-        findings
+        status: "queued",
+        revisionOfRequestId: sourceRequestId
       });
-    });
+      revisionRequestId = revisionRequest.id;
+      this.db.updateRequestWorkspace(revisionRequest.id, worktreePath, branchName);
+
+      this.requestQueue.enqueue(interaction.guildId, async () => {
+        await this.runReviseRequest({
+          requestId: revisionRequest.id,
+          sourceRequestId,
+          threadId: interaction.channelId,
+          repoId: repo.id,
+          repo: {
+            owner: repo.owner,
+            repo: repo.repo,
+            fullName: repo.full_name
+          },
+          prompt: latestRequest.prompt,
+          worktreePath,
+          branchName,
+          planner: roles.planner,
+          implementer: roles.implementer,
+          findings
+        });
+      });
+    } catch (error) {
+      if (revisionRequestId !== null) {
+        try {
+          this.db.updateRequestStatus(revisionRequestId, "failed");
+        } catch (statusError) {
+          this.logger.warn({ error: statusError, requestId: revisionRequestId }, "Failed to mark revision setup request failed");
+        }
+      }
+      const message = this.describeExecutionError(error);
+      this.logger.error({ error, sourceRequestId, revisionRequestId }, "Revision setup failed");
+      await interaction.editReply(`Revision setup failed: ${clipForDiscord(message, 1500)}`);
+      return;
+    }
+
+    try {
+      await interaction.channel!.send(`Revision started for request #${sourceRequestId}.`);
+    } catch (error) {
+      this.logger.warn({ error, sourceRequestId, revisionRequestId }, "Failed to send revision start message");
+    }
 
     const planningProvider = AI_PROVIDER_LABELS[roles.planner.provider];
     const implementerProvider = AI_PROVIDER_LABELS[roles.implementer.provider];
     await interaction.editReply(
-      `Revision queued as request #${revisionRequest.id} for request #${sourceRequestId}. Planner: ${planningProvider}; implementer: ${implementerProvider}.`
+      `Revision queued as request #${revisionRequestId} for request #${sourceRequestId}. Planner: ${planningProvider}; implementer: ${implementerProvider}.`
     );
   }
 
@@ -3206,6 +3227,23 @@ Output the result of the command or the link to the created issue.`;
       statusFinalized = true;
     };
 
+    const findLatestReviewSummary = (): string | null => {
+      const visited = new Set<number>();
+      let requestId: number | null = input.sourceRequestId;
+
+      while (requestId !== null && !visited.has(requestId)) {
+        visited.add(requestId);
+        const latestReview = this.db.getLatestCompletedReviewRunForBranch(requestId, input.branchName);
+        if (latestReview?.summary_markdown) {
+          return latestReview.summary_markdown;
+        }
+
+        requestId = this.db.getRequestById(requestId)?.revision_of_request_id ?? null;
+      }
+
+      return null;
+    };
+
     try {
       this.db.updateRequestStatus(input.requestId, "running");
       this.logger.info(
@@ -3244,10 +3282,7 @@ Output the result of the command or the link to the created issue.`;
 
       let reviewSummary: string | null = null;
       if (!input.findings) {
-        const latestReview = this.db.getLatestCompletedReviewRunForBranch(input.sourceRequestId, input.branchName);
-        if (latestReview?.summary_markdown) {
-          reviewSummary = latestReview.summary_markdown;
-        }
+        reviewSummary = findLatestReviewSummary();
       }
 
       stage = "planning";
@@ -3331,7 +3366,7 @@ Output the result of the command or the link to the created issue.`;
       const outcomeLine = issueCount > 0
         ? `Revision complete: ${approvedCount}/${taskResults.length} tasks approved, ${issueCount} reached max tweaks.`
         : `Revision complete: ${approvedCount}/${taskResults.length} tasks approved.`;
-      await threadChannel.send(`${outcomeLine} Run /review again, then /pr once the verdict is ready_for_pr.`);
+      await threadChannel.send(`${outcomeLine} Run \`/review\` again, then \`/pr\` once the verdict is \`ready_for_pr\`.`);
       this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Revise request succeeded");
 
       if (this.memPalace) {
@@ -3350,7 +3385,11 @@ Output the result of the command or the link to the created issue.`;
           "",
           "## Revision Inputs",
           "",
-          input.findings ? "### Explicit Findings" : "### Latest Review Summary",
+          input.findings
+            ? "### Explicit Findings"
+            : reviewSummary
+              ? "### Latest Review Summary"
+              : "### Review Summary (none found)",
           "",
           input.findings ?? reviewSummary ?? "(none)",
           "",
