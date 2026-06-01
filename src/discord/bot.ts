@@ -43,7 +43,9 @@ import {
   cleanupDeletedRemoteBranches,
   detectDefaultBranch,
   ensureRepoCheckedOutToMaster,
+  getDiffSinceRef,
   getHeadSha,
+  hasUncommittedChanges,
   listBranches,
   pushBranch
 } from "../services/gitWorkspaceService.js";
@@ -69,6 +71,10 @@ import {
   validateAttachments,
   type PendingAttachment
 } from "../services/attachmentService.js";
+import {
+  runIterativeTaskLoop,
+  type IterativePlanTask
+} from "../services/iterativeTaskLoopService.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
 const PR_TITLE_LIMIT = 120;
@@ -190,6 +196,57 @@ function fitDiscordMessage(lines: string[], truncationNotice: string): string {
   }
 
   return message || emptyMessage;
+}
+
+const MAX_TASKS = 20;
+const ITERATIVE_TASK_TITLE_LIMIT = 120;
+const ITERATIVE_TASK_DESCRIPTION_LIMIT = 8_000;
+const ITERATIVE_OVERVIEW_LIMIT = 2_000;
+
+export function stripMarkdownJsonFence(text: string): string {
+  const trimmed = text.trim();
+  const jsonMatch = /```(?:json)?[^\S\r\n]*\r?\n?([\s\S]*?)\r?\n?```/iu.exec(trimmed);
+  if (jsonMatch?.[1]) {
+    return jsonMatch[1].trim();
+  }
+  return trimmed;
+}
+
+function truncateText(text: string, limit: number): string {
+  const normalized = text.trim();
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, limit - 3).trimEnd()}...`;
+}
+
+export function parseIterativePlan(text: string): { overview: string; tasks: IterativePlanTask[] } | null {
+  const stripped = stripMarkdownJsonFence(text);
+  try {
+    const parsed = JSON.parse(stripped) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const candidate = parsed as { overview?: unknown; tasks?: unknown };
+    if (typeof candidate.overview !== "string" || candidate.overview.trim().length === 0 || !Array.isArray(candidate.tasks) || candidate.tasks.length === 0) {
+      return null;
+    }
+    const tasks = candidate.tasks.flatMap((task) => {
+      if (!task || typeof task.title !== "string" || typeof task.description !== "string") {
+        return [];
+      }
+      const title = truncateText(task.title.replace(/\s+/g, " "), ITERATIVE_TASK_TITLE_LIMIT);
+      const description = truncateText(task.description, ITERATIVE_TASK_DESCRIPTION_LIMIT);
+      if (!title || !description) {
+        return [];
+      }
+      return [{ title, description }];
+    });
+    if (tasks.length === 0) return null;
+    return { overview: truncateText(candidate.overview, ITERATIVE_OVERVIEW_LIMIT), tasks };
+  } catch {
+    return null;
+  }
 }
 
 function splitPlainTextForDiscord(text: string, header?: string): string[] {
@@ -1984,6 +2041,7 @@ export class ActuariusBot {
     }
 
     const prompt = interaction.options.getString("prompt", true).trim();
+    const iterative = interaction.options.getBoolean("iterative") ?? false;
     if (!prompt) {
       await interaction.reply({ content: "Prompt cannot be empty.", ephemeral: true });
       return;
@@ -2047,12 +2105,14 @@ export class ActuariusBot {
         },
         prompt,
         planner: roles.planner,
-        implementer: roles.implementer
+        implementer: roles.implementer,
+        iterative
       });
     });
 
+    const iterativeSuffix = iterative ? " (iterative)" : "";
     await interaction.editReply(
-      `Created plan thread <#${thread.id}>. Planner: ${AI_PROVIDER_LABELS[roles.planner.provider]}; implementer: ${AI_PROVIDER_LABELS[roles.implementer.provider]}.`
+      `Created plan thread <#${thread.id}>. Planner: ${AI_PROVIDER_LABELS[roles.planner.provider]}; implementer: ${AI_PROVIDER_LABELS[roles.implementer.provider]}.${iterativeSuffix}`
     );
   }
 
@@ -2516,6 +2576,13 @@ Output the result of the command or the link to the created issue.`;
     await interaction.deferReply({ ephemeral: true });
 
     try {
+      if (await hasUncommittedChanges(latestRequest.worktree_path)) {
+        await interaction.editReply(
+          "The worktree has uncommitted changes. `/review` includes working-tree changes, but `/pr` can only push commits. Commit the reviewed changes, then run `/review` again before `/pr`."
+        );
+        return;
+      }
+
       const currentHeadSha = await getHeadSha(latestRequest.worktree_path, latestRequest.branch_name);
       if (currentHeadSha !== latestReview.diff_head) {
         await interaction.editReply(
@@ -2665,6 +2732,7 @@ Output the result of the command or the link to the created issue.`;
     prompt: string;
     planner: ResolvedModelRole;
     implementer: ResolvedModelRole;
+    iterative: boolean;
   }): Promise<void> {
     const startedAt = Date.now();
     let worktreePath: string | null = null;
@@ -2757,16 +2825,44 @@ Output the result of the command or the link to the created issue.`;
 
       stage = "planning";
       const plannerLabel = AI_PROVIDER_LABELS[input.planner.provider];
+      const implementerLabel = AI_PROVIDER_LABELS[input.implementer.provider];
       await threadChannel.send(`${plannerLabel} planning started.`);
-      const planPrompt = [
-        `Repository: ${input.repo.fullName}`,
-        "",
-        "Produce a structured implementation plan for this request.",
-        "Do not edit files. Do not run the implementation. Inspect the codebase as needed and return only the plan.",
-        "",
-        "Request:",
-        input.prompt
-      ].join("\n");
+
+      const planPrompt = input.iterative
+        ? [
+          `Repository: ${input.repo.fullName}`,
+          "",
+          "Produce a structured iterative implementation plan for this request.",
+          "Do not edit files. Do not run the implementation. Inspect the codebase as needed and return only the plan JSON.",
+          "Return ONLY valid JSON with no markdown formatting, no code fences, no prose outside the JSON.",
+          "",
+          'The JSON must have this exact shape:',
+          '{',
+          '  "overview": "brief overview of the plan",',
+          '  "tasks": [',
+          '    { "title": "Short task title", "description": "Detailed description of what to implement" }',
+          '  ]',
+          '}',
+          "",
+          "Guidelines:",
+          "- Each task should be independently implementable and verifiable",
+          "- Tasks should build on each other in a logical order",
+          `- Maximum ${MAX_TASKS} tasks`,
+          "- Do not include testing tasks unless specifically requested",
+          "",
+          "Request:",
+          input.prompt
+        ].join("\n")
+        : [
+          `Repository: ${input.repo.fullName}`,
+          "",
+          "Produce a structured implementation plan for this request.",
+          "Do not edit files. Do not run the implementation. Inspect the codebase as needed and return only the plan.",
+          "",
+          "Request:",
+          input.prompt
+        ].join("\n");
+
       const planText = await this.runProviderText({
         provider: input.planner.provider,
         prompt: planPrompt,
@@ -2787,58 +2883,145 @@ Output the result of the command or the link to the created issue.`;
         await threadChannel.send(chunk);
       }
 
-      stage = "implementing";
-      const implementerLabel = AI_PROVIDER_LABELS[input.implementer.provider];
-      await threadChannel.send(`${implementerLabel} implementation started.`);
-      const implementationPrompt = [
-        `Repository: ${input.repo.fullName}`,
-        "",
-        "Implement the request using the approved plan below. Make code changes in this worktree.",
-        "Do not create or commit a plan file. Keep changes scoped to the request.",
-        "",
-        "Original request:",
-        input.prompt,
-        "",
-        "Plan:",
-        planText
-      ].join("\n");
-      const implementationText = await this.runProviderText({
-        provider: input.implementer.provider,
-        prompt: implementationPrompt,
-        cwd: worktreePath,
-        timeoutMs: this.config.askExecutionTimeoutMs,
-        ...(input.implementer.model ? { model: input.implementer.model } : {}),
-        ...(env ? { env } : {})
-      });
-      for (const chunk of splitIntoDiscordMessages(implementationText, implementerLabel)) {
-        await threadChannel.send(chunk);
-      }
+      if (input.iterative) {
+        const parsed = parseIterativePlan(planText);
+        if (!parsed || parsed.tasks.length === 0) {
+          await threadChannel.send("Could not parse iterative plan as JSON. Running iterative mode with one task containing the planner output.");
+        }
 
-      this.db.updateRequestStatus(input.requestId, "succeeded");
-      statusFinalized = true;
-      await threadChannel.send("Plan implementation complete. Run `/review`, then `/pr` once the verdict is `ready_for_pr`.");
-      this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Plan request succeeded");
+        let tasks: IterativePlanTask[];
+        let overview: string;
 
-      if (this.memPalace) {
-        const drawerContent = [
-          `# Plan request #${input.requestId}: ${input.prompt}`,
-          "",
-          `Repo: ${input.repo.fullName}`,
-          `Planner: ${input.planner.provider}${input.planner.model ? ` (${input.planner.model})` : ""}`,
-          `Implementer: ${input.implementer.provider}${input.implementer.model ? ` (${input.implementer.model})` : ""}`,
-          `Duration: ${Date.now() - startedAt}ms`,
-          "",
-          "## Plan",
-          "",
-          planText,
-          "",
-          "## Implementation Output",
-          "",
-          implementationText
-        ].join("\n");
-        this.memPalace.addDrawer(drawerContent, "wing_actuarius", "requests").catch((err: unknown) => {
-          this.logger.warn({ error: err, requestId: input.requestId }, "MemPalace addDrawer failed");
+        if (parsed && parsed.tasks.length > 0) {
+          overview = parsed.overview;
+          tasks = parsed.tasks;
+          if (tasks.length > MAX_TASKS) {
+            tasks = tasks.slice(0, MAX_TASKS);
+            await threadChannel.send(`Warning: plan has more than ${MAX_TASKS} tasks. Using only the first ${MAX_TASKS}.`);
+          }
+        } else {
+          overview = "Implement the request";
+          tasks = [{ title: "Implement request", description: truncateText(planText, ITERATIVE_TASK_DESCRIPTION_LIMIT) }];
+        }
+
+        const taskListMessage = fitDiscordMessage(
+          [`Plan completed. ${tasks.length} tasks:`, ...tasks.map((t, i) => `  ${i + 1}. ${t.title}`)],
+          "Plan completed, but the task list was too long to display."
+        );
+        await threadChannel.send(taskListMessage);
+
+        stage = "iterative-loop";
+        const iterativeResult = await runIterativeTaskLoop({
+          tasks,
+          overview,
+          originalPrompt: input.prompt,
+          repoFullName: input.repo.fullName,
+          worktreePath,
+          threadChannel,
+          plannerProvider: input.planner.provider,
+          plannerModel: input.planner.model,
+          implementerProvider: input.implementer.provider,
+          implementerModel: input.implementer.model,
+          runProviderText: async (opts) => this.runProviderText(opts),
+          timeoutMs: this.config.askExecutionTimeoutMs,
+          env,
+          getHeadSha,
+          getDiffSinceRef,
+          hasUncommittedChanges
         });
+
+        this.db.updateRequestStatus(input.requestId, "succeeded");
+        statusFinalized = true;
+        const approvedCount = iterativeResult.taskResults.filter((result) => result.approved).length;
+        const issueCount = iterativeResult.taskResults.length - approvedCount;
+        const outcomeLine = issueCount > 0
+          ? `Plan implementation complete: ${approvedCount}/${iterativeResult.taskResults.length} tasks approved, ${issueCount} reached max tweaks.`
+          : `Plan implementation complete: ${approvedCount}/${iterativeResult.taskResults.length} tasks approved.`;
+        await threadChannel.send(`${outcomeLine} Run \`/review\` to review the working tree. Commit any remaining changes before \`/pr\`, then run \`/review\` again once the committed branch is ready.`);
+        this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Iterative plan request succeeded");
+
+        if (this.memPalace) {
+          const taskSummaries = iterativeResult.taskResults.map((r) => {
+            const status = r.approved ? "approved" : `max-tweaks (${r.tweakAttempts})`;
+            return `### ${r.title}\n- Status: ${status}\n- Implementer output:\n${r.implementerOutput}\n- Verification output:\n${r.verificationOutput}\n- Diff:\n${r.diff}`;
+          }).join("\n\n");
+          const drawerContent = [
+            `# Iterative plan request #${input.requestId}: ${input.prompt}`,
+            "",
+            `Repo: ${input.repo.fullName}`,
+            `Planner: ${input.planner.provider}${input.planner.model ? ` (${input.planner.model})` : ""}`,
+            `Implementer: ${input.implementer.provider}${input.implementer.model ? ` (${input.implementer.model})` : ""}`,
+            `Duration: ${Date.now() - startedAt}ms`,
+            "",
+            "## Plan",
+            "",
+            planText,
+            "",
+            "## Overview",
+            "",
+            overview,
+            "",
+            "## Task Results",
+            "",
+            taskSummaries
+          ].join("\n");
+          this.memPalace.addDrawer(drawerContent, "wing_actuarius", "requests").catch((err: unknown) => {
+            this.logger.warn({ error: err, requestId: input.requestId }, "MemPalace addDrawer failed");
+          });
+        }
+      } else {
+        stage = "implementing";
+        await threadChannel.send(`${implementerLabel} implementation started.`);
+        const implementationPrompt = [
+          `Repository: ${input.repo.fullName}`,
+          "",
+          "Implement the request using the approved plan below. Make code changes in this worktree.",
+          "Do not create or commit a plan file. Keep changes scoped to the request.",
+          "",
+          "Original request:",
+          input.prompt,
+          "",
+          "Plan:",
+          planText
+        ].join("\n");
+        const implementationText = await this.runProviderText({
+          provider: input.implementer.provider,
+          prompt: implementationPrompt,
+          cwd: worktreePath,
+          timeoutMs: this.config.askExecutionTimeoutMs,
+          ...(input.implementer.model ? { model: input.implementer.model } : {}),
+          ...(env ? { env } : {})
+        });
+        for (const chunk of splitIntoDiscordMessages(implementationText, implementerLabel)) {
+          await threadChannel.send(chunk);
+        }
+
+        this.db.updateRequestStatus(input.requestId, "succeeded");
+        statusFinalized = true;
+        await threadChannel.send("Plan implementation complete. Run `/review` to review the working tree. Commit any remaining changes before `/pr`, then run `/review` again once the committed branch is ready.");
+        this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Plan request succeeded");
+
+        if (this.memPalace) {
+          const drawerContent = [
+            `# Plan request #${input.requestId}: ${input.prompt}`,
+            "",
+            `Repo: ${input.repo.fullName}`,
+            `Planner: ${input.planner.provider}${input.planner.model ? ` (${input.planner.model})` : ""}`,
+            `Implementer: ${input.implementer.provider}${input.implementer.model ? ` (${input.implementer.model})` : ""}`,
+            `Duration: ${Date.now() - startedAt}ms`,
+            "",
+            "## Plan",
+            "",
+            planText,
+            "",
+            "## Implementation Output",
+            "",
+            implementationText
+          ].join("\n");
+          this.memPalace.addDrawer(drawerContent, "wing_actuarius", "requests").catch((err: unknown) => {
+            this.logger.warn({ error: err, requestId: input.requestId }, "MemPalace addDrawer failed");
+          });
+        }
       }
     } catch (error) {
       markFailed();

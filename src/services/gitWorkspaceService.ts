@@ -165,6 +165,24 @@ async function runGitDiffWithOverflowFallback(args: string[], cwd: string): Prom
   }
 }
 
+async function runGitNoIndexDiffWithOverflowFallback(args: string[], cwd: string): Promise<string> {
+  try {
+    const result = await runGitWithOutput(args, { cwd });
+    return result.stdout;
+  } catch (error) {
+    const spawnError = error as { code?: string | number; message?: string; stdout?: string };
+    if (spawnError.code === "EMSGSIZE") {
+      return clipOverflowedDiff(spawnError.stdout ?? "");
+    }
+
+    if ((spawnError.stdout ?? "").length > 0 && (spawnError.code === 1 || spawnError.code === "1" || (spawnError.message ?? "").includes("code 1"))) {
+      return spawnError.stdout ?? "";
+    }
+
+    throw error;
+  }
+}
+
 function isMissingRemoteRefError(message: string): boolean {
   const lowered = message.toLowerCase();
   return lowered.includes("couldn't find remote ref") || lowered.includes("remote ref does not exist");
@@ -400,6 +418,10 @@ async function isWorktreeClean(worktreePath: string): Promise<boolean> {
   return result.stdout.trim().length === 0;
 }
 
+export async function hasUncommittedChanges(worktreePath: string): Promise<boolean> {
+  return !(await isWorktreeClean(worktreePath));
+}
+
 export async function detectDefaultBranch(repoPath: string): Promise<{ branchName: string; remoteRef: string }> {
   const candidates = ["main", "master"] as const;
 
@@ -466,12 +488,12 @@ export async function getReviewDiff(
 ): Promise<ReviewDiffResult> {
   try {
     const defaultBranch = await detectDefaultBranch(repoPath);
-    const excludeArgs = (options.excludePaths ?? []).map((path) => `:(exclude)${path}`);
-    const comparisonRef = `${defaultBranch.remoteRef}...${options.headRef}`;
-    const diffArgs = [comparisonRef, "--", ...excludeArgs];
-    const [changedFilesResult, diffResult, headSha] = await Promise.all([
-      runGitWithOutput(["diff", "--name-only", ...diffArgs], { cwd: repoPath }),
-      runGitDiffWithOverflowFallback(["diff", ...diffArgs], repoPath),
+    const mergeBaseResult = await runGitWithOutput(["merge-base", defaultBranch.remoteRef, options.headRef], { cwd: repoPath });
+    const comparisonRef = mergeBaseResult.stdout.trim();
+    const diffOptions = options.excludePaths ? { excludePaths: options.excludePaths } : undefined;
+    const [changedFiles, diffResult, headSha] = await Promise.all([
+      getChangedFilesSinceRef(repoPath, comparisonRef, diffOptions),
+      getDiffSinceRef(repoPath, comparisonRef, diffOptions),
       getHeadSha(repoPath, options.headRef)
     ]);
 
@@ -480,10 +502,7 @@ export async function getReviewDiff(
       baseRef: defaultBranch.remoteRef,
       headRef: options.headRef,
       headSha,
-      changedFiles: changedFilesResult.stdout
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean),
+      changedFiles,
       diffText: diffResult
     };
   } catch (error) {
@@ -492,6 +511,76 @@ export async function getReviewDiff(
     }
 
     const message = error instanceof Error ? error.message : "Could not compute review diff.";
+    throw new GitWorkspaceError("DIFF_FAILED", message);
+  }
+}
+
+function getExcludePathspecArgs(excludePaths: string[] | undefined): string[] {
+  return (excludePaths ?? []).map((path) => `:(exclude)${path}`);
+}
+
+async function getUntrackedFiles(repoPath: string, excludePaths?: string[]): Promise<string[]> {
+  const excludeArgs = getExcludePathspecArgs(excludePaths);
+  const pathspecArgs = excludeArgs.length > 0 ? ["--", ".", ...excludeArgs] : [];
+  const untrackedResult = await runGitWithOutput(["ls-files", "--others", "--exclude-standard", "-z", ...pathspecArgs], { cwd: repoPath });
+  return untrackedResult.stdout
+    .split("\0")
+    .filter(Boolean);
+}
+
+async function getChangedFilesSinceRef(
+  repoPath: string,
+  baseRef: string,
+  options?: { excludePaths?: string[] }
+): Promise<string[]> {
+  const excludeArgs = getExcludePathspecArgs(options?.excludePaths);
+  const pathspecArgs = excludeArgs.length > 0 ? ["--", ".", ...excludeArgs] : [];
+  const [trackedResult, untrackedFiles] = await Promise.all([
+    runGitWithOutput(["diff", "--name-only", baseRef, ...pathspecArgs], { cwd: repoPath }),
+    getUntrackedFiles(repoPath, options?.excludePaths)
+  ]);
+
+  return Array.from(new Set([
+    ...trackedResult.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean),
+    ...untrackedFiles
+  ]));
+}
+
+export async function getDiffSinceRef(
+  repoPath: string,
+  baseRef: string,
+  options?: { excludePaths?: string[] }
+): Promise<string> {
+  try {
+    const excludeArgs = getExcludePathspecArgs(options?.excludePaths);
+    const pathspecArgs = excludeArgs.length > 0 ? ["--", ".", ...excludeArgs] : [];
+    const [trackedDiff, untrackedResult] = await Promise.all([
+      runGitDiffWithOverflowFallback(["diff", baseRef, ...pathspecArgs], repoPath),
+      getUntrackedFiles(repoPath, options?.excludePaths)
+    ]);
+
+    if (untrackedResult.length === 0) {
+      return trackedDiff;
+    }
+
+    const untrackedDiffs = await Promise.all(
+      untrackedResult.map((path) =>
+        runGitNoIndexDiffWithOverflowFallback(["diff", "--no-index", "--", "/dev/null", path], repoPath)
+          .catch(() => "")
+      )
+    );
+
+    return [trackedDiff.trimEnd(), ...untrackedDiffs.map((diff) => diff.trimEnd()).filter(Boolean)]
+      .filter(Boolean)
+      .join("\n");
+  } catch (error) {
+    if (error instanceof GitWorkspaceError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : `Could not compute diff since ${baseRef}.`;
     throw new GitWorkspaceError("DIFF_FAILED", message);
   }
 }

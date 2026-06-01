@@ -28,7 +28,22 @@ vi.mock("../src/services/gitWorkspaceService.js", async () => {
     ...actual,
     ensureRepoCheckedOutToMaster: vi.fn(),
     listBranches: vi.fn(),
-    cleanupDeletedRemoteBranches: vi.fn()
+    cleanupDeletedRemoteBranches: vi.fn(),
+    detectDefaultBranch: vi.fn(),
+    getHeadSha: vi.fn(),
+    hasUncommittedChanges: vi.fn(),
+    pushBranch: vi.fn()
+  };
+});
+
+vi.mock("../src/services/pullRequestService.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/pullRequestService.js")>(
+    "../src/services/pullRequestService.js"
+  );
+
+  return {
+    ...actual,
+    createDraftPullRequest: vi.fn()
   };
 });
 
@@ -66,17 +81,38 @@ vi.mock("../src/services/adversarialReviewService.js", async () => {
   };
 });
 
+vi.mock("../src/services/iterativeTaskLoopService.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/iterativeTaskLoopService.js")>(
+    "../src/services/iterativeTaskLoopService.js"
+  );
+
+  return {
+    ...actual,
+    runIterativeTaskLoop: vi.fn()
+  };
+});
+
 const { createRequestWorktree, deleteRequestBranch } = await import("../src/services/requestWorktreeService.js");
-const { ensureRepoCheckedOutToMaster, listBranches, cleanupDeletedRemoteBranches } = await import("../src/services/gitWorkspaceService.js");
+const {
+  detectDefaultBranch,
+  ensureRepoCheckedOutToMaster,
+  getHeadSha,
+  hasUncommittedChanges,
+  listBranches,
+  cleanupDeletedRemoteBranches,
+  pushBranch
+} = await import("../src/services/gitWorkspaceService.js");
 const { spawnCollect } = await import("../src/utils/spawnCollect.js");
 const { listOpenIssues, viewIssueDetail } = await import("../src/services/githubService.js");
 const { runClaudeRequest } = await import("../src/services/claudeExecutionService.js");
 const { runAdversarialReview } = await import("../src/services/adversarialReviewService.js");
+const { runIterativeTaskLoop } = await import("../src/services/iterativeTaskLoopService.js");
+const { createDraftPullRequest } = await import("../src/services/pullRequestService.js");
 const { ActuariusBot } = await import("../src/discord/bot.js");
 
 const logger = pino({ level: "silent" });
 
-function createBot(dbOverrides: Record<string, unknown> = {}): ActuariusBot {
+function createBot(dbOverrides: Record<string, unknown> = {}, memPalace: unknown = null): ActuariusBot {
   const config = {
     discordToken: "token",
     discordClientId: "client",
@@ -129,7 +165,7 @@ function createBot(dbOverrides: Record<string, unknown> = {}): ActuariusBot {
     ...dbOverrides
   };
 
-  return new ActuariusBot(config, logger, db as never);
+  return new ActuariusBot(config, logger, db as never, memPalace as never);
 }
 
 function createInteraction(overrides: Record<string, unknown> = {}) {
@@ -1679,6 +1715,90 @@ describe("ActuariusBot model-select command", () => {
   });
 });
 
+describe("ActuariusBot pr command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  function createPrDb(worktreePath: string, overrides: Record<string, unknown> = {}) {
+    return {
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 719,
+        user_id: "user-1",
+        status: "succeeded",
+        worktree_path: worktreePath,
+        branch_name: "ask/719-123",
+        prompt: "Implement issue 127"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 5,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      }),
+      getLatestCompletedReviewRunForBranch: vi.fn().mockReturnValue({
+        id: 12,
+        final_verdict: "ready_for_pr",
+        diff_head: "reviewed-sha",
+        artifact_path: "docs/reviews/review.md"
+      }),
+      ...overrides
+    };
+  }
+
+  it("blocks PR creation when the worktree has uncommitted changes", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-dirty-"));
+    const bot = createBot(createPrDb(worktreePath));
+    vi.mocked(hasUncommittedChanges).mockResolvedValue(true);
+
+    const interaction = createInteraction();
+
+    await (bot as any).handlePr(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("worktree has uncommitted changes"));
+    expect(pushBranch).not.toHaveBeenCalled();
+    expect(createDraftPullRequest).not.toHaveBeenCalled();
+  });
+
+  it("pushes and opens a draft PR when the reviewed worktree is clean", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-clean-"));
+    const channelSend = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot(createPrDb(worktreePath));
+    vi.mocked(hasUncommittedChanges).mockResolvedValue(false);
+    vi.mocked(getHeadSha).mockResolvedValue("reviewed-sha");
+    vi.mocked(detectDefaultBranch).mockResolvedValue({ branchName: "main", remoteRef: "origin/main" });
+    vi.mocked(pushBranch).mockResolvedValue(undefined);
+    vi.mocked(createDraftPullRequest).mockResolvedValue("https://github.com/octocat/hello-world/pull/1");
+
+    const interaction = createInteraction({
+      channel: {
+        isThread: () => true,
+        isTextBased: () => true,
+        isDMBased: () => false,
+        parentId: "channel-1",
+        url: "https://discord.test/thread-1",
+        send: channelSend
+      }
+    });
+
+    await (bot as any).handlePr(interaction);
+
+    expect(hasUncommittedChanges).toHaveBeenCalledWith(worktreePath);
+    expect(getHeadSha).toHaveBeenCalledWith(worktreePath, "ask/719-123");
+    expect(pushBranch).toHaveBeenCalledWith(worktreePath, "ask/719-123");
+    expect(createDraftPullRequest).toHaveBeenCalledWith(expect.objectContaining({
+      worktreePath,
+      head: "ask/719-123",
+      base: "main",
+      title: "Implement issue 127"
+    }));
+    expect(channelSend).toHaveBeenCalledWith(expect.stringContaining("Draft PR opened"));
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Draft PR opened for `octocat/hello-world`"));
+  });
+});
+
 describe("ActuariusBot plan runner", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -1738,6 +1858,393 @@ describe("ActuariusBot plan runner", () => {
     );
     expect(updateRequestWorkspace).toHaveBeenNthCalledWith(1, 91, "/tmp/worktree-plan", "ask/91-123");
     expect(updateRequestWorkspace).toHaveBeenNthCalledWith(2, 91, null, null);
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Plan request failed during planning"));
+  });
+
+  it("iterative false uses existing single-shot implementation behavior", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan",
+      branchName: "ask/92-123"
+    });
+    vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const updateRequestStatus = vi.fn();
+    const bot = createBot({ updateRequestStatus });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn()
+      .mockResolvedValueOnce("plan text output")
+      .mockResolvedValueOnce("implementation output");
+
+    await (bot as any).runPlanRequest({
+      requestId: 92,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Do the thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      iterative: false
+    });
+
+    const runCalls = vi.mocked(bot.runProviderText as any).mock.calls;
+    const planPrompt = runCalls[0]![0].prompt;
+    expect(planPrompt).toContain("Produce a structured implementation plan");
+    expect(planPrompt).not.toContain("iterative");
+    expect(planPrompt).not.toContain("Return ONLY valid JSON");
+
+    const implPrompt = runCalls[1]![0].prompt;
+    expect(implPrompt).toContain("Implement the request using the approved plan below");
+
+    expect(updateRequestStatus).toHaveBeenCalledWith(92, "succeeded");
+    expect(runIterativeTaskLoop).not.toHaveBeenCalled();
+  });
+
+  it("iterative true parses JSON tasks and runs iterative loop", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan",
+      branchName: "ask/93-123"
+    });
+    vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const updateRequestStatus = vi.fn();
+    const bot = createBot({ updateRequestStatus });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify({
+        overview: "Test plan",
+        tasks: [
+          { title: "Task 1", description: "First task" },
+          { title: "Task 2", description: "Second task" }
+        ]
+      }));
+
+    await (bot as any).runPlanRequest({
+      requestId: 93,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Do iterative thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      iterative: true
+    });
+
+    const runCalls = vi.mocked(bot.runProviderText as any).mock.calls;
+    const planPrompt = runCalls[0]![0].prompt;
+    expect(planPrompt).toContain("Produce a structured iterative implementation plan");
+    expect(planPrompt).toContain("Do not edit files. Do not run the implementation");
+    expect(planPrompt).toContain("Return ONLY valid JSON");
+
+    expect(runIterativeTaskLoop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tasks: [
+          { title: "Task 1", description: "First task" },
+          { title: "Task 2", description: "Second task" }
+        ],
+        overview: "Test plan",
+        originalPrompt: "Do iterative thing",
+        repoFullName: "octocat/hello-world",
+        worktreePath: "/tmp/worktree-plan"
+      })
+    );
+    expect(updateRequestStatus).toHaveBeenCalledWith(93, "succeeded");
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("2 tasks"));
+  });
+
+  it("invalid JSON falls back to one task", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan",
+      branchName: "ask/94-123"
+    });
+    vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const updateRequestStatus = vi.fn();
+    const bot = createBot({ updateRequestStatus });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn()
+      .mockResolvedValueOnce("This is not valid JSON at all");
+
+    await (bot as any).runPlanRequest({
+      requestId: 94,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Do iterative thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      iterative: true
+    });
+
+    expect(runIterativeTaskLoop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tasks: [
+          { title: "Implement request", description: expect.stringContaining("not valid JSON") }
+        ]
+      })
+    );
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Running iterative mode with one task"));
+    expect(updateRequestStatus).toHaveBeenCalledWith(94, "succeeded");
+  });
+
+  it("caps invalid JSON fallback task descriptions", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan",
+      branchName: "ask/99-123"
+    });
+    vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot({ updateRequestStatus: vi.fn() });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn()
+      .mockResolvedValueOnce(`not json ${"x".repeat(9_000)}`);
+
+    await (bot as any).runPlanRequest({
+      requestId: 99,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Do iterative thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      iterative: true
+    });
+
+    const tasks = vi.mocked(runIterativeTaskLoop).mock.calls[0]![0].tasks;
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]!.description).toHaveLength(8_000);
+    expect(tasks[0]!.description.endsWith("...")).toBe(true);
+  });
+
+  it("iterative completion reports max-tweak task outcomes", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan",
+      branchName: "ask/97-123"
+    });
+    vi.mocked(runIterativeTaskLoop).mockResolvedValue({
+      taskResults: [
+        {
+          title: "Task 1",
+          description: "First task",
+          implementerOutput: "impl 1",
+          verificationOutput: "APPROVED",
+          approved: true,
+          tweakAttempts: 0,
+          diff: "diff 1"
+        },
+        {
+          title: "Task 2",
+          description: "Second task",
+          implementerOutput: "impl 2",
+          verificationOutput: "NEEDS FIX",
+          approved: false,
+          tweakAttempts: 3,
+          diff: "diff 2"
+        }
+      ]
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const updateRequestStatus = vi.fn();
+    const bot = createBot({ updateRequestStatus });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify({
+        overview: "Test plan",
+        tasks: [
+          { title: "Task 1", description: "First task" },
+          { title: "Task 2", description: "Second task" }
+        ]
+      }));
+
+    await (bot as any).runPlanRequest({
+      requestId: 97,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Do iterative thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      iterative: true
+    });
+
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("1/2 tasks approved, 1 reached max tweaks"));
+  });
+
+  it("stores iterative plan details in MemPalace", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan",
+      branchName: "ask/98-123"
+    });
+    vi.mocked(runIterativeTaskLoop).mockResolvedValue({
+      taskResults: [
+        {
+          title: "Task 1",
+          description: "First task",
+          implementerOutput: "impl output",
+          verificationOutput: "APPROVED",
+          approved: true,
+          tweakAttempts: 0,
+          diff: "diff output"
+        }
+      ]
+    });
+    const addDrawer = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot({ updateRequestStatus: vi.fn() }, { addDrawer });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify({
+        overview: "Test overview",
+        tasks: [{ title: "Task 1", description: "First task" }]
+      }));
+
+    await (bot as any).runPlanRequest({
+      requestId: 98,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Do iterative thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      iterative: true
+    });
+
+    expect(addDrawer).toHaveBeenCalledWith(
+      expect.stringContaining("## Task Results"),
+      "wing_actuarius",
+      "requests"
+    );
+    expect(addDrawer.mock.calls[0]![0]).toContain("Test overview");
+    expect(addDrawer.mock.calls[0]![0]).toContain("Task 1");
+    expect(addDrawer.mock.calls[0]![0]).toContain("impl output");
+  });
+
+  it("more than 20 tasks truncates and warns", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan",
+      branchName: "ask/95-123"
+    });
+    vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const updateRequestStatus = vi.fn();
+    const bot = createBot({ updateRequestStatus });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    const manyTasks = Array.from({ length: 25 }, (_, i) => ({
+      title: `Task ${i + 1}`,
+      description: `Description ${i + 1}`
+    }));
+    (bot as any).runProviderText = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify({ overview: "Large plan", tasks: manyTasks }));
+
+    await (bot as any).runPlanRequest({
+      requestId: 95,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Large iterative thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      iterative: true
+    });
+
+    expect(runIterativeTaskLoop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tasks: manyTasks.slice(0, 20)
+      })
+    );
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Warning: plan has more than 20 tasks"));
+    expect(updateRequestStatus).toHaveBeenCalledWith(95, "succeeded");
+  });
+
+  it("planner/implementer errors mark failed and clean up worktree", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan",
+      branchName: "ask/96-123"
+    });
+    vi.mocked(deleteRequestBranch).mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    const updateRequestStatus = vi.fn();
+    const updateRequestWorkspace = vi.fn();
+    const bot = createBot({ updateRequestStatus, updateRequestWorkspace });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn().mockRejectedValue(new Error("planner failed"));
+
+    await (bot as any).runPlanRequest({
+      requestId: 96,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Do iterative thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      iterative: true
+    });
+
+    expect(updateRequestStatus).toHaveBeenCalledWith(96, "failed");
+    expect(deleteRequestBranch).toHaveBeenCalled();
     expect(send).toHaveBeenCalledWith(expect.stringContaining("Plan request failed during planning"));
   });
 });
