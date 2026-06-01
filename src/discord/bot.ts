@@ -2536,7 +2536,8 @@ Output the result of the command or the link to the created issue.`;
       return;
     }
 
-    if (isActiveRequestStatus(latestRequest.status)) {
+    const threadLatest = this.db.getRequestByThreadId(interaction.channelId);
+    if (threadLatest && isActiveRequestStatus(threadLatest.status)) {
       await interaction.reply({
         content: "The latest request in this thread is still queued or running. Wait for it to finish before revising.",
         ephemeral: true
