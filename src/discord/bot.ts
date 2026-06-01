@@ -2897,7 +2897,7 @@ Output the result of the command or the link to the created issue.`;
           }
         } else {
           overview = "Implement the request";
-          tasks = [{ title: "Implement request", description: planText }];
+          tasks = [{ title: "Implement request", description: truncateText(planText, ITERATIVE_TASK_DESCRIPTION_LIMIT) }];
         }
 
         const taskListMessage = fitDiscordMessage(
@@ -2922,7 +2922,8 @@ Output the result of the command or the link to the created issue.`;
           timeoutMs: this.config.askExecutionTimeoutMs,
           env,
           getHeadSha,
-          getDiffSinceRef
+          getDiffSinceRef,
+          hasUncommittedChanges
         });
 
         this.db.updateRequestStatus(input.requestId, "succeeded");

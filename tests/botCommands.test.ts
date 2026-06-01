@@ -28,7 +28,22 @@ vi.mock("../src/services/gitWorkspaceService.js", async () => {
     ...actual,
     ensureRepoCheckedOutToMaster: vi.fn(),
     listBranches: vi.fn(),
-    cleanupDeletedRemoteBranches: vi.fn()
+    cleanupDeletedRemoteBranches: vi.fn(),
+    detectDefaultBranch: vi.fn(),
+    getHeadSha: vi.fn(),
+    hasUncommittedChanges: vi.fn(),
+    pushBranch: vi.fn()
+  };
+});
+
+vi.mock("../src/services/pullRequestService.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/pullRequestService.js")>(
+    "../src/services/pullRequestService.js"
+  );
+
+  return {
+    ...actual,
+    createDraftPullRequest: vi.fn()
   };
 });
 
@@ -78,12 +93,21 @@ vi.mock("../src/services/iterativeTaskLoopService.js", async () => {
 });
 
 const { createRequestWorktree, deleteRequestBranch } = await import("../src/services/requestWorktreeService.js");
-const { ensureRepoCheckedOutToMaster, listBranches, cleanupDeletedRemoteBranches } = await import("../src/services/gitWorkspaceService.js");
+const {
+  detectDefaultBranch,
+  ensureRepoCheckedOutToMaster,
+  getHeadSha,
+  hasUncommittedChanges,
+  listBranches,
+  cleanupDeletedRemoteBranches,
+  pushBranch
+} = await import("../src/services/gitWorkspaceService.js");
 const { spawnCollect } = await import("../src/utils/spawnCollect.js");
 const { listOpenIssues, viewIssueDetail } = await import("../src/services/githubService.js");
 const { runClaudeRequest } = await import("../src/services/claudeExecutionService.js");
 const { runAdversarialReview } = await import("../src/services/adversarialReviewService.js");
 const { runIterativeTaskLoop } = await import("../src/services/iterativeTaskLoopService.js");
+const { createDraftPullRequest } = await import("../src/services/pullRequestService.js");
 const { ActuariusBot } = await import("../src/discord/bot.js");
 
 const logger = pino({ level: "silent" });
@@ -1691,6 +1715,90 @@ describe("ActuariusBot model-select command", () => {
   });
 });
 
+describe("ActuariusBot pr command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  function createPrDb(worktreePath: string, overrides: Record<string, unknown> = {}) {
+    return {
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 719,
+        user_id: "user-1",
+        status: "succeeded",
+        worktree_path: worktreePath,
+        branch_name: "ask/719-123",
+        prompt: "Implement issue 127"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 5,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      }),
+      getLatestCompletedReviewRunForBranch: vi.fn().mockReturnValue({
+        id: 12,
+        final_verdict: "ready_for_pr",
+        diff_head: "reviewed-sha",
+        artifact_path: "docs/reviews/review.md"
+      }),
+      ...overrides
+    };
+  }
+
+  it("blocks PR creation when the worktree has uncommitted changes", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-dirty-"));
+    const bot = createBot(createPrDb(worktreePath));
+    vi.mocked(hasUncommittedChanges).mockResolvedValue(true);
+
+    const interaction = createInteraction();
+
+    await (bot as any).handlePr(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("worktree has uncommitted changes"));
+    expect(pushBranch).not.toHaveBeenCalled();
+    expect(createDraftPullRequest).not.toHaveBeenCalled();
+  });
+
+  it("pushes and opens a draft PR when the reviewed worktree is clean", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-clean-"));
+    const channelSend = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot(createPrDb(worktreePath));
+    vi.mocked(hasUncommittedChanges).mockResolvedValue(false);
+    vi.mocked(getHeadSha).mockResolvedValue("reviewed-sha");
+    vi.mocked(detectDefaultBranch).mockResolvedValue({ branchName: "main", remoteRef: "origin/main" });
+    vi.mocked(pushBranch).mockResolvedValue(undefined);
+    vi.mocked(createDraftPullRequest).mockResolvedValue("https://github.com/octocat/hello-world/pull/1");
+
+    const interaction = createInteraction({
+      channel: {
+        isThread: () => true,
+        isTextBased: () => true,
+        isDMBased: () => false,
+        parentId: "channel-1",
+        url: "https://discord.test/thread-1",
+        send: channelSend
+      }
+    });
+
+    await (bot as any).handlePr(interaction);
+
+    expect(hasUncommittedChanges).toHaveBeenCalledWith(worktreePath);
+    expect(getHeadSha).toHaveBeenCalledWith(worktreePath, "ask/719-123");
+    expect(pushBranch).toHaveBeenCalledWith(worktreePath, "ask/719-123");
+    expect(createDraftPullRequest).toHaveBeenCalledWith(expect.objectContaining({
+      worktreePath,
+      head: "ask/719-123",
+      base: "main",
+      title: "Implement issue 127"
+    }));
+    expect(channelSend).toHaveBeenCalledWith(expect.stringContaining("Draft PR opened"));
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Draft PR opened for `octocat/hello-world`"));
+  });
+});
+
 describe("ActuariusBot plan runner", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -1900,6 +2008,43 @@ describe("ActuariusBot plan runner", () => {
     );
     expect(send).toHaveBeenCalledWith(expect.stringContaining("Running iterative mode with one task"));
     expect(updateRequestStatus).toHaveBeenCalledWith(94, "succeeded");
+  });
+
+  it("caps invalid JSON fallback task descriptions", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan",
+      branchName: "ask/99-123"
+    });
+    vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot({ updateRequestStatus: vi.fn() });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn()
+      .mockResolvedValueOnce(`not json ${"x".repeat(9_000)}`);
+
+    await (bot as any).runPlanRequest({
+      requestId: 99,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Do iterative thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      iterative: true
+    });
+
+    const tasks = vi.mocked(runIterativeTaskLoop).mock.calls[0]![0].tasks;
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]!.description).toHaveLength(8_000);
+    expect(tasks[0]!.description.endsWith("...")).toBe(true);
   });
 
   it("iterative completion reports max-tweak task outcomes", async () => {

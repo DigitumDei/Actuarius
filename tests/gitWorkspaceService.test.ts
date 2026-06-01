@@ -362,6 +362,12 @@ describe("gitWorkspaceService", () => {
     await expect(hasUncommittedChanges("/tmp/repo")).resolves.toBe(true);
   });
 
+  it("reports no uncommitted changes for a clean worktree", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    await expect(hasUncommittedChanges("/tmp/repo")).resolves.toBe(false);
+  });
+
   it("pushes a request branch with GitHub credential helper", async () => {
     mockSpawnCollect.mockResolvedValueOnce({ stdout: "", stderr: "" });
 

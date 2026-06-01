@@ -38,6 +38,7 @@ export interface IterativeTaskLoopInput {
   env: NodeJS.ProcessEnv | undefined;
   getHeadSha: (repoPath: string, ref?: string) => Promise<string>;
   getDiffSinceRef: (repoPath: string, baseRef: string) => Promise<string>;
+  hasUncommittedChanges: (repoPath: string) => Promise<boolean>;
 }
 
 const MAX_TWEAKS_PER_TASK = 3;
@@ -103,7 +104,8 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
         "",
         "Implement this task. Make code changes in this worktree.",
         "Do not create or commit a plan file. Keep changes scoped to the request.",
-        "Commit all changes for this task before responding. If this is a tweak attempt, amend or add commits so HEAD includes the complete task result.",
+        "Commit all changes for this task before responding. If this is a tweak attempt, add a new commit for the tweak or amend only the current task's latest commit.",
+        "Do not rewrite commits from prior tasks. The worktree must be clean when you respond.",
         ...priorFeedback
       ].join("\n");
 
@@ -115,6 +117,10 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
         ...(input.implementerModel ? { model: input.implementerModel } : {}),
         ...(input.env ? { env: input.env } : {})
       });
+
+      if (await input.hasUncommittedChanges(worktreePath)) {
+        throw new Error(`Task ${taskIndex}/${taskCount} left uncommitted changes in the worktree. Commit or discard task changes before continuing.`);
+      }
 
       diff = await input.getDiffSinceRef(worktreePath, preTaskSha);
 
