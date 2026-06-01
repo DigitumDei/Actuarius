@@ -2526,25 +2526,6 @@ Output the result of the command or the link to the created issue.`;
       return;
     }
 
-    const isOwner = latestRequest.user_id === interaction.user.id;
-    const canManageGuild = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
-    if (!isOwner && !canManageGuild) {
-      await interaction.reply({
-        content: "Only the original requester or a user with `Manage Server` can run `/revise` for this branch.",
-        ephemeral: true
-      });
-      return;
-    }
-
-    const threadLatest = this.db.getRequestByThreadId(interaction.channelId);
-    if (threadLatest && isActiveRequestStatus(threadLatest.status)) {
-      await interaction.reply({
-        content: "The latest request in this thread is still queued or running. Wait for it to finish before revising.",
-        ephemeral: true
-      });
-      return;
-    }
-
     if (!existsSync(latestRequest.worktree_path)) {
       await interaction.reply({
         content: "The tracked worktree for this thread no longer exists. Start a new `/plan` request before revising.",
@@ -2568,8 +2549,27 @@ Output the result of the command or the link to the created issue.`;
     const branchName: string = latestRequest.branch_name;
     const sourceRequestId = latestRequest.id;
 
+    const isOwner = latestRequest.user_id === interaction.user.id;
+    const canManageGuild = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
+    if (!isOwner && !canManageGuild) {
+      await interaction.reply({
+        content: "Only the original requester or a user with `Manage Server` can run `/revise` for this branch.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const threadLatest = this.db.getRequestByThreadId(interaction.channelId);
+    if (threadLatest && isActiveRequestStatus(threadLatest.status)) {
+      await interaction.reply({
+        content: "The latest request in this thread is still queued or running. Wait for it to finish before revising.",
+        ephemeral: true
+      });
+      return;
+    }
+
     let revisionRequestId: number | null = null;
-    let roles: Awaited<ReturnType<typeof this.resolvePlanRoleModels>>;
+    let roles: { planner: ResolvedModelRole; implementer: ResolvedModelRole };
     try {
       const revisionRequest = this.db.createRequest({ 
         guildId: interaction.guildId,
@@ -2617,12 +2617,16 @@ Output the result of the command or the link to the created issue.`;
       }
       const message = this.describeExecutionError(error);
       this.logger.error({ error, sourceRequestId, revisionRequestId }, "Revision setup failed");
-      await interaction.editReply(`Revision setup failed: ${clipForDiscord(message, 1500)}`);
+      try {
+        await interaction.editReply(`Revision setup failed: ${clipForDiscord(message, 1500)}`);
+      } catch {
+        await interaction.followUp({ content: `Revision setup failed: ${clipForDiscord(message, 1500)}`, ephemeral: true });
+      }
       return;
     }
 
     try {
-      await interaction.channel!.send(`Revision started for request #${sourceRequestId}.`);
+      await interaction.channel!.send(`Revision queued for request #${sourceRequestId}.`);
     } catch (error) {
       this.logger.warn({ error, sourceRequestId, revisionRequestId }, "Failed to send revision start message");
     }
@@ -2861,7 +2865,6 @@ Output the result of the command or the link to the created issue.`;
 
   private async runParsedIterativeImplementation(input: {
     planText: string;
-    requestId: number;
     repoFullName: string;
     originalPrompt: string;
     worktreePath: string;
@@ -3090,7 +3093,6 @@ Output the result of the command or the link to the created issue.`;
         stage = "iterative-loop";
         const { tasks, overview, taskResults } = await this.runParsedIterativeImplementation({
           planText,
-          requestId: input.requestId,
           repoFullName: input.repo.fullName,
           originalPrompt: input.prompt,
           worktreePath,
@@ -3279,7 +3281,7 @@ Output the result of the command or the link to the created issue.`;
         this.logger.error({ requestId: input.requestId, worktreePath: input.worktreePath }, "Revise request worktree no longer exists");
         return;
       }
-      const reviewDiff = await getReviewDiff(input.worktreePath, { headRef: input.branchName });
+      const reviewDiff = await getReviewDiff(input.worktreePath, { headRef: input.branchName, excludePaths: ["docs/reviews/**"] });
       const currentDiff = reviewDiff.diffText;
 
       let reviewSummary: string | null = null;
@@ -3350,7 +3352,6 @@ Output the result of the command or the link to the created issue.`;
       stage = "iterative-loop";
       const { tasks, overview, taskResults } = await this.runParsedIterativeImplementation({
         planText,
-        requestId: input.requestId,
         repoFullName: input.repo.fullName,
         originalPrompt: input.prompt,
         worktreePath: input.worktreePath,

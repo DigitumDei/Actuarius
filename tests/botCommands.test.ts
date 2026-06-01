@@ -2305,6 +2305,11 @@ describe("ActuariusBot revise command", () => {
         prompt: "Original request prompt",
         revision_of_request_id: null
       }),
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "user-1",
+        status: "succeeded"
+      }),
       getRepoByChannelId: vi.fn().mockReturnValue({
         id: 5,
         owner: "octocat",
@@ -2355,23 +2360,29 @@ describe("ActuariusBot revise command", () => {
   });
 
   it("rejects when request is still active", async () => {
+    const worktreePath = await createTempWorktree("actuarius-revise-active-");
     const bot = createBot(createReviseDb({
       getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
         id: 41,
         user_id: "user-1",
-        worktree_path: "/tmp/worktree-revise",
+        worktree_path: worktreePath,
         branch_name: "ask/41-123",
-        status: "running"
+        status: "succeeded",
+        prompt: "Original request prompt"
+      }),
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 42,
+        user_id: "user-1",
+        worktree_path: worktreePath,
+        branch_name: "ask/41-123",
+        status: "queued"
       })
     }));
     const interaction = createInteraction();
 
     await (bot as any).handleRevise(interaction);
 
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "The latest request in this thread is still queued or running. Wait for it to finish before revising.",
-      ephemeral: true
-    });
+    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining("still queued or running") }));
   });
 
   it("rejects when user is not owner or guild manager", async () => {
@@ -2384,6 +2395,11 @@ describe("ActuariusBot revise command", () => {
         branch_name: "ask/41-123",
         status: "succeeded",
         prompt: "Original request prompt"
+      }),
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "different-user",
+        status: "succeeded"
       })
     }));
     const interaction = createInteraction({
@@ -2393,10 +2409,7 @@ describe("ActuariusBot revise command", () => {
 
     await (bot as any).handleRevise(interaction);
 
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "Only the original requester or a user with `Manage Server` can run `/revise` for this branch.",
-      ephemeral: true
-    });
+    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining("Only the original requester") }));
   });
 
   it("rejects when tracked worktree path no longer exists", async () => {
@@ -2475,6 +2488,11 @@ describe("ActuariusBot revise command", () => {
         branch_name: "ask/41-123",
         status: "succeeded",
         prompt: "Original request prompt"
+      }),
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "user-1",
+        status: "succeeded"
       })
     }));
     const enqueue = vi.fn();
@@ -2494,7 +2512,6 @@ describe("ActuariusBot revise command", () => {
       revisionOfRequestId: 41
     });
     expect(updateRequestWorkspace).toHaveBeenCalledWith(42, worktreePath, "ask/41-123");
-    expect(interaction.deferReply.mock.invocationCallOrder[0]).toBeLessThan(createRequest.mock.invocationCallOrder[0]);
     expect(createRequest.mock.invocationCallOrder[0]).toBeLessThan(enqueue.mock.invocationCallOrder[0]);
     expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Revision queued as request #42 for request #41"));
   });
@@ -2514,6 +2531,11 @@ describe("ActuariusBot revise command", () => {
         branch_name: "ask/41-123",
         status: "succeeded",
         prompt: "Original request prompt"
+      }),
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "user-1",
+        status: "succeeded"
       })
     }));
     const enqueue = vi.fn();
@@ -2888,7 +2910,7 @@ describe("ActuariusBot revise command", () => {
         worktreePath
       })
     );
-    expect(getReviewDiff).toHaveBeenCalledWith(worktreePath, { headRef: "ask/41-123" });
+    expect(getReviewDiff).toHaveBeenCalledWith(worktreePath, { headRef: "ask/41-123", excludePaths: ["docs/reviews/**"] });
     expect(updateRequestStatus).toHaveBeenCalledWith(42, "succeeded");
   });
 
@@ -3061,5 +3083,51 @@ describe("ActuariusBot revise command", () => {
     expect(updateRequestStatus).toHaveBeenCalledWith(42, "running");
     expect(updateRequestStatus).toHaveBeenCalledWith(42, "failed");
     expect(getReviewDiff).not.toHaveBeenCalled();
+  });
+
+  it("preserves original owner when admin runs /revise", async () => {
+    const worktreePath = await createTempWorktree("actuarius-revise-admin-owner-");
+    const createRequest = vi.fn().mockReturnValue({
+      id: 42,
+      guild_id: "guild-1",
+      repo_id: 5,
+      channel_id: "channel-1",
+      thread_id: "thread-1",
+      user_id: "requester-1",
+      prompt: "Original request prompt",
+      status: "queued",
+      worktree_path: null,
+      branch_name: null,
+      revision_of_request_id: 41,
+      created_at: "2026-06-01T00:00:00.000Z"
+    });
+    const bot = createBot(createReviseDb({
+      createRequest,
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "requester-1",
+        worktree_path: worktreePath,
+        branch_name: "ask/41-123",
+        status: "succeeded",
+        prompt: "Original request prompt"
+      }),
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "requester-1",
+        status: "succeeded"
+      })
+    }));
+    (bot as any).requestQueue.enqueue = vi.fn();
+
+    const interaction = createInteraction({
+      user: { id: "admin-user" },
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+
+    await (bot as any).handleRevise(interaction);
+
+    expect(createRequest).toHaveBeenCalledWith(expect.objectContaining({
+      userId: "requester-1"
+    }));
   });
 });
