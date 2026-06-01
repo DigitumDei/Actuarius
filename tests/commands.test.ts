@@ -98,6 +98,22 @@ describe("command registration", () => {
     );
   });
 
+  it("registers /revise with optional string findings option", () => {
+    const reviseCommand = commandBuilders.find((builder) => builder.name === "revise");
+    expect(reviseCommand).toBeDefined();
+
+    const json = reviseCommand!.toJSON();
+    expect(json.options).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "findings",
+          required: false,
+          type: 3
+        })
+      ])
+    );
+  });
+
   it("registers /plan with optional boolean iterative option", () => {
     const planCommand = commandBuilders.find((builder) => builder.name === "plan");
     expect(planCommand).toBeDefined();
