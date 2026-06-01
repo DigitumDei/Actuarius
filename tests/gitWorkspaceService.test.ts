@@ -299,6 +299,40 @@ describe("gitWorkspaceService", () => {
     await expect(getDiffSinceRef("/tmp/repo", "abc123")).resolves.toBe("diff --git a/src/new.ts b/src/new.ts\n+new source");
   });
 
+  it("accepts string code 1 from no-index diff for untracked files", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "src/new.ts\0", stderr: "" })
+      .mockRejectedValueOnce(Object.assign(new Error("git diff exited"), {
+        code: "1",
+        stdout: "diff --git a/src/new.ts b/src/new.ts\n+new source",
+        stderr: ""
+      }));
+
+    await expect(getDiffSinceRef("/tmp/repo", "abc123")).resolves.toBe("diff --git a/src/new.ts b/src/new.ts\n+new source");
+  });
+
+  it("skips an untracked file that disappears before diffing", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "diff --git a/src/index.ts b/src/index.ts\n+tracked", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "src/new.ts\0src/vanished.ts\0", stderr: "" })
+      .mockRejectedValueOnce(Object.assign(new Error("Process exited with code 1"), {
+        code: 1,
+        stdout: "diff --git a/src/new.ts b/src/new.ts\n+new source",
+        stderr: ""
+      }))
+      .mockRejectedValueOnce(Object.assign(new Error("fatal: pathspec 'src/vanished.ts' did not match any files"), {
+        code: 128,
+        stdout: "",
+        stderr: "fatal: pathspec 'src/vanished.ts' did not match any files"
+      }));
+
+    await expect(getDiffSinceRef("/tmp/repo", "abc123")).resolves.toBe([
+      "diff --git a/src/index.ts b/src/index.ts\n+tracked",
+      "diff --git a/src/new.ts b/src/new.ts\n+new source"
+    ].join("\n"));
+  });
+
   it("does not trim NUL-delimited untracked paths", async () => {
     mockSpawnCollect
       .mockResolvedValueOnce({ stdout: "", stderr: "" })

@@ -223,11 +223,15 @@ function truncateText(text: string, limit: number): string {
 export function parseIterativePlan(text: string): { overview: string; tasks: IterativePlanTask[] } | null {
   const stripped = stripMarkdownJsonFence(text);
   try {
-    const parsed = JSON.parse(stripped) as { overview?: string; tasks?: IterativePlanTask[] };
-    if (typeof parsed.overview !== "string" || parsed.overview.trim().length === 0 || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
+    const parsed = JSON.parse(stripped) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return null;
     }
-    const tasks = parsed.tasks.flatMap((task) => {
+    const candidate = parsed as { overview?: unknown; tasks?: unknown };
+    if (typeof candidate.overview !== "string" || candidate.overview.trim().length === 0 || !Array.isArray(candidate.tasks) || candidate.tasks.length === 0) {
+      return null;
+    }
+    const tasks = candidate.tasks.flatMap((task) => {
       if (!task || typeof task.title !== "string" || typeof task.description !== "string") {
         return [];
       }
@@ -239,7 +243,7 @@ export function parseIterativePlan(text: string): { overview: string; tasks: Ite
       return [{ title, description }];
     });
     if (tasks.length === 0) return null;
-    return { overview: truncateText(parsed.overview, ITERATIVE_OVERVIEW_LIMIT), tasks };
+    return { overview: truncateText(candidate.overview, ITERATIVE_OVERVIEW_LIMIT), tasks };
   } catch {
     return null;
   }

@@ -175,7 +175,7 @@ async function runGitNoIndexDiffWithOverflowFallback(args: string[], cwd: string
       return clipOverflowedDiff(spawnError.stdout ?? "");
     }
 
-    if ((spawnError.stdout ?? "").length > 0 && (spawnError.code === 1 || (spawnError.message ?? "").includes("code 1"))) {
+    if ((spawnError.stdout ?? "").length > 0 && (spawnError.code === 1 || spawnError.code === "1" || (spawnError.message ?? "").includes("code 1"))) {
       return spawnError.stdout ?? "";
     }
 
@@ -567,7 +567,10 @@ export async function getDiffSinceRef(
     }
 
     const untrackedDiffs = await Promise.all(
-      untrackedResult.map((path) => runGitNoIndexDiffWithOverflowFallback(["diff", "--no-index", "--", "/dev/null", path], repoPath))
+      untrackedResult.map((path) =>
+        runGitNoIndexDiffWithOverflowFallback(["diff", "--no-index", "--", "/dev/null", path], repoPath)
+          .catch(() => "")
+      )
     );
 
     return [trackedDiff.trimEnd(), ...untrackedDiffs.map((diff) => diff.trimEnd()).filter(Boolean)]

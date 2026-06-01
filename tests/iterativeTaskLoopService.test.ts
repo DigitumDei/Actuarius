@@ -115,6 +115,20 @@ describe("runIterativeTaskLoop", () => {
     expect(result.taskResults[0]!.tweakAttempts).toBe(0);
   });
 
+  it("accepts APPROVED after leading blank lines without splitting large verifier output", async () => {
+    mockRunProviderText
+      .mockResolvedValueOnce("implementer output")
+      .mockResolvedValueOnce(`\n\n  APPROVED:\n${"details\n".repeat(1000)}`);
+
+    const result = await runIterativeTaskLoop({
+      ...defaultInput,
+      tasks: [{ title: "Task 1", description: "First task" }]
+    });
+
+    expect(result.taskResults[0]!.approved).toBe(true);
+    expect(result.taskResults[0]!.tweakAttempts).toBe(0);
+  });
+
   it("does not treat negated approval output as approved", async () => {
     mockRunProviderText
       .mockResolvedValueOnce("implementer output 1")

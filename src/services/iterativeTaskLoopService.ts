@@ -53,7 +53,8 @@ function formatTaskTitleForMessage(title: string): string {
 }
 
 function isApprovedVerification(output: string): boolean {
-  const firstLine = output.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ?? "";
+  const match = /^[^\r\n]+/m.exec(output.trimStart());
+  const firstLine = match ? match[0].trim() : "";
   const normalized = firstLine.replace(/^[*_`~\s]+|[*_`~\s.:-]+$/gu, "");
   return /^APPROVED$/iu.test(normalized);
 }

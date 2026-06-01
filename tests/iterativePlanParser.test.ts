@@ -49,6 +49,7 @@ describe("iterative plan parsing", () => {
   it("returns null for non-object JSON primitives", () => {
     expect(parseIterativePlan("null")).toBeNull();
     expect(parseIterativePlan("\"hello\"")).toBeNull();
+    expect(parseIterativePlan("[]")).toBeNull();
   });
 
   it("returns null for empty tasks or malformed task entries", () => {
