@@ -617,6 +617,7 @@ export async function runAdversarialReview(input: {
   stageTimeoutMs: number;
   totalTimeoutMs: number;
   maxConsensusRounds?: number;
+  onProgress?: (event: ReviewProgressEvent) => void;
 }): Promise<AdversarialReviewResult> {
   if (input.reviewers.length < 2) {
     throw new AdversarialReviewError("INSUFFICIENT_REVIEWERS", "Review requires at least 2 configured reviewers.");
@@ -662,6 +663,7 @@ export async function runAdversarialReview(input: {
 
   try {
     checkBudget();
+    input.onProgress?.({ type: "analyzer-start" });
     const analyzerPrompt = buildAnalyzerPrompt({
       repoFullName: input.repoFullName,
       branchName: input.branchName,
@@ -673,6 +675,7 @@ export async function runAdversarialReview(input: {
       timeoutMs: getStageTimeout(startTime, input.stageTimeoutMs, input.totalTimeoutMs, 3),
       ...(input.analyzer.model ? { model: input.analyzer.model } : {})
     });
+    input.onProgress?.({ type: "analyzer-complete" });
 
     const allReviewerOutputs: ReviewerStageResult[] = [];
     const allCritiqueOutputs: ReviewCritiqueResult[] = [];
@@ -682,6 +685,7 @@ export async function runAdversarialReview(input: {
 
     for (let round = 1; round <= maxConsensusRounds; round += 1) {
       checkBudget();
+      input.onProgress?.({ type: "round-start", round, maxRounds: maxConsensusRounds });
       const reviewerResults = await Promise.allSettled(
         activeReviewers.map(async (reviewer) => {
           const priorReview = findLatestReviewerOutput(allReviewerOutputs, reviewer.label);
@@ -836,6 +840,7 @@ export async function runAdversarialReview(input: {
         consensusSummary: judgeDecision.consensusSummary,
         reviewerGuidance: judgeDecision.reviewerGuidance
       });
+      input.onProgress?.({ type: "round-complete", round, maxRounds: maxConsensusRounds, consensusReached: judgeDecision.consensusReached });
 
       if (judgeDecision.consensusReached) {
         break;
@@ -843,6 +848,7 @@ export async function runAdversarialReview(input: {
     }
 
     checkBudget();
+    input.onProgress?.({ type: "summarizer-start" });
     const summarizerRawText = await input.summarizer.run({
       prompt: buildSummarizerPrompt({
         repoFullName: input.repoFullName,
