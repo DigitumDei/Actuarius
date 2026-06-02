@@ -53,7 +53,8 @@ import {
 import {
   AdversarialReviewError,
   runAdversarialReview,
-  type ReviewModelRunner
+  type ReviewModelRunner,
+  type ReviewProgressEvent
 } from "../services/adversarialReviewService.js";
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
 import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
@@ -2395,7 +2396,8 @@ Output the result of the command or the link to the created issue.`;
       return;
     }
 
-    const parentId = interaction.channel.parentId;
+    const reviewThread = interaction.channel;
+    const parentId = reviewThread.parentId;
     if (!parentId) {
       await interaction.reply({ content: "Could not resolve the parent repo channel for this thread.", ephemeral: true });
       return;
@@ -2446,11 +2448,11 @@ Output the result of the command or the link to the created issue.`;
     }
 
     await interaction.deferReply({ ephemeral: true });
-    await interaction.channel.send("Adversarial review started.");
+    await reviewThread.send("Adversarial review started.");
 
     try {
       const runners = this.buildReviewRunners(interaction.guildId);
-      const threadHistory = await this.buildThreadHistory(interaction.channel);
+      const threadHistory = await this.buildThreadHistory(reviewThread);
       const result = await new Promise<Awaited<ReturnType<typeof runAdversarialReview>>>((resolve, reject) => {
         this.requestQueue.enqueue(interaction.guildId!, async () => {
           try {
@@ -2470,7 +2472,30 @@ Output the result of the command or the link to the created issue.`;
               summarizer: runners.summarizer,
               stageTimeoutMs: this.config.askExecutionTimeoutMs,
               totalTimeoutMs: this.config.askExecutionTimeoutMs * 2,
-              maxConsensusRounds: this.getReviewRounds(interaction.guildId!)
+              maxConsensusRounds: this.getReviewRounds(interaction.guildId!),
+              onProgress: async (event: ReviewProgressEvent) => {
+                switch (event.type) {
+                  case "analyzer-start":
+                    await reviewThread.send("Analyzing change intent…");
+                    break;
+                  case "analyzer-complete":
+                    await reviewThread.send("Analysis complete.");
+                    break;
+                  case "round-start":
+                    await reviewThread.send(`Round ${event.round}/${event.maxRounds}: reviewing…`);
+                    break;
+                  case "round-complete":
+                    if (event.consensusReached) {
+                      await reviewThread.send(`Round ${event.round}/${event.maxRounds}: consensus reached.`);
+                    } else {
+                      await reviewThread.send(`Round ${event.round}/${event.maxRounds} complete.`);
+                    }
+                    break;
+                  case "summarizer-start":
+                    await reviewThread.send("Synthesizing final verdict…");
+                    break;
+                }
+              }
             }));
           } catch (error) {
             reject(error);

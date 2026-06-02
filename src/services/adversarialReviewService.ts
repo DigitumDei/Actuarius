@@ -83,6 +83,17 @@ export interface AdversarialReviewResult {
   };
 }
 
+export type ReviewProgressEvent =
+  | { type: "analyzer-start" }
+  | { type: "analyzer-complete" }
+  | { type: "round-start"; round: number; maxRounds: number }
+  | { type: "round-complete"; round: number; maxRounds: number; consensusReached: boolean }
+  | { type: "summarizer-start" };
+
+type ReviewProgressCallback = (event: ReviewProgressEvent) => Promise<void> | void;
+
+const PROGRESS_CALLBACK_TIMEOUT_MS = 10_000;
+
 export class AdversarialReviewError extends Error {
   public readonly code:
     | "INSUFFICIENT_REVIEWERS"
@@ -610,6 +621,7 @@ export async function runAdversarialReview(input: {
   stageTimeoutMs: number;
   totalTimeoutMs: number;
   maxConsensusRounds?: number;
+  onProgress?: ReviewProgressCallback;
 }): Promise<AdversarialReviewResult> {
   if (input.reviewers.length < 2) {
     throw new AdversarialReviewError("INSUFFICIENT_REVIEWERS", "Review requires at least 2 configured reviewers.");
@@ -620,6 +632,22 @@ export async function runAdversarialReview(input: {
   const checkBudget = (): void => {
     if (Date.now() - startTime > input.totalTimeoutMs) {
       throw new AdversarialReviewError("PIPELINE_FAILED", `Review pipeline exceeded ${input.totalTimeoutMs}ms.`);
+    }
+  };
+  const emitProgress = async (event: ReviewProgressEvent): Promise<void> => {
+    if (!input.onProgress) return;
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        reject(new Error(`Review progress callback timed out after ${PROGRESS_CALLBACK_TIMEOUT_MS}ms.`));
+      }, PROGRESS_CALLBACK_TIMEOUT_MS);
+    });
+
+    try {
+      await Promise.race([Promise.resolve(input.onProgress(event)), timeoutPromise]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
   };
 
@@ -655,6 +683,7 @@ export async function runAdversarialReview(input: {
 
   try {
     checkBudget();
+    await emitProgress({ type: "analyzer-start" });
     const analyzerPrompt = buildAnalyzerPrompt({
       repoFullName: input.repoFullName,
       branchName: input.branchName,
@@ -666,6 +695,7 @@ export async function runAdversarialReview(input: {
       timeoutMs: getStageTimeout(startTime, input.stageTimeoutMs, input.totalTimeoutMs, 3),
       ...(input.analyzer.model ? { model: input.analyzer.model } : {})
     });
+    await emitProgress({ type: "analyzer-complete" });
 
     const allReviewerOutputs: ReviewerStageResult[] = [];
     const allCritiqueOutputs: ReviewCritiqueResult[] = [];
@@ -675,6 +705,7 @@ export async function runAdversarialReview(input: {
 
     for (let round = 1; round <= maxConsensusRounds; round += 1) {
       checkBudget();
+      await emitProgress({ type: "round-start", round, maxRounds: maxConsensusRounds });
       const reviewerResults = await Promise.allSettled(
         activeReviewers.map(async (reviewer) => {
           const priorReview = findLatestReviewerOutput(allReviewerOutputs, reviewer.label);
@@ -804,6 +835,7 @@ export async function runAdversarialReview(input: {
           { round },
           "All critiques failed; no active reviewers remain. Proceeding to summarizer with collected data."
         );
+        await emitProgress({ type: "round-complete", round, maxRounds: maxConsensusRounds, consensusReached: false });
         break;
       }
 
@@ -829,6 +861,7 @@ export async function runAdversarialReview(input: {
         consensusSummary: judgeDecision.consensusSummary,
         reviewerGuidance: judgeDecision.reviewerGuidance
       });
+      await emitProgress({ type: "round-complete", round, maxRounds: maxConsensusRounds, consensusReached: judgeDecision.consensusReached });
 
       if (judgeDecision.consensusReached) {
         break;
@@ -836,6 +869,7 @@ export async function runAdversarialReview(input: {
     }
 
     checkBudget();
+    await emitProgress({ type: "summarizer-start" });
     const summarizerRawText = await input.summarizer.run({
       prompt: buildSummarizerPrompt({
         repoFullName: input.repoFullName,

@@ -1322,7 +1322,7 @@ describe("ActuariusBot review command", () => {
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
-  it("passes the configured review round limit into the review service", async () => {
+  it("passes review progress into the review service and maps events to Discord messages", async () => {
     vi.mocked(runAdversarialReview).mockResolvedValue({
       reviewRunId: 12,
       diffHeadSha: "abc123",
@@ -1375,18 +1375,36 @@ describe("ActuariusBot review command", () => {
       judge: { provider: "claude", model: "claude-opus", label: "Claude", run: vi.fn() },
       summarizer: { provider: "codex", model: "o4-mini", label: "Codex", run: vi.fn() }
     });
+    const send = vi.fn().mockResolvedValue(undefined);
     const interaction = createInteraction({
       memberPermissions: { has: vi.fn().mockReturnValue(true) },
       deferReply: vi.fn().mockResolvedValue(undefined),
       editReply: vi.fn().mockResolvedValue(undefined),
-      channel: { isThread: () => true, parentId: "channel-1", send: vi.fn().mockResolvedValue(undefined), messages: { fetch: vi.fn().mockResolvedValue(new Map()) } }
+      channel: { isThread: () => true, parentId: "channel-1", send, messages: { fetch: vi.fn().mockResolvedValue(new Map()) } }
     });
 
     await (bot as any).handleReview(interaction);
 
     expect(runAdversarialReview).toHaveBeenCalledWith(expect.objectContaining({
-      maxConsensusRounds: 4
+      maxConsensusRounds: 4,
+      onProgress: expect.any(Function)
     }));
+    send.mockClear();
+    const reviewInput = vi.mocked(runAdversarialReview).mock.calls[0]![0];
+    await reviewInput.onProgress?.({ type: "analyzer-start" });
+    await reviewInput.onProgress?.({ type: "analyzer-complete" });
+    await reviewInput.onProgress?.({ type: "round-start", round: 1, maxRounds: 4 });
+    await reviewInput.onProgress?.({ type: "round-complete", round: 1, maxRounds: 4, consensusReached: false });
+    await reviewInput.onProgress?.({ type: "round-complete", round: 2, maxRounds: 4, consensusReached: true });
+    await reviewInput.onProgress?.({ type: "summarizer-start" });
+
+    expect(send).toHaveBeenCalledTimes(6);
+    expect(send).toHaveBeenNthCalledWith(1, "Analyzing change intent…");
+    expect(send).toHaveBeenNthCalledWith(2, "Analysis complete.");
+    expect(send).toHaveBeenNthCalledWith(3, "Round 1/4: reviewing…");
+    expect(send).toHaveBeenNthCalledWith(4, "Round 1/4 complete.");
+    expect(send).toHaveBeenNthCalledWith(5, "Round 2/4: consensus reached.");
+    expect(send).toHaveBeenNthCalledWith(6, "Synthesizing final verdict…");
   });
 });
 
