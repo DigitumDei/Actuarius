@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import pino from "pino";
+import type { ReviewProgressEvent } from "../src/services/adversarialReviewService.js";
 
 vi.mock("../src/services/gitWorkspaceService.js", () => ({
   getReviewDiff: vi.fn()
@@ -207,11 +208,20 @@ describe("adversarialReviewService", () => {
     });
 
     const runs: Array<{ label: string; timeoutMs: number }> = [];
+    const progressEvents: ReviewProgressEvent[] = [];
+    const progressMarkers: string[] = [];
+    const onProgress = vi.fn(async (event: ReviewProgressEvent) => {
+      progressEvents.push(event);
+      progressMarkers.push(`started:${event.type}`);
+      await Promise.resolve();
+      progressMarkers.push(`awaited:${event.type}`);
+    });
     const analyzer = {
       provider: "claude" as const,
       model: "claude-sonnet-4",
       label: "Claude",
       run: vi.fn(async ({ timeoutMs }: { timeoutMs: number }) => {
+        expect(progressMarkers).toContain("awaited:analyzer-start");
         runs.push({ label: "analyzer", timeoutMs });
         return "Summary\n- queue behavior\nRisk Areas\n- review permissions";
       })
@@ -222,6 +232,7 @@ describe("adversarialReviewService", () => {
         model: "claude-sonnet-4",
         label: "Claude",
         run: vi.fn(async ({ timeoutMs }: { timeoutMs: number }) => {
+          expect(progressMarkers).toContain("awaited:round-start");
           runs.push({ label: "reviewer-1", timeoutMs });
           return "Blocking Issues\n- None";
         })
@@ -240,6 +251,7 @@ describe("adversarialReviewService", () => {
         model: "gemini-2.5-pro",
         label: "Gemini",
         run: vi.fn(async ({ timeoutMs }: { timeoutMs: number }) => {
+          expect(progressMarkers).toContain("awaited:round-start");
           runs.push({ label: "reviewer-3", timeoutMs });
           return "Missing Tests\n- Add handleReview permission coverage";
         })
@@ -321,7 +333,8 @@ describe("adversarialReviewService", () => {
       summarizer,
       stageTimeoutMs: 1_000,
       totalTimeoutMs: 5_000,
-      maxConsensusRounds: 2
+      maxConsensusRounds: 2,
+      onProgress
     });
 
     expect(result.reviewRunId).toBe(7);
@@ -373,6 +386,73 @@ describe("adversarialReviewService", () => {
       "2:Gemini"
     ]);
     expect(result.rawResult.judgeRounds).toHaveLength(2);
+    expect(onProgress).toHaveBeenCalledTimes(7);
+    expect(progressEvents).toEqual([
+      { type: "analyzer-start" },
+      { type: "analyzer-complete" },
+      { type: "round-start", round: 1, maxRounds: 2 },
+      { type: "round-complete", round: 1, maxRounds: 2, consensusReached: false },
+      { type: "round-start", round: 2, maxRounds: 2 },
+      { type: "round-complete", round: 2, maxRounds: 2, consensusReached: true },
+      { type: "summarizer-start" }
+    ]);
+  });
+
+  it("awaits rejected async progress callbacks and records the review as failed", async () => {
+    mockGetReviewDiff.mockResolvedValue({
+      baseBranch: "main",
+      baseRef: "origin/main",
+      headRef: "ask/51-123",
+      headSha: "deadbeef",
+      changedFiles: ["src/discord/bot.ts"],
+      diffText: "diff --git a/src/discord/bot.ts b/src/discord/bot.ts\n"
+    });
+
+    const analyzer = {
+      provider: "claude" as const,
+      label: "Claude",
+      run: vi.fn(async () => "Summary\n- queue behavior")
+    };
+    const reviewers = [
+      { provider: "claude" as const, label: "Claude", run: vi.fn(async () => "Blocking Issues\n- None") },
+      { provider: "gemini" as const, label: "Gemini", run: vi.fn(async () => "Missing Tests\n- Add coverage") }
+    ];
+    const completeReviewRun = vi.fn();
+
+    await expect(runAdversarialReview({
+      db: {
+        createReviewRun: vi.fn().mockReturnValue({ id: 9 }),
+        completeReviewRun
+      } as never,
+      logger: pino({ level: "silent" }),
+      requestId: 51,
+      threadId: "thread-51",
+      repoFullName: "digitumdei/actuarius",
+      branchName: "ask/51-123",
+      worktreePath: join(tempRoot, "worktree"),
+      artifactRootPath: join(tempRoot, "artifacts"),
+      threadHistory: "[User]: Add feature X\n\n[Assistant]: Done.",
+      analyzer,
+      reviewers,
+      judge: { provider: "codex" as const, label: "Codex", run: vi.fn() },
+      summarizer: { provider: "gemini" as const, label: "Gemini", run: vi.fn() },
+      stageTimeoutMs: 30_000,
+      totalTimeoutMs: 30_000,
+      maxConsensusRounds: 1,
+      onProgress: async () => {
+        await Promise.resolve();
+        throw new Error("progress send failed");
+      }
+    })).rejects.toMatchObject({
+      code: "PIPELINE_FAILED",
+      message: "progress send failed"
+    });
+
+    expect(analyzer.run).not.toHaveBeenCalled();
+    expect(completeReviewRun).toHaveBeenCalledWith(expect.objectContaining({
+      reviewRunId: 9,
+      status: "failed"
+    }));
   });
 
   it("returns a partial result when all critiques fail in a round instead of throwing INSUFFICIENT_REVIEWERS", async () => {
@@ -435,6 +515,7 @@ describe("adversarialReviewService", () => {
         return original(args);
       });
     }
+    const progressEvents: ReviewProgressEvent[] = [];
 
     const result = await runAdversarialReview({
       db: {
@@ -455,7 +536,10 @@ describe("adversarialReviewService", () => {
       summarizer,
       stageTimeoutMs: 30_000,
       totalTimeoutMs: 30_000,
-      maxConsensusRounds: 3
+      maxConsensusRounds: 3,
+      onProgress: (event) => {
+        progressEvents.push(event);
+      }
     });
 
     // Should succeed with partial result, not throw INSUFFICIENT_REVIEWERS
@@ -465,6 +549,13 @@ describe("adversarialReviewService", () => {
     expect(summarizer.run).toHaveBeenCalledOnce();
     // Judge should not have been called — we broke out before reaching it
     expect(judge.run).not.toHaveBeenCalled();
+    expect(progressEvents).toEqual([
+      { type: "analyzer-start" },
+      { type: "analyzer-complete" },
+      { type: "round-start", round: 1, maxRounds: 3 },
+      { type: "round-complete", round: 1, maxRounds: 3, consensusReached: false },
+      { type: "summarizer-start" }
+    ]);
   });
 });
 
