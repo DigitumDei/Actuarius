@@ -83,6 +83,13 @@ export interface AdversarialReviewResult {
   };
 }
 
+export type ReviewProgressEvent =
+  | { type: "analyzer-start" }
+  | { type: "analyzer-complete" }
+  | { type: "round-start"; round: number; maxRounds: number }
+  | { type: "round-complete"; round: number; maxRounds: number; consensusReached: boolean }
+  | { type: "summarizer-start" };
+
 export class AdversarialReviewError extends Error {
   public readonly code:
     | "INSUFFICIENT_REVIEWERS"
