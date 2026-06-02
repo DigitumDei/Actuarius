@@ -53,7 +53,8 @@ import {
 import {
   AdversarialReviewError,
   runAdversarialReview,
-  type ReviewModelRunner
+  type ReviewModelRunner,
+  type ReviewProgressEvent
 } from "../services/adversarialReviewService.js";
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
 import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
@@ -2470,7 +2471,24 @@ Output the result of the command or the link to the created issue.`;
               summarizer: runners.summarizer,
               stageTimeoutMs: this.config.askExecutionTimeoutMs,
               totalTimeoutMs: this.config.askExecutionTimeoutMs * 2,
-              maxConsensusRounds: this.getReviewRounds(interaction.guildId!)
+              maxConsensusRounds: this.getReviewRounds(interaction.guildId!),
+              onProgress: async (event: ReviewProgressEvent) => {
+                switch (event.type) {
+                  case "round-start":
+                    await interaction.channel.send(`Round ${event.round}/${event.maxRounds}: reviewing…`);
+                    break;
+                  case "round-complete":
+                    if (event.consensusReached) {
+                      await interaction.channel.send(`Round ${event.round}/${event.maxRounds}: consensus reached.`);
+                    } else {
+                      await interaction.channel.send(`Round ${event.round}/${event.maxRounds} complete.`);
+                    }
+                    break;
+                  case "summarizer-start":
+                    await interaction.channel.send("Synthesizing final verdict…");
+                    break;
+                }
+              }
             }));
           } catch (error) {
             reject(error);
