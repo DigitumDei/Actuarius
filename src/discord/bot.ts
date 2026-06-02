@@ -2474,6 +2474,12 @@ Output the result of the command or the link to the created issue.`;
               maxConsensusRounds: this.getReviewRounds(interaction.guildId!),
               onProgress: async (event: ReviewProgressEvent) => {
                 switch (event.type) {
+                  case "analyzer-start":
+                    await interaction.channel.send("Analyzing change intent…");
+                    break;
+                  case "analyzer-complete":
+                    await interaction.channel.send("Analysis complete.");
+                    break;
                   case "round-start":
                     await interaction.channel.send(`Round ${event.round}/${event.maxRounds}: reviewing…`);
                     break;
