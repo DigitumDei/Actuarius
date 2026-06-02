@@ -455,6 +455,70 @@ describe("adversarialReviewService", () => {
     }));
   });
 
+  it("times out hanging async progress callbacks and records the review as failed", async () => {
+    vi.useFakeTimers();
+    try {
+      mockGetReviewDiff.mockResolvedValue({
+        baseBranch: "main",
+        baseRef: "origin/main",
+        headRef: "ask/51-123",
+        headSha: "deadbeef",
+        changedFiles: ["src/discord/bot.ts"],
+        diffText: "diff --git a/src/discord/bot.ts b/src/discord/bot.ts\n"
+      });
+
+      const analyzer = {
+        provider: "claude" as const,
+        label: "Claude",
+        run: vi.fn(async () => "Summary\n- queue behavior")
+      };
+      const reviewers = [
+        { provider: "claude" as const, label: "Claude", run: vi.fn(async () => "Blocking Issues\n- None") },
+        { provider: "gemini" as const, label: "Gemini", run: vi.fn(async () => "Missing Tests\n- Add coverage") }
+      ];
+      const completeReviewRun = vi.fn();
+
+      const reviewPromise = runAdversarialReview({
+        db: {
+          createReviewRun: vi.fn().mockReturnValue({ id: 9 }),
+          completeReviewRun
+        } as never,
+        logger: pino({ level: "silent" }),
+        requestId: 51,
+        threadId: "thread-51",
+        repoFullName: "digitumdei/actuarius",
+        branchName: "ask/51-123",
+        worktreePath: join(tempRoot, "worktree"),
+        artifactRootPath: join(tempRoot, "artifacts"),
+        threadHistory: "[User]: Add feature X\n\n[Assistant]: Done.",
+        analyzer,
+        reviewers,
+        judge: { provider: "codex" as const, label: "Codex", run: vi.fn() },
+        summarizer: { provider: "gemini" as const, label: "Gemini", run: vi.fn() },
+        stageTimeoutMs: 30_000,
+        totalTimeoutMs: 30_000,
+        maxConsensusRounds: 1,
+        onProgress: () => new Promise<void>(() => {})
+      });
+
+      const rejectionAssertion = expect(reviewPromise).rejects.toMatchObject({
+        code: "PIPELINE_FAILED",
+        message: "Review progress callback timed out after 10000ms."
+      });
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejectionAssertion;
+
+      expect(analyzer.run).not.toHaveBeenCalled();
+      expect(completeReviewRun).toHaveBeenCalledWith(expect.objectContaining({
+        reviewRunId: 9,
+        status: "failed"
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("returns a partial result when all critiques fail in a round instead of throwing INSUFFICIENT_REVIEWERS", async () => {
     mockGetReviewDiff.mockResolvedValue({
       baseBranch: "main",

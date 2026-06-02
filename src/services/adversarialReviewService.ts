@@ -92,6 +92,8 @@ export type ReviewProgressEvent =
 
 type ReviewProgressCallback = (event: ReviewProgressEvent) => Promise<void> | void;
 
+const PROGRESS_CALLBACK_TIMEOUT_MS = 10_000;
+
 export class AdversarialReviewError extends Error {
   public readonly code:
     | "INSUFFICIENT_REVIEWERS"
@@ -633,7 +635,20 @@ export async function runAdversarialReview(input: {
     }
   };
   const emitProgress = async (event: ReviewProgressEvent): Promise<void> => {
-    await input.onProgress?.(event);
+    if (!input.onProgress) return;
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        reject(new Error(`Review progress callback timed out after ${PROGRESS_CALLBACK_TIMEOUT_MS}ms.`));
+      }, PROGRESS_CALLBACK_TIMEOUT_MS);
+    });
+
+    try {
+      await Promise.race([Promise.resolve(input.onProgress(event)), timeoutPromise]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
   };
 
   const diff = await getReviewDiff(input.worktreePath, {
