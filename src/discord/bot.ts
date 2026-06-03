@@ -23,7 +23,7 @@ import {
 import type pino from "pino";
 import type { AppConfig } from "../config.js";
 import { AppDatabase } from "../db/database.js";
-import type { AiProvider, ModelRole, ReviewModelRole, RepoRow, RequestStatus } from "../db/types.js";
+import type { AiProvider, ReviewModelRole, RepoRow, RequestStatus } from "../db/types.js";
 import { commandBuilders } from "./commands.js";
 import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
