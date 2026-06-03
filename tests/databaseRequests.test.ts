@@ -409,14 +409,14 @@ describe("AppDatabase migration from legacy reviewer_slots", () => {
     expect(slots).toHaveLength(2);
     expect(slots[0]).toMatchObject({
       guild_id: "guild-1",
-      slot_index: 0,
+      slot_index: 1,
       provider: "claude",
       model: "claude-sonnet-4-20250514",
       updated_by_user_id: "system-migration"
     });
     expect(slots[1]).toMatchObject({
       guild_id: "guild-1",
-      slot_index: 1,
+      slot_index: 2,
       provider: "gemini",
       model: "gemini-2.5-pro",
       updated_by_user_id: "system-migration"
@@ -474,7 +474,7 @@ describe("AppDatabase migration from legacy reviewer_slots", () => {
     expect(slots).toHaveLength(1);
     expect(slots[0]).toMatchObject({
       guild_id: "guild-1",
-      slot_index: 0,
+      slot_index: 1,
       provider: "claude",
       model: "claude-sonnet-4-20250514",
       updated_by_user_id: "system-migration"

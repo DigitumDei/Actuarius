@@ -331,12 +331,13 @@ export class AppDatabase {
           .map((column) => column.name)
       );
 
-      const coreColumns = ["guild_id", "slot_index", "provider", "model"];
-      const columnMap: Array<{ name: string; select: string }> = [];
-
-      for (const col of coreColumns) {
-        columnMap.push({ name: col, select: col });
-      }
+      const coreColumns: Array<{ name: string; select: string }> = [
+        { name: "guild_id", select: "guild_id" },
+        { name: "slot_index", select: "slot_index + 1 AS slot_index" },
+        { name: "provider", select: "provider" },
+        { name: "model", select: "model" },
+      ];
+      const columnMap = [...coreColumns];
 
       if (existingLegacyColumns.has("updated_by_user_id")) {
         columnMap.push({ name: "updated_by_user_id", select: "updated_by_user_id" });
@@ -869,6 +870,42 @@ export class AppDatabase {
         )
         .get(guildId, provider, model, updatedByUserId)
     );
+  }
+
+  public setGuildReviewRoleConfig(
+    guildId: string,
+    role: ReviewModelRole,
+    provider: AiProvider | null,
+    model: string | null,
+    updatedByUserId: string
+  ): GuildReviewConfigRow {
+    const providerColumn = `${role}_provider` as const;
+    const modelColumn = `${role}_model` as const;
+
+    const raw = guildReviewConfigRowRawSchema.parse(
+      this.db
+        .prepare(
+          `INSERT INTO guild_review_config (
+             guild_id, rounds,
+             ${providerColumn},
+             ${modelColumn},
+             updated_by_user_id
+           )
+           VALUES (?, 1, ?, ?, ?)
+           ON CONFLICT(guild_id) DO UPDATE
+           SET ${providerColumn} = excluded.${providerColumn},
+               ${modelColumn} = excluded.${modelColumn},
+               updated_by_user_id = excluded.updated_by_user_id,
+               updated_at = CURRENT_TIMESTAMP
+           RETURNING *`
+        )
+        .get(guildId, provider, model, updatedByUserId)
+    );
+
+    return {
+      ...raw,
+      rounds: toNumber(raw.rounds)
+    };
   }
 
   public addModelToHistory(provider: AiProvider, model: string): void {
