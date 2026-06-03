@@ -1504,6 +1504,8 @@ export class ActuariusBot {
       } else if (slots.length > 0) {
         const fallbackSlot = key === "summarizer" && slots.length > 1 ? slots[1]! : slots[0]!;
         roleLines.push(`  **${label}**: falls back to **Slot ${fallbackSlot.slot_index}** (**${AI_PROVIDER_LABELS[fallbackSlot.provider]}**)`);
+      } else {
+        roleLines.push(`  **${label}**: falls back to default reviewer ordering`);
       }
     }
 
@@ -1513,7 +1515,7 @@ export class ActuariusBot {
 
     if (slots.length > 0) {
       lines.push(`**Review mode:** Using explicit reviewer slots.`);
-    } else if (reviewConfig || config.analyzer_provider || config.judge_provider || config.summarizer_provider) {
+    } else if (reviewConfig?.analyzer_provider || reviewConfig?.judge_provider || reviewConfig?.summarizer_provider || config.analyzer_provider || config.judge_provider || config.summarizer_provider) {
       lines.push(`**Review mode:** Using role overrides with provider ordering.`);
     } else {
       lines.push(`**Review mode:** Using all enabled providers (legacy fallback).`);
@@ -2389,6 +2391,45 @@ Output the result of the command or the link to the created issue.`;
     judge: ReviewModelRunner;
     summarizer: ReviewModelRunner;
   } {
+    const reviewConfig = this.db.getGuildReviewConfig(guildId);
+    const slots = this.db.getReviewerSlots(guildId);
+
+    const hasSlotOverride = (role: ReviewModelRole): boolean =>
+      !!reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig];
+
+    const buildRunner = (provider: AiProvider, defaultModel?: string | null): ReviewModelRunner => ({
+      provider,
+      ...(defaultModel ? { model: defaultModel } : {}),
+      label: AI_PROVIDER_LABELS[provider],
+      run: async ({ prompt, cwd, timeoutMs, model }) =>
+        this.runProviderText({ provider, prompt, cwd, timeoutMs, ...(model ? { model } : {}) })
+    });
+
+    if (slots.length > 0) {
+      const reviewers: ReviewModelRunner[] = slots.map((s) =>
+        buildRunner(s.provider, s.model)
+      );
+
+      if (reviewers.length < 2) {
+        throw new AdversarialReviewError(
+          "INSUFFICIENT_REVIEWERS",
+          "At least two reviewer slots are required for /review."
+        );
+      }
+
+      const analyzer = hasSlotOverride("analyzer")
+        ? buildRunner(reviewConfig!.analyzer_provider!, reviewConfig!.analyzer_model)
+        : reviewers[0]!;
+      const judge = hasSlotOverride("judge")
+        ? buildRunner(reviewConfig!.judge_provider!, reviewConfig!.judge_model)
+        : reviewers[0]!;
+      const summarizer = hasSlotOverride("summarizer")
+        ? buildRunner(reviewConfig!.summarizer_provider!, reviewConfig!.summarizer_model)
+        : (reviewers.find((r) => r.provider !== reviewers[0]!.provider || r.model !== reviewers[0]!.model) ?? reviewers[0]!);
+
+      return { analyzer, reviewers, judge, summarizer };
+    }
+
     const modelConfig = this.db.getGuildModelConfig(guildId);
     const preferredProvider: AiProvider = modelConfig?.provider ?? "claude";
     const preferredModel = modelConfig?.model ?? undefined;
@@ -2423,13 +2464,7 @@ Output the result of the command or the link to the created issue.`;
       }
 
       const reviewModel = reviewModels.get(provider);
-      reviewers.push({
-        provider,
-        ...(reviewModel ? { model: reviewModel } : {}),
-        label: AI_PROVIDER_LABELS[provider],
-        run: async ({ prompt, cwd, timeoutMs, model }) =>
-          this.runProviderText({ provider, prompt, cwd, timeoutMs, ...(model ? { model } : {}) })
-      });
+      reviewers.push(buildRunner(provider, reviewModel));
     }
 
     if (reviewers.length < 2) {
@@ -2439,9 +2474,26 @@ Output the result of the command or the link to the created issue.`;
       );
     }
 
-    const analyzer = reviewers[0]!;
-    const judge = reviewers[0]!;
-    const summarizer = reviewers.find((reviewer) => reviewer.provider !== analyzer.provider || reviewer.model !== analyzer.model) ?? analyzer;
+    const hasRoleOverride = (role: ReviewModelRole): boolean =>
+      !!reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] ||
+      !!(modelConfig as Record<string, unknown>)?.[`${role}_provider`];
+
+    const resolveRoleRunner = (
+      role: ReviewModelRole,
+      defaultRunner: ReviewModelRunner
+    ): ReviewModelRunner => {
+      const overrideProvider = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] as AiProvider | null
+        ?? (modelConfig as Record<string, unknown>)?.[`${role}_provider`] as AiProvider | null;
+      if (!overrideProvider) return defaultRunner;
+      const overrideModel = reviewConfig?.[`${role}_model` as keyof typeof reviewConfig] as string | null
+        ?? (modelConfig as Record<string, unknown>)?.[`${role}_model`] as string | null;
+      return buildRunner(overrideProvider, overrideModel);
+    };
+
+    const analyzer = resolveRoleRunner("analyzer", reviewers[0]!);
+    const judge = resolveRoleRunner("judge", reviewers[0]!);
+    const defaultSummarizer = reviewers.find((r) => r.provider !== reviewers[0]!.provider || r.model !== reviewers[0]!.model) ?? reviewers[0]!;
+    const summarizer = resolveRoleRunner("summarizer", defaultSummarizer);
     return { analyzer, reviewers, judge, summarizer };
   }
 

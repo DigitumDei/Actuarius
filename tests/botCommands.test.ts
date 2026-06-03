@@ -1698,6 +1698,64 @@ describe("ActuariusBot model-select command", () => {
       content: expect.stringContaining("**Review mode:** Using all enabled providers (legacy fallback)."),
       ephemeral: true
     });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: falls back to default reviewer ordering"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: falls back to default reviewer ordering"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Summarizer**: falls back to default reviewer ordering"),
+      ephemeral: true
+    });
+  });
+
+  it("shows legacy fallback review mode when review_config has only rounds set", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        rounds: 3,
+        analyzer_provider: null,
+        analyzer_model: null,
+        judge_provider: null,
+        judge_model: null,
+        summarizer_provider: null,
+        summarizer_model: null,
+        updated_at: "2026-05-30T00:00:00.000Z"
+      })
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using all enabled providers (legacy fallback)."),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: falls back to default reviewer ordering"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: falls back to default reviewer ordering"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Summarizer**: falls back to default reviewer ordering"),
+      ephemeral: true
+    });
   });
 
   it("shows reviewer slots and fallback role assignments when slots are configured without overrides", async () => {
