@@ -121,7 +121,7 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
       });
 
       if (await input.hasUncommittedChanges(worktreePath)) {
-        const autoMsg = `task ${taskIndex}/${taskCount}: ${task.title} (auto-committed)`;
+        const autoMsg = `task ${taskIndex}/${taskCount}: ${taskTitle} (auto-committed)`;
         await input.autoCommitAll(worktreePath, autoMsg);
         await threadChannel.send(
           `Task ${taskIndex}/${taskCount}: ${taskTitle} - implementer left uncommitted changes; auto-committed.`
