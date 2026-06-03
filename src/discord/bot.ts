@@ -1468,24 +1468,15 @@ export class ActuariusBot {
       `Implementer role: **${AI_PROVIDER_LABELS[implementerProvider]}**, model: \`${implementerModel || "none (CLI default)"}\`.`
     ];
 
+    const reviewConfig = this.db.getGuildReviewConfig(interaction.guildId);
+    const slots = this.db.getReviewerSlots(interaction.guildId);
+
     const reviewRoleSpec: Array<{ key: ReviewModelRole; label: string }> = [
       { key: "analyzer", label: "Analyzer" },
       { key: "judge", label: "Judge" },
       { key: "summarizer", label: "Summarizer" }
     ];
 
-    for (const { key, label } of reviewRoleSpec) {
-      const providerField = `${key}_provider` as keyof typeof config;
-      const modelField = `${key}_model` as keyof typeof config;
-      const rp = config[providerField];
-      const rm = config[modelField];
-      if (rp) {
-        const modelDisplay = rm ? `\`${rm}\`` : "CLI default model";
-        lines.push(`Reviewer **${label}** override: **${AI_PROVIDER_LABELS[rp]}**, model: ${modelDisplay}.`);
-      }
-    }
-
-    const slots = this.db.getReviewerSlots(interaction.guildId);
     if (slots.length > 0) {
       const slotLines = slots.map(
         (s) => {
@@ -1494,6 +1485,38 @@ export class ActuariusBot {
         }
       );
       lines.push(`Reviewer slots:\n${slotLines.join("\n")}`);
+    }
+
+    const roleLines: string[] = [];
+
+    for (const { key, label } of reviewRoleSpec) {
+      const overrideModel = reviewConfig?.[`${key}_provider` as keyof typeof reviewConfig] as AiProvider | null | undefined;
+      const overrideModelValue = reviewConfig?.[`${key}_model` as keyof typeof reviewConfig] as string | null | undefined;
+      const legacyOverride = config[`${key}_provider` as keyof typeof config] as AiProvider | null | undefined;
+      const legacyModel = config[`${key}_model` as keyof typeof config] as string | null | undefined;
+
+      if (overrideModel) {
+        const modelDisplay = overrideModelValue ? `\`${overrideModelValue}\`` : "CLI default model";
+        roleLines.push(`  **${label}**: **${AI_PROVIDER_LABELS[overrideModel]}**, model: ${modelDisplay} (set via \`/model-select\`)`);
+      } else if (legacyOverride) {
+        const modelDisplay = legacyModel ? `\`${legacyModel}\`` : "CLI default model";
+        roleLines.push(`  **${label}**: **${AI_PROVIDER_LABELS[legacyOverride]}**, model: ${modelDisplay} (legacy override)`);
+      } else if (slots.length > 0) {
+        const fallbackSlot = key === "summarizer" && slots.length > 1 ? slots[1]! : slots[0]!;
+        roleLines.push(`  **${label}**: falls back to **Slot ${fallbackSlot.slot_index}** (**${AI_PROVIDER_LABELS[fallbackSlot.provider]}**)`);
+      }
+    }
+
+    if (roleLines.length > 0) {
+      lines.push(`Review roles:\n${roleLines.join("\n")}`);
+    }
+
+    if (slots.length > 0) {
+      lines.push(`**Review mode:** Using explicit reviewer slots.`);
+    } else if (reviewConfig || config.analyzer_provider || config.judge_provider || config.summarizer_provider) {
+      lines.push(`**Review mode:** Using role overrides with provider ordering.`);
+    } else {
+      lines.push(`**Review mode:** Using all enabled providers (legacy fallback).`);
     }
 
     await interaction.reply({

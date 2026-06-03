@@ -1677,6 +1677,151 @@ describe("ActuariusBot model-select command", () => {
     });
   });
 
+  it("shows legacy fallback review mode when no slots or overrides are configured", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      })
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using all enabled providers (legacy fallback)."),
+      ephemeral: true
+    });
+  });
+
+  it("shows reviewer slots and fallback role assignments when slots are configured without overrides", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "gemini", model: "gemini-2.5-pro" }
+      ])
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Slot **1**: **Claude**, model: CLI default model"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Slot **2**: **Gemini**, model: `gemini-2.5-pro`"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Summarizer**: falls back to **Slot 2** (**Gemini**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using explicit reviewer slots."),
+      ephemeral: true
+    });
+  });
+
+  it("shows guild_review_config overrides as set via /model-select", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        rounds: 2,
+        analyzer_provider: "gemini",
+        analyzer_model: null,
+        judge_provider: null,
+        judge_model: null,
+        summarizer_provider: "codex",
+        summarizer_model: "codex-preview-0503",
+        updated_at: "2026-05-30T00:00:00.000Z"
+      })
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: **Gemini**, model: CLI default model (set via `/model-select`)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Summarizer**: **Codex**, model: `codex-preview-0503` (set via `/model-select`)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using role overrides with provider ordering."),
+      ephemeral: true
+    });
+  });
+
+  it("shows guild_model_config overrides as legacy", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        analyzer_provider: "gemini",
+        analyzer_model: null,
+        judge_provider: "codex",
+        judge_model: "codex-preview-0503",
+        summarizer_provider: null,
+        summarizer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      })
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: **Gemini**, model: CLI default model (legacy override)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: **Codex**, model: `codex-preview-0503` (legacy override)"),
+      ephemeral: true
+    });
+  });
+
   it("does not reuse the default model for a role-specific different provider", async () => {
     const bot = createBot({
       getGuildModelConfig: vi.fn().mockReturnValue({
