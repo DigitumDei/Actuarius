@@ -652,40 +652,42 @@ export class AppDatabase {
       summarizerModel?: string | null;
     }
   ): GuildReviewConfigRow {
+    const overrideSpec: Array<{ key: string; col: string }> = [
+      { key: "analyzerProvider", col: "analyzer_provider" },
+      { key: "analyzerModel", col: "analyzer_model" },
+      { key: "judgeProvider", col: "judge_provider" },
+      { key: "judgeModel", col: "judge_model" },
+      { key: "summarizerProvider", col: "summarizer_provider" },
+      { key: "summarizerModel", col: "summarizer_model" },
+    ];
+
+    const valueColumns: string[] = ["guild_id", "rounds", "updated_by_user_id"];
+    const params: unknown[] = [guildId, rounds, updatedByUserId];
+    const setClauses: string[] = [
+      "rounds = excluded.rounds",
+      "updated_by_user_id = excluded.updated_by_user_id",
+    ];
+
+    if (options) {
+      const opts = options as Record<string, unknown>;
+      for (const { key, col } of overrideSpec) {
+        if (key in opts) {
+          valueColumns.push(col);
+          params.push(opts[key] === undefined ? null : opts[key]);
+          setClauses.push(`${col} = excluded.${col}`);
+        }
+      }
+    }
+
+    const sql = `INSERT INTO guild_review_config (${valueColumns.join(", ")})
+                 VALUES (${valueColumns.map(() => "?").join(", ")})
+                 ON CONFLICT(guild_id) DO UPDATE
+                 SET ${setClauses.join(", ")},
+                     updated_at = CURRENT_TIMESTAMP
+                 RETURNING *`;
+
     const raw = guildReviewConfigRowRawSchema.parse(
-      this.db
-        .prepare(
-          `INSERT INTO guild_review_config (
-             guild_id, rounds,
-             analyzer_provider, analyzer_model,
-             judge_provider, judge_model,
-             summarizer_provider, summarizer_model,
-             updated_by_user_id
-           )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(guild_id) DO UPDATE
-           SET rounds = excluded.rounds,
-               analyzer_provider = excluded.analyzer_provider,
-               analyzer_model = excluded.analyzer_model,
-               judge_provider = excluded.judge_provider,
-               judge_model = excluded.judge_model,
-               summarizer_provider = excluded.summarizer_provider,
-               summarizer_model = excluded.summarizer_model,
-               updated_by_user_id = excluded.updated_by_user_id,
-               updated_at = CURRENT_TIMESTAMP
-           RETURNING *`
-        )
-        .get(
-          guildId,
-          rounds,
-          options?.analyzerProvider ?? null,
-          options?.analyzerModel ?? null,
-          options?.judgeProvider ?? null,
-          options?.judgeModel ?? null,
-          options?.summarizerProvider ?? null,
-          options?.summarizerModel ?? null,
-          updatedByUserId
-        )
+      (this.db.prepare(sql).get as (...args: unknown[]) => unknown)(...params)
     );
 
     return {
