@@ -322,12 +322,43 @@ export class AppDatabase {
       ).get() !== undefined;
 
     if (hasLegacyReviewerSlots) {
+      // Detect which columns exist in the legacy table. The real production
+      // schema only had (guild_id, slot_index, provider, model) — no audit columns.
+      const existingLegacyColumns = new Set(
+        z.array(tableInfoRowSchema)
+          .parse(this.db.prepare("PRAGMA table_info(reviewer_slots)").all())
+          .map((column) => column.name)
+      );
+
+      const coreColumns = ["guild_id", "slot_index", "provider", "model"];
+      const columnMap: Array<{ name: string; select: string }> = [];
+
+      for (const col of coreColumns) {
+        columnMap.push({ name: col, select: col });
+      }
+
+      if (existingLegacyColumns.has("updated_by_user_id")) {
+        columnMap.push({ name: "updated_by_user_id", select: "updated_by_user_id" });
+      } else {
+        columnMap.push({ name: "updated_by_user_id", select: "'system-migration' AS updated_by_user_id" });
+      }
+      if (existingLegacyColumns.has("created_at")) {
+        columnMap.push({ name: "created_at", select: "created_at" });
+      } else {
+        columnMap.push({ name: "created_at", select: "CURRENT_TIMESTAMP AS created_at" });
+      }
+      if (existingLegacyColumns.has("updated_at")) {
+        columnMap.push({ name: "updated_at", select: "updated_at" });
+      } else {
+        columnMap.push({ name: "updated_at", select: "CURRENT_TIMESTAMP AS updated_at" });
+      }
+
       this.db.exec("BEGIN");
       try {
         this.db.exec(`
           INSERT OR IGNORE INTO guild_reviewer_slots
-            (guild_id, slot_index, provider, model, updated_by_user_id, created_at, updated_at)
-          SELECT guild_id, slot_index, provider, model, updated_by_user_id, created_at, updated_at
+            (${columnMap.map((c) => c.name).join(", ")})
+          SELECT ${columnMap.map((c) => c.select).join(", ")}
           FROM reviewer_slots
         `);
         this.db.exec("DROP TABLE reviewer_slots");

@@ -380,26 +380,24 @@ describe("AppDatabase migration from legacy reviewer_slots", () => {
     `);
     legacyDb.exec("INSERT OR IGNORE INTO guilds (id, name) VALUES ('guild-1', 'Test Guild')");
 
-    // Create the legacy reviewer_slots table (same column layout as expected)
+    // Create the legacy reviewer_slots table (real production schema before migration
+    // — only guild_id, slot_index, provider, model with composite PK)
     legacyDb.exec(`
       CREATE TABLE IF NOT EXISTS reviewer_slots (
         guild_id TEXT NOT NULL,
         slot_index INTEGER NOT NULL,
         provider TEXT NOT NULL,
         model TEXT,
-        updated_by_user_id TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (guild_id, slot_index)
       )
     `);
 
     legacyDb
-      .prepare("INSERT INTO reviewer_slots (guild_id, slot_index, provider, model, updated_by_user_id) VALUES (?, ?, ?, ?, ?)")
-      .run("guild-1", 0, "claude", "claude-sonnet-4-20250514", "user-migrate");
+      .prepare("INSERT INTO reviewer_slots (guild_id, slot_index, provider, model) VALUES (?, ?, ?, ?)")
+      .run("guild-1", 0, "claude", "claude-sonnet-4-20250514");
     legacyDb
-      .prepare("INSERT INTO reviewer_slots (guild_id, slot_index, provider, model, updated_by_user_id) VALUES (?, ?, ?, ?, ?)")
-      .run("guild-1", 1, "gemini", "gemini-2.5-pro", "user-migrate");
+      .prepare("INSERT INTO reviewer_slots (guild_id, slot_index, provider, model) VALUES (?, ?, ?, ?)")
+      .run("guild-1", 1, "gemini", "gemini-2.5-pro");
     legacyDb.close();
 
     // Open with AppDatabase — triggers runMigrations
@@ -414,14 +412,14 @@ describe("AppDatabase migration from legacy reviewer_slots", () => {
       slot_index: 0,
       provider: "claude",
       model: "claude-sonnet-4-20250514",
-      updated_by_user_id: "user-migrate"
+      updated_by_user_id: "system-migration"
     });
     expect(slots[1]).toMatchObject({
       guild_id: "guild-1",
       slot_index: 1,
       provider: "gemini",
       model: "gemini-2.5-pro",
-      updated_by_user_id: "user-migrate"
+      updated_by_user_id: "system-migration"
     });
 
     // Confirm old table is gone
@@ -456,15 +454,12 @@ describe("AppDatabase migration from legacy reviewer_slots", () => {
         slot_index INTEGER NOT NULL,
         provider TEXT NOT NULL,
         model TEXT,
-        updated_by_user_id TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (guild_id, slot_index)
       )
     `);
     legacyDb
-      .prepare("INSERT INTO reviewer_slots (guild_id, slot_index, provider, model, updated_by_user_id) VALUES (?, ?, ?, ?, ?)")
-      .run("guild-1", 0, "claude", "claude-sonnet-4-20250514", "user-migrate");
+      .prepare("INSERT INTO reviewer_slots (guild_id, slot_index, provider, model) VALUES (?, ?, ?, ?)")
+      .run("guild-1", 0, "claude", "claude-sonnet-4-20250514");
     legacyDb.close();
 
     const db = new AppDatabase(dbPath);
@@ -482,7 +477,7 @@ describe("AppDatabase migration from legacy reviewer_slots", () => {
       slot_index: 0,
       provider: "claude",
       model: "claude-sonnet-4-20250514",
-      updated_by_user_id: "user-migrate"
+      updated_by_user_id: "system-migration"
     });
 
     db.close();
