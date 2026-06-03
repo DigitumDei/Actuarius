@@ -66,6 +66,7 @@ export interface RequestRow {
   status: RequestStatus;
   worktree_path: string | null;
   branch_name: string | null;
+  revision_of_request_id: number | null;
   created_at: string;
 }
 

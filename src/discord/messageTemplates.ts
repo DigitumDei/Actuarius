@@ -11,6 +11,7 @@ export function buildHelpText(): string {
     "- `/plan prompt:<text> [iterative:true]` Create a request thread, run a planner, then run an implementer (with `iterative`, breaks into per-task implementation and verification).",
     "- `/install [package:<allowed-package-id>] [apt-package:<deb-specs>] scope:<repo|request>` Install an allowlisted tool or apt package (admin only; specify exactly one of `package` or `apt-package`).",
     "- `/review` Run adversarial code review on the current request worktree, including staged, unstaged, and untracked changes (request owner or Manage Server).",
+    "- `/revise [findings:<text>]` Re-run planner-verified implementation on the current request thread. Findings can be provided explicitly or will be pulled from the latest review summary (request owner or Manage Server).",
     "- `/pr` Open a draft pull request for the current request thread after changes are committed and `/review` returns `ready_for_pr` for the current HEAD.",
     "- `/review-rounds [rounds:<number>]` Show or set the max `/review` consensus rounds for this server (admin only to set).",
     "- `/update-clis [provider:<claude|codex|gemini>]` Update provider CLIs to latest. Omit provider to update all (admin only).",

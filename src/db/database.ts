@@ -157,6 +157,12 @@ export class AppDatabase {
       // Column already exists
     }
 
+    try {
+      this.db.exec("ALTER TABLE requests ADD COLUMN revision_of_request_id INTEGER");
+    } catch {
+      // Column already exists
+    }
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS guild_model_config (
         guild_id TEXT PRIMARY KEY,
@@ -397,12 +403,13 @@ export class AppDatabase {
     userId: string;
     prompt: string;
     status: RequestStatus;
+    revisionOfRequestId?: number;
   }): RequestRow {
     const raw = requestRowRawSchema.parse(
       this.db
         .prepare(
-          `INSERT INTO requests (guild_id, repo_id, channel_id, thread_id, user_id, prompt, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO requests (guild_id, repo_id, channel_id, thread_id, user_id, prompt, status, revision_of_request_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
            RETURNING *`
         )
         .get(
@@ -412,14 +419,18 @@ export class AppDatabase {
           input.threadId,
           input.userId,
           input.prompt,
-          input.status
+          input.status,
+          input.revisionOfRequestId ?? null
         )
     );
 
     return {
       ...raw,
       id: toNumber(raw.id),
-      repo_id: toNumber(raw.repo_id)
+      repo_id: toNumber(raw.repo_id),
+      revision_of_request_id: raw.revision_of_request_id === null
+        ? null
+        : toNumber(raw.revision_of_request_id)
     };
   }
 
@@ -431,7 +442,10 @@ export class AppDatabase {
     return {
       ...raw,
       id: toNumber(raw.id),
-      repo_id: toNumber(raw.repo_id)
+      repo_id: toNumber(raw.repo_id),
+      revision_of_request_id: raw.revision_of_request_id === null
+        ? null
+        : toNumber(raw.revision_of_request_id)
     };
   }
 

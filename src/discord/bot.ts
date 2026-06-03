@@ -46,6 +46,7 @@ import {
   ensureRepoCheckedOutToMaster,
   getDiffSinceRef,
   getHeadSha,
+  getReviewDiff,
   hasUncommittedChanges,
   listBranches,
   pushBranch
@@ -53,7 +54,8 @@ import {
 import {
   AdversarialReviewError,
   runAdversarialReview,
-  type ReviewModelRunner
+  type ReviewModelRunner,
+  type ReviewProgressEvent
 } from "../services/adversarialReviewService.js";
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
 import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
@@ -74,7 +76,8 @@ import {
 } from "../services/attachmentService.js";
 import {
   runIterativeTaskLoop,
-  type IterativePlanTask
+  type IterativePlanTask,
+  type IterativeTaskOutput
 } from "../services/iterativeTaskLoopService.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
@@ -712,6 +715,9 @@ export class ActuariusBot {
         return;
       case "review":
         await this.handleReview(interaction);
+        return;
+      case "revise":
+        await this.handleRevise(interaction);
         return;
       case "pr":
         await this.handlePr(interaction);
@@ -2391,7 +2397,8 @@ Output the result of the command or the link to the created issue.`;
       return;
     }
 
-    const parentId = interaction.channel.parentId;
+    const reviewThread = interaction.channel;
+    const parentId = reviewThread.parentId;
     if (!parentId) {
       await interaction.reply({ content: "Could not resolve the parent repo channel for this thread.", ephemeral: true });
       return;
@@ -2442,11 +2449,11 @@ Output the result of the command or the link to the created issue.`;
     }
 
     await interaction.deferReply({ ephemeral: true });
-    await interaction.channel.send("Adversarial review started.");
+    await reviewThread.send("Adversarial review started.");
 
     try {
       const runners = this.buildReviewRunners(interaction.guildId);
-      const threadHistory = await this.buildThreadHistory(interaction.channel);
+      const threadHistory = await this.buildThreadHistory(reviewThread);
       const result = await new Promise<Awaited<ReturnType<typeof runAdversarialReview>>>((resolve, reject) => {
         this.requestQueue.enqueue(interaction.guildId!, async () => {
           try {
@@ -2466,7 +2473,30 @@ Output the result of the command or the link to the created issue.`;
               summarizer: runners.summarizer,
               stageTimeoutMs: this.config.askExecutionTimeoutMs,
               totalTimeoutMs: this.config.askExecutionTimeoutMs * 2,
-              maxConsensusRounds: this.getReviewRounds(interaction.guildId!)
+              maxConsensusRounds: this.getReviewRounds(interaction.guildId!),
+              onProgress: async (event: ReviewProgressEvent) => {
+                switch (event.type) {
+                  case "analyzer-start":
+                    await reviewThread.send("Analyzing change intent…");
+                    break;
+                  case "analyzer-complete":
+                    await reviewThread.send("Analysis complete.");
+                    break;
+                  case "round-start":
+                    await reviewThread.send(`Round ${event.round}/${event.maxRounds}: reviewing…`);
+                    break;
+                  case "round-complete":
+                    if (event.consensusReached) {
+                      await reviewThread.send(`Round ${event.round}/${event.maxRounds}: consensus reached.`);
+                    } else {
+                      await reviewThread.send(`Round ${event.round}/${event.maxRounds} complete.`);
+                    }
+                    break;
+                  case "summarizer-start":
+                    await reviewThread.send("Synthesizing final verdict…");
+                    break;
+                }
+              }
             }));
           } catch (error) {
             reject(error);
@@ -2494,6 +2524,144 @@ Output the result of the command or the link to the created issue.`;
       await interaction.channel.send(`**Adversarial review failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
       await interaction.editReply(`Review failed: ${message}`);
     }
+  }
+
+  private async handleRevise(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.channel?.isThread()) {
+      await interaction.reply({ content: "`/revise` must be run inside a request thread.", ephemeral: true });
+      return;
+    }
+
+    const parentId = interaction.channel.parentId;
+    if (!parentId) {
+      await interaction.reply({ content: "Could not resolve the parent repo channel for this thread.", ephemeral: true });
+      return;
+    }
+
+    const latestRequest = this.db.getLatestRequestWithWorkspaceByThreadId(interaction.channelId);
+    if (!latestRequest?.worktree_path || !latestRequest.branch_name) {
+      await interaction.reply({
+        content: "This thread does not have a tracked request branch. Run `/ask` or `/plan` first.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!existsSync(latestRequest.worktree_path)) {
+      await interaction.reply({
+        content: "The tracked worktree for this thread no longer exists. Start a new `/plan` request before revising.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const repo = this.db.getRepoByChannelId(interaction.guildId, parentId);
+    if (!repo) {
+      await interaction.reply({
+        content: "This thread is not attached to a connected repository channel. Run `/connect-repo` first.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const findingsRaw = interaction.options.getString("findings");
+    const findings = findingsRaw?.trim() ? findingsRaw : null;
+    const worktreePath: string = latestRequest.worktree_path;
+    const branchName: string = latestRequest.branch_name;
+    const sourceRequestId = latestRequest.id;
+
+    const isOwner = latestRequest.user_id === interaction.user.id;
+    const canManageGuild = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
+    if (!isOwner && !canManageGuild) {
+      await interaction.reply({
+        content: "Only the original requester or a user with `Manage Server` can run `/revise` for this branch.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const threadLatest = this.db.getRequestByThreadId(interaction.channelId);
+    if (threadLatest && isActiveRequestStatus(threadLatest.status)) {
+      await interaction.reply({
+        content: "The latest request in this thread is still queued or running. Wait for it to finish before revising.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    let revisionRequestId: number | null = null;
+    let roles: { planner: ResolvedModelRole; implementer: ResolvedModelRole };
+    try {
+      const revisionRequest = this.db.createRequest({ 
+        guildId: interaction.guildId,
+        repoId: repo.id,
+        channelId: parentId,
+        threadId: interaction.channelId,
+        userId: latestRequest.user_id,
+        prompt: latestRequest.prompt,
+        status: "queued",
+        revisionOfRequestId: sourceRequestId
+      });
+      revisionRequestId = revisionRequest.id;
+      this.db.updateRequestWorkspace(revisionRequest.id, worktreePath, branchName);
+
+      await interaction.deferReply({ ephemeral: true });
+
+      roles = await this.resolvePlanRoleModels(interaction.guildId);
+
+      this.requestQueue.enqueue(interaction.guildId, async () => {
+        await this.runReviseRequest({
+          requestId: revisionRequest.id,
+          sourceRequestId,
+          threadId: interaction.channelId,
+          repoId: repo.id,
+          repo: {
+            owner: repo.owner,
+            repo: repo.repo,
+            fullName: repo.full_name
+          },
+          prompt: latestRequest.prompt,
+          worktreePath,
+          branchName,
+          planner: roles.planner,
+          implementer: roles.implementer,
+          findings
+        });
+      });
+    } catch (error) {
+      if (revisionRequestId !== null) {
+        try {
+          this.db.updateRequestStatus(revisionRequestId, "failed");
+        } catch (statusError) {
+          this.logger.warn({ error: statusError, requestId: revisionRequestId }, "Failed to mark revision setup request failed");
+        }
+      }
+      const message = this.describeExecutionError(error);
+      this.logger.error({ error, sourceRequestId, revisionRequestId }, "Revision setup failed");
+      try {
+        await interaction.editReply(`Revision setup failed: ${clipForDiscord(message, 1500)}`);
+      } catch {
+        await interaction.followUp({ content: `Revision setup failed: ${clipForDiscord(message, 1500)}`, ephemeral: true });
+      }
+      return;
+    }
+
+    try {
+      await interaction.channel!.send(`Revision queued for request #${sourceRequestId}.`);
+    } catch (error) {
+      this.logger.warn({ error, sourceRequestId, revisionRequestId }, "Failed to send revision start message");
+    }
+
+    const planningProvider = AI_PROVIDER_LABELS[roles.planner.provider];
+    const implementerProvider = AI_PROVIDER_LABELS[roles.implementer.provider];
+    await interaction.editReply(
+      `Revision queued as request #${revisionRequestId} for request #${sourceRequestId}. Planner: ${planningProvider}; implementer: ${implementerProvider}.`
+    );
   }
 
   private async handlePr(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -2721,6 +2889,70 @@ Output the result of the command or the link to the created issue.`;
     }
   }
 
+  private async runParsedIterativeImplementation(input: {
+    planText: string;
+    repoFullName: string;
+    originalPrompt: string;
+    worktreePath: string;
+    threadChannel: { send: (content: string) => Promise<unknown> };
+    planner: ResolvedModelRole;
+    implementer: ResolvedModelRole;
+    env: NodeJS.ProcessEnv | undefined;
+    timeoutMs: number;
+  }): Promise<{
+    tasks: IterativePlanTask[];
+    overview: string;
+    taskResults: IterativeTaskOutput[];
+  }> {
+    const parsed = parseIterativePlan(input.planText);
+    if (!parsed || parsed.tasks.length === 0) {
+      await input.threadChannel.send("Could not parse iterative plan as JSON. Running iterative mode with one task containing the planner output.");
+    }
+
+    let tasks: IterativePlanTask[];
+    let overview: string;
+
+    if (parsed && parsed.tasks.length > 0) {
+      overview = parsed.overview;
+      tasks = parsed.tasks;
+      if (tasks.length > MAX_TASKS) {
+        tasks = tasks.slice(0, MAX_TASKS);
+        await input.threadChannel.send(`Warning: plan has more than ${MAX_TASKS} tasks. Using only the first ${MAX_TASKS}.`);
+      }
+    } else {
+      overview = "Implement the request";
+      tasks = [{ title: "Implement request", description: truncateText(input.planText, ITERATIVE_TASK_DESCRIPTION_LIMIT) }];
+    }
+
+    const taskListMessage = fitDiscordMessage(
+      [`Plan completed. ${tasks.length} tasks:`, ...tasks.map((t, i) => `  ${i + 1}. ${t.title}`)],
+      "Plan completed, but the task list was too long to display."
+    );
+    await input.threadChannel.send(taskListMessage);
+
+    const taskResults = (await runIterativeTaskLoop({
+      tasks,
+      overview,
+      originalPrompt: input.originalPrompt,
+      repoFullName: input.repoFullName,
+      worktreePath: input.worktreePath,
+      threadChannel: input.threadChannel,
+      plannerProvider: input.planner.provider,
+      plannerModel: input.planner.model,
+      implementerProvider: input.implementer.provider,
+      implementerModel: input.implementer.model,
+      runProviderText: async (opts) => this.runProviderText(opts),
+      timeoutMs: input.timeoutMs,
+      env: input.env,
+      getHeadSha,
+      getDiffSinceRef,
+      hasUncommittedChanges,
+      autoCommitAll
+    })).taskResults;
+
+    return { tasks, overview, taskResults };
+  }
+
   private async runPlanRequest(input: {
     requestId: number;
     threadId: string;
@@ -2885,65 +3117,31 @@ Output the result of the command or the link to the created issue.`;
       }
 
       if (input.iterative) {
-        const parsed = parseIterativePlan(planText);
-        if (!parsed || parsed.tasks.length === 0) {
-          await threadChannel.send("Could not parse iterative plan as JSON. Running iterative mode with one task containing the planner output.");
-        }
-
-        let tasks: IterativePlanTask[];
-        let overview: string;
-
-        if (parsed && parsed.tasks.length > 0) {
-          overview = parsed.overview;
-          tasks = parsed.tasks;
-          if (tasks.length > MAX_TASKS) {
-            tasks = tasks.slice(0, MAX_TASKS);
-            await threadChannel.send(`Warning: plan has more than ${MAX_TASKS} tasks. Using only the first ${MAX_TASKS}.`);
-          }
-        } else {
-          overview = "Implement the request";
-          tasks = [{ title: "Implement request", description: truncateText(planText, ITERATIVE_TASK_DESCRIPTION_LIMIT) }];
-        }
-
-        const taskListMessage = fitDiscordMessage(
-          [`Plan completed. ${tasks.length} tasks:`, ...tasks.map((t, i) => `  ${i + 1}. ${t.title}`)],
-          "Plan completed, but the task list was too long to display."
-        );
-        await threadChannel.send(taskListMessage);
-
         stage = "iterative-loop";
-        const iterativeResult = await runIterativeTaskLoop({
-          tasks,
-          overview,
-          originalPrompt: input.prompt,
+        const { tasks, overview, taskResults } = await this.runParsedIterativeImplementation({
+          planText,
           repoFullName: input.repo.fullName,
+          originalPrompt: input.prompt,
           worktreePath,
           threadChannel,
-          plannerProvider: input.planner.provider,
-          plannerModel: input.planner.model,
-          implementerProvider: input.implementer.provider,
-          implementerModel: input.implementer.model,
-          runProviderText: async (opts) => this.runProviderText(opts),
-          timeoutMs: this.config.askExecutionTimeoutMs,
+          planner: input.planner,
+          implementer: input.implementer,
           env,
-          getHeadSha,
-          getDiffSinceRef,
-          hasUncommittedChanges,
-          autoCommitAll
+          timeoutMs: this.config.askExecutionTimeoutMs
         });
 
         this.db.updateRequestStatus(input.requestId, "succeeded");
         statusFinalized = true;
-        const approvedCount = iterativeResult.taskResults.filter((result) => result.approved).length;
-        const issueCount = iterativeResult.taskResults.length - approvedCount;
+        const approvedCount = taskResults.filter((result) => result.approved).length;
+        const issueCount = taskResults.length - approvedCount;
         const outcomeLine = issueCount > 0
-          ? `Plan implementation complete: ${approvedCount}/${iterativeResult.taskResults.length} tasks approved, ${issueCount} reached max tweaks.`
-          : `Plan implementation complete: ${approvedCount}/${iterativeResult.taskResults.length} tasks approved.`;
+          ? `Plan implementation complete: ${approvedCount}/${taskResults.length} tasks approved, ${issueCount} reached max tweaks.`
+          : `Plan implementation complete: ${approvedCount}/${taskResults.length} tasks approved.`;
         await threadChannel.send(`${outcomeLine} Run \`/review\` to review the working tree. Commit any remaining changes before \`/pr\`, then run \`/review\` again once the committed branch is ready.`);
         this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Iterative plan request succeeded");
 
         if (this.memPalace) {
-          const taskSummaries = iterativeResult.taskResults.map((r) => {
+          const taskSummaries = taskResults.map((r) => {
             const status = r.approved ? "approved" : `max-tweaks (${r.tweakAttempts})`;
             return `### ${r.title}\n- Status: ${status}\n- Implementer output:\n${r.implementerOutput}\n- Verification output:\n${r.verificationOutput}\n- Diff:\n${r.diff}`;
           }).join("\n\n");
@@ -3035,6 +3233,225 @@ Output the result of the command or the link to the created issue.`;
         await cleanupFailedWorktree();
       }
       this.logger.error({ error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage }, "Plan request failed");
+    }
+  }
+
+  private async runReviseRequest(input: {
+    requestId: number;
+    sourceRequestId: number;
+    threadId: string;
+    repoId: number;
+    repo: { owner: string; repo: string; fullName: string };
+    prompt: string;
+    worktreePath: string;
+    branchName: string;
+    planner: ResolvedModelRole;
+    implementer: ResolvedModelRole;
+    findings: string | null;
+  }): Promise<void> {
+    const startedAt = Date.now();
+    let statusFinalized = false;
+    let stage = "init";
+    let threadChannel: Awaited<ReturnType<Client["channels"]["fetch"]>> | null = null;
+
+    const markFailed = (): void => {
+      if (statusFinalized) return;
+      this.db.updateRequestStatus(input.requestId, "failed");
+      statusFinalized = true;
+    };
+
+    const findLatestReviewSummary = (): string | null => {
+      const visited = new Set<number>();
+      let requestId: number | null = input.sourceRequestId;
+
+      while (requestId !== null && !visited.has(requestId)) {
+        visited.add(requestId);
+        const latestReview = this.db.getLatestCompletedReviewRunForBranch(requestId, input.branchName);
+        if (latestReview?.summary_markdown) {
+          return latestReview.summary_markdown;
+        }
+
+        requestId = this.db.getRequestById(requestId)?.revision_of_request_id ?? null;
+      }
+
+      return null;
+    };
+
+    try {
+      this.db.updateRequestStatus(input.requestId, "running");
+      this.logger.info(
+        { requestId: input.requestId, threadId: input.threadId, repo: input.repo.fullName, planner: input.planner, implementer: input.implementer },
+        "Revise request started"
+      );
+
+      stage = "fetch-thread";
+      const channel = await this.client.channels.fetch(input.threadId);
+      if (!channel || !channel.isThread()) {
+        markFailed();
+        this.logger.error({ requestId: input.requestId, threadId: input.threadId }, "Revise request thread no longer available");
+        return;
+      }
+
+      threadChannel = channel;
+      for (const fallbackReason of [input.planner.fallbackReason, input.implementer.fallbackReason].filter(Boolean)) {
+        await threadChannel.send(`Provider fallback: ${fallbackReason}`);
+      }
+
+      const executionEnvironment = this.installService.buildExecutionEnvironment({
+        repoId: input.repoId,
+        threadId: input.threadId
+      });
+      const env = executionEnvironment.packages.length > 0 ? executionEnvironment.env : undefined;
+
+      stage = "compute-diff";
+      if (!existsSync(input.worktreePath)) {
+        markFailed();
+        await threadChannel.send("The tracked worktree for this thread no longer exists. Start a new `/plan` request before revising.");
+        this.logger.error({ requestId: input.requestId, worktreePath: input.worktreePath }, "Revise request worktree no longer exists");
+        return;
+      }
+      const reviewDiff = await getReviewDiff(input.worktreePath, { headRef: input.branchName, excludePaths: ["docs/reviews/**"] });
+      const currentDiff = reviewDiff.diffText;
+
+      let reviewSummary: string | null = null;
+      if (!input.findings) {
+        reviewSummary = findLatestReviewSummary();
+      }
+
+      stage = "planning";
+      const plannerLabel = AI_PROVIDER_LABELS[input.planner.provider];
+      await threadChannel.send(`${plannerLabel} revision planning started.`);
+
+      const planPromptParts: string[] = [
+        `Repository: ${input.repo.fullName}`,
+        "",
+        "Produce a structured iterative implementation plan to fix remaining issues in this request.",
+        "Do not edit files. Do not run the implementation. Inspect the codebase as needed and return only the plan JSON.",
+        "Return ONLY valid JSON with no markdown formatting, no code fences, no prose outside the JSON.",
+        "",
+        'The JSON must have this exact shape:',
+        '{',
+        '  "overview": "brief overview of what needs to be fixed/completed",',
+        '  "tasks": [',
+        '    { "title": "Short task name", "description": "Full task description" }',
+        '  ]',
+        '}',
+        "",
+        "Guidelines:",
+        "- Each task should be independently implementable and verifiable",
+        "- Tasks should build on each other in a logical order",
+        `- Maximum ${MAX_TASKS} tasks`,
+        "- Scope tasks only to remaining fixes and corrections based on the findings below",
+        "",
+        "Original request:",
+        input.prompt,
+        "",
+        "Current branch diff (changes since default branch):",
+        currentDiff || "(no diff)"
+      ];
+
+      if (input.findings) {
+        planPromptParts.push("", "Findings to address:", input.findings);
+      } else if (reviewSummary) {
+        planPromptParts.push("", "Latest review summary:", reviewSummary);
+      }
+
+      const planPrompt = planPromptParts.join("\n");
+
+      const planText = await this.runProviderText({
+        provider: input.planner.provider,
+        prompt: planPrompt,
+        cwd: input.worktreePath,
+        timeoutMs: this.config.askExecutionTimeoutMs,
+        ...(input.planner.model ? { model: input.planner.model } : {}),
+        ...(env ? { env } : {})
+      });
+
+      if (!planText.trim()) {
+        markFailed();
+        await threadChannel.send("Planner produced no output; aborting revision.");
+        this.logger.error({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Revise request failed with empty planner output");
+        return;
+      }
+
+      for (const chunk of splitPlainTextForDiscord(planText, `**${plannerLabel} revision plan completed**`)) {
+        await threadChannel.send(chunk);
+      }
+
+      stage = "iterative-loop";
+      const { tasks, overview, taskResults } = await this.runParsedIterativeImplementation({
+        planText,
+        repoFullName: input.repo.fullName,
+        originalPrompt: input.prompt,
+        worktreePath: input.worktreePath,
+        threadChannel,
+        planner: input.planner,
+        implementer: input.implementer,
+        env,
+        timeoutMs: this.config.askExecutionTimeoutMs
+      });
+
+      this.db.updateRequestStatus(input.requestId, "succeeded");
+      statusFinalized = true;
+      const approvedCount = taskResults.filter((r) => r.approved).length;
+      const issueCount = taskResults.length - approvedCount;
+      const outcomeLine = issueCount > 0
+        ? `Revision complete: ${approvedCount}/${taskResults.length} tasks approved, ${issueCount} reached max tweaks.`
+        : `Revision complete: ${approvedCount}/${taskResults.length} tasks approved.`;
+      await threadChannel.send(`${outcomeLine} Run \`/review\` again, then \`/pr\` once the verdict is \`ready_for_pr\`.`);
+      this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Revise request succeeded");
+
+      if (this.memPalace) {
+        const taskSummaries = taskResults.map((r) => {
+          const status = r.approved ? "approved" : `max-tweaks (${r.tweakAttempts})`;
+          return `### ${r.title}\n- Status: ${status}\n- Implementer output:\n${r.implementerOutput}\n- Verification output:\n${r.verificationOutput}\n- Diff:\n${r.diff}`;
+        }).join("\n\n");
+        const drawerContent = [
+          `# Revise request #${input.requestId}: ${input.prompt}`,
+          "",
+          `Repo: ${input.repo.fullName}`,
+          `Source request: #${input.sourceRequestId}`,
+          `Planner: ${input.planner.provider}${input.planner.model ? ` (${input.planner.model})` : ""}`,
+          `Implementer: ${input.implementer.provider}${input.implementer.model ? ` (${input.implementer.model})` : ""}`,
+          `Duration: ${Date.now() - startedAt}ms`,
+          "",
+          "## Revision Inputs",
+          "",
+          input.findings
+            ? "### Explicit Findings"
+            : reviewSummary
+              ? "### Latest Review Summary"
+              : "### Review Summary (none found)",
+          "",
+          input.findings ?? reviewSummary ?? "(none)",
+          "",
+          "### Current Branch Diff",
+          "",
+          currentDiff || "(no diff)",
+          "",
+          "## Revision Plan",
+          "",
+          planText,
+          "",
+          "## Overview",
+          "",
+          overview,
+          "",
+          "## Task Results",
+          "",
+          taskSummaries
+        ].join("\n");
+        this.memPalace.addDrawer(drawerContent, "wing_actuarius", "requests").catch((err: unknown) => {
+          this.logger.warn({ error: err, requestId: input.requestId }, "MemPalace addDrawer failed");
+        });
+      }
+    } catch (error) {
+      markFailed();
+      const message = this.describeExecutionError(error);
+      if (threadChannel && threadChannel.isThread()) {
+        await threadChannel.send(`**Revision failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 60)}`);
+      }
+      this.logger.error({ error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage }, "Revise request failed");
     }
   }
 
