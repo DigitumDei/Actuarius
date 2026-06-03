@@ -157,6 +157,7 @@ function createBot(dbOverrides: Record<string, unknown> = {}, memPalace: unknown
     getGuildModelConfig: vi.fn(),
     getGuildReviewConfig: vi.fn(),
     getModelHistory: vi.fn().mockReturnValue([]),
+    getReviewerSlots: vi.fn().mockReturnValue([]),
     getLatestRequestWithWorkspaceByThreadId: vi.fn(),
     getRequestByThreadId: vi.fn(),
     getRepoByFullName: vi.fn(),

@@ -1461,12 +1461,43 @@ export class ActuariusBot {
     const plannerModel = config.planner_model ?? (plannerProvider === config.provider ? config.model : null);
     const implementerProvider = config.implementer_provider ?? config.provider;
     const implementerModel = config.implementer_model ?? (implementerProvider === config.provider ? config.model : null);
+
+    const lines: string[] = [
+      `Current default AI provider: **${AI_PROVIDER_LABELS[config.provider]}**, model: \`${modelStr}\` (set ${timeStr}).`,
+      `Planner role: **${AI_PROVIDER_LABELS[plannerProvider]}**, model: \`${plannerModel || "none (CLI default)"}\`.`,
+      `Implementer role: **${AI_PROVIDER_LABELS[implementerProvider]}**, model: \`${implementerModel || "none (CLI default)"}\`.`
+    ];
+
+    const reviewRoleSpec: Array<{ key: ReviewModelRole; label: string }> = [
+      { key: "analyzer", label: "Analyzer" },
+      { key: "judge", label: "Judge" },
+      { key: "summarizer", label: "Summarizer" }
+    ];
+
+    for (const { key, label } of reviewRoleSpec) {
+      const providerField = `${key}_provider` as keyof typeof config;
+      const modelField = `${key}_model` as keyof typeof config;
+      const rp = config[providerField];
+      const rm = config[modelField];
+      if (rp) {
+        const modelDisplay = rm ? `\`${rm}\`` : "CLI default model";
+        lines.push(`Reviewer **${label}** override: **${AI_PROVIDER_LABELS[rp]}**, model: ${modelDisplay}.`);
+      }
+    }
+
+    const slots = this.db.getReviewerSlots(interaction.guildId);
+    if (slots.length > 0) {
+      const slotLines = slots.map(
+        (s) => {
+          const modelDisplay = s.model ? `\`${s.model}\`` : "CLI default model";
+          return `  Slot **${s.slot_index}**: **${AI_PROVIDER_LABELS[s.provider]}**, model: ${modelDisplay}`;
+        }
+      );
+      lines.push(`Reviewer slots:\n${slotLines.join("\n")}`);
+    }
+
     await interaction.reply({
-      content: [
-        `Current default AI provider: **${AI_PROVIDER_LABELS[config.provider]}**, model: \`${modelStr}\` (set ${timeStr}).`,
-        `Planner role: **${AI_PROVIDER_LABELS[plannerProvider]}**, model: \`${plannerModel || "none (CLI default)"}\`.`,
-        `Implementer role: **${AI_PROVIDER_LABELS[implementerProvider]}**, model: \`${implementerModel || "none (CLI default)"}\`.`
-      ].join("\n"),
+      content: lines.join("\n"),
       ephemeral: true
     });
   }
