@@ -1905,6 +1905,90 @@ describe("ActuariusBot model-select command", () => {
     expect(roles.implementer).toEqual({ provider: "claude", model: "claude-sonnet-4-6" });
   });
 
+  it("shows review-only configuration when no guild_model_config exists", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue(undefined),
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "gemini", model: "gemini-2.5-pro" }
+      ]),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        rounds: 2,
+        analyzer_provider: "gemini",
+        analyzer_model: null,
+        judge_provider: null,
+        judge_model: null,
+        summarizer_provider: null,
+        summarizer_model: null,
+        updated_at: "2026-05-30T00:00:00.000Z"
+      })
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("No AI provider configured. Defaulting to **Claude**"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Slot **1**: **Claude**"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Slot **2**: **Gemini**, model: `gemini-2.5-pro`"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: **Gemini**, model: CLI default model (set via `/model-select`)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using explicit reviewer slots."),
+      ephemeral: true
+    });
+  });
+
+  it("shows summarizer falling back to slot 1 when explicit slots are identical", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "claude", model: null }
+      ])
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Summarizer**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using explicit reviewer slots."),
+      ephemeral: true
+    });
+  });
+
   it("rejects Gemini when GEMINI_API_KEY is whitespace only", async () => {
     const bot = createBot({
       setGuildModelConfig: vi.fn(),

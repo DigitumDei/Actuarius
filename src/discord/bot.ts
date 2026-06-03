@@ -1446,27 +1446,30 @@ export class ActuariusBot {
     }
 
     const config = this.db.getGuildModelConfig(interaction.guildId);
-    if (!config) {
-      await interaction.reply({
-        content: "No AI provider configured. Defaulting to **Claude** (no model override). Use `/model-select` to configure.",
-        ephemeral: true
-      });
-      return;
+
+    const lines: string[] = [];
+
+    if (config) {
+      const ts = new Date(config.updated_at).getTime();
+      const timeStr = Number.isNaN(ts) ? config.updated_at : `<t:${Math.floor(ts / 1000)}:R>`;
+      const modelStr = config.model || "none (CLI default)";
+      const plannerProvider = config.planner_provider ?? config.provider;
+      const plannerModel = config.planner_model ?? (plannerProvider === config.provider ? config.model : null);
+      const implementerProvider = config.implementer_provider ?? config.provider;
+      const implementerModel = config.implementer_model ?? (implementerProvider === config.provider ? config.model : null);
+
+      lines.push(
+        `Current default AI provider: **${AI_PROVIDER_LABELS[config.provider]}**, model: \`${modelStr}\` (set ${timeStr}).`,
+        `Planner role: **${AI_PROVIDER_LABELS[plannerProvider]}**, model: \`${plannerModel || "none (CLI default)"}\`.`,
+        `Implementer role: **${AI_PROVIDER_LABELS[implementerProvider]}**, model: \`${implementerModel || "none (CLI default)"}\`.`
+      );
+    } else {
+      lines.push(
+        "No AI provider configured. Defaulting to **Claude** (no model override). Use `/model-select` to configure.",
+        "Planner role: **Claude**, model: `none (CLI default)`.",
+        "Implementer role: **Claude**, model: `none (CLI default)`."
+      );
     }
-
-    const ts = new Date(config.updated_at).getTime();
-    const timeStr = Number.isNaN(ts) ? config.updated_at : `<t:${Math.floor(ts / 1000)}:R>`;
-    const modelStr = config.model || "none (CLI default)";
-    const plannerProvider = config.planner_provider ?? config.provider;
-    const plannerModel = config.planner_model ?? (plannerProvider === config.provider ? config.model : null);
-    const implementerProvider = config.implementer_provider ?? config.provider;
-    const implementerModel = config.implementer_model ?? (implementerProvider === config.provider ? config.model : null);
-
-    const lines: string[] = [
-      `Current default AI provider: **${AI_PROVIDER_LABELS[config.provider]}**, model: \`${modelStr}\` (set ${timeStr}).`,
-      `Planner role: **${AI_PROVIDER_LABELS[plannerProvider]}**, model: \`${plannerModel || "none (CLI default)"}\`.`,
-      `Implementer role: **${AI_PROVIDER_LABELS[implementerProvider]}**, model: \`${implementerModel || "none (CLI default)"}\`.`
-    ];
 
     const reviewConfig = this.db.getGuildReviewConfig(interaction.guildId);
     const slots = this.db.getReviewerSlots(interaction.guildId);
@@ -1492,8 +1495,8 @@ export class ActuariusBot {
     for (const { key, label } of reviewRoleSpec) {
       const overrideModel = reviewConfig?.[`${key}_provider` as keyof typeof reviewConfig] as AiProvider | null | undefined;
       const overrideModelValue = reviewConfig?.[`${key}_model` as keyof typeof reviewConfig] as string | null | undefined;
-      const legacyOverride = config[`${key}_provider` as keyof typeof config] as AiProvider | null | undefined;
-      const legacyModel = config[`${key}_model` as keyof typeof config] as string | null | undefined;
+      const legacyOverride = config?.[`${key}_provider` as keyof typeof config] as AiProvider | null | undefined;
+      const legacyModel = config?.[`${key}_model` as keyof typeof config] as string | null | undefined;
 
       if (overrideModel) {
         const modelDisplay = overrideModelValue ? `\`${overrideModelValue}\`` : "CLI default model";
@@ -1502,7 +1505,9 @@ export class ActuariusBot {
         const modelDisplay = legacyModel ? `\`${legacyModel}\`` : "CLI default model";
         roleLines.push(`  **${label}**: **${AI_PROVIDER_LABELS[legacyOverride]}**, model: ${modelDisplay} (legacy override)`);
       } else if (slots.length > 0) {
-        const fallbackSlot = key === "summarizer" && slots.length > 1 ? slots[1]! : slots[0]!;
+        const fallbackSlot = key === "summarizer"
+          ? (slots.find((s) => s.provider !== slots[0]!.provider || s.model !== slots[0]!.model) ?? slots[0]!)
+          : slots[0]!;
         roleLines.push(`  **${label}**: falls back to **Slot ${fallbackSlot.slot_index}** (**${AI_PROVIDER_LABELS[fallbackSlot.provider]}**)`);
       } else {
         roleLines.push(`  **${label}**: falls back to default reviewer ordering`);
@@ -1515,7 +1520,7 @@ export class ActuariusBot {
 
     if (slots.length > 0) {
       lines.push(`**Review mode:** Using explicit reviewer slots.`);
-    } else if (reviewConfig?.analyzer_provider || reviewConfig?.judge_provider || reviewConfig?.summarizer_provider || config.analyzer_provider || config.judge_provider || config.summarizer_provider) {
+    } else if (reviewConfig?.analyzer_provider || reviewConfig?.judge_provider || reviewConfig?.summarizer_provider || config?.analyzer_provider || config?.judge_provider || config?.summarizer_provider) {
       lines.push(`**Review mode:** Using role overrides with provider ordering.`);
     } else {
       lines.push(`**Review mode:** Using all enabled providers (legacy fallback).`);
