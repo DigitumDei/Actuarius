@@ -174,6 +174,12 @@ export class AppDatabase {
         planner_model TEXT,
         implementer_provider TEXT,
         implementer_model TEXT,
+        analyzer_provider TEXT,
+        analyzer_model TEXT,
+        judge_provider TEXT,
+        judge_model TEXT,
+        summarizer_provider TEXT,
+        summarizer_model TEXT,
         updated_by_user_id TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE
@@ -188,12 +194,17 @@ export class AppDatabase {
       notnull: number;
     }>;
     if (guildModelConfigModelInfo.find((c) => c.name === "model")?.notnull === 1) {
-      // PR #120 may have already added the planner/implementer columns via ALTER TABLE
-      // and guilds that had a default model could have planner data — preserve it.
-      const hasPlannerColumns = guildModelConfigModelInfo.some((c) => c.name === "planner_provider");
-      const extraCols = hasPlannerColumns
-        ? ["planner_provider", "planner_model", "implementer_provider", "implementer_model"]
-        : [];
+      // PR #123 recreate: preserve any role-override columns that may exist.
+      const knownExtraCols = [
+        "planner_provider", "planner_model",
+        "implementer_provider", "implementer_model",
+        "analyzer_provider", "analyzer_model",
+        "judge_provider", "judge_model",
+        "summarizer_provider", "summarizer_model",
+      ];
+      const extraCols = knownExtraCols.filter((c) =>
+        guildModelConfigModelInfo.some((col) => col.name === c)
+      );
       const insertCols = ["guild_id", "provider", "model", "updated_by_user_id", "updated_at", ...extraCols].join(", ");
       const selectCols = ["guild_id", "provider", "NULLIF(model, '')", "updated_by_user_id", "updated_at", ...extraCols].join(", ");
 
@@ -208,6 +219,12 @@ export class AppDatabase {
             planner_model TEXT,
             implementer_provider TEXT,
             implementer_model TEXT,
+            analyzer_provider TEXT,
+            analyzer_model TEXT,
+            judge_provider TEXT,
+            judge_model TEXT,
+            summarizer_provider TEXT,
+            summarizer_model TEXT,
             updated_by_user_id TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE
@@ -228,7 +245,13 @@ export class AppDatabase {
       ["planner_provider", "TEXT"],
       ["planner_model", "TEXT"],
       ["implementer_provider", "TEXT"],
-      ["implementer_model", "TEXT"]
+      ["implementer_model", "TEXT"],
+      ["analyzer_provider", "TEXT"],
+      ["analyzer_model", "TEXT"],
+      ["judge_provider", "TEXT"],
+      ["judge_model", "TEXT"],
+      ["summarizer_provider", "TEXT"],
+      ["summarizer_model", "TEXT"]
     ]);
     const existingGuildModelConfigColumns = new Set(
       z.array(tableInfoRowSchema)
@@ -278,12 +301,17 @@ export class AppDatabase {
       }
     }
 
+    this.db.exec("DROP TABLE IF EXISTS reviewer_slots");
+
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS reviewer_slots (
+      CREATE TABLE IF NOT EXISTS guild_reviewer_slots (
         guild_id TEXT NOT NULL,
         slot_index INTEGER NOT NULL,
         provider TEXT NOT NULL,
         model TEXT,
+        updated_by_user_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (guild_id, slot_index),
         FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE
       );
@@ -699,7 +727,7 @@ export class AppDatabase {
   public getReviewerSlots(guildId: string): ReviewerSlotRow[] {
     return z.array(reviewerSlotRowRawSchema).parse(
       this.db
-        .prepare("SELECT * FROM reviewer_slots WHERE guild_id = ? ORDER BY slot_index")
+        .prepare("SELECT * FROM guild_reviewer_slots WHERE guild_id = ? ORDER BY slot_index")
         .all(guildId)
     ).map((slot) => ({
       ...slot,
@@ -707,16 +735,16 @@ export class AppDatabase {
     }));
   }
 
-  public setReviewerSlots(guildId: string, slots: Array<{ slot_index: number; provider: AiProvider; model: string | null }>): ReviewerSlotRow[] {
+  public setReviewerSlots(guildId: string, slots: Array<{ slot_index: number; provider: AiProvider; model: string | null }>, updatedByUserId: string): ReviewerSlotRow[] {
     this.db.exec("BEGIN");
     try {
-      this.db.prepare("DELETE FROM reviewer_slots WHERE guild_id = ?").run(guildId);
+      this.db.prepare("DELETE FROM guild_reviewer_slots WHERE guild_id = ?").run(guildId);
       for (const slot of slots) {
         this.db
           .prepare(
-            "INSERT INTO reviewer_slots (guild_id, slot_index, provider, model) VALUES (?, ?, ?, ?)"
+            "INSERT INTO guild_reviewer_slots (guild_id, slot_index, provider, model, updated_by_user_id) VALUES (?, ?, ?, ?, ?)"
           )
-          .run(guildId, slot.slot_index, slot.provider, slot.model);
+          .run(guildId, slot.slot_index, slot.provider, slot.model, updatedByUserId);
       }
       this.db.exec("COMMIT");
     } catch (error) {
