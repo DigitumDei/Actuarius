@@ -1861,6 +1861,53 @@ describe("ActuariusBot plan runner", () => {
     expect(send).toHaveBeenCalledWith(expect.stringContaining("Plan request failed during planning"));
   });
 
+  it("preserves worktree when iterative loop fails so /revise can continue", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const updateRequestStatus = vi.fn();
+    const updateRequestWorkspace = vi.fn();
+    const bot = createBot({ updateRequestStatus, updateRequestWorkspace });
+
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan",
+      branchName: "ask/94-123"
+    });
+    vi.mocked(runIterativeTaskLoop).mockRejectedValue(new Error("task 2 failed"));
+    vi.mocked(deleteRequestBranch).mockResolvedValue(undefined);
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn().mockResolvedValueOnce(JSON.stringify({
+      overview: "Test plan",
+      tasks: [
+        { title: "Task 1", description: "First task" },
+        { title: "Task 2", description: "Second task" }
+      ]
+    }));
+
+    await (bot as any).runPlanRequest({
+      requestId: 94,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Do iterative thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      iterative: true
+    });
+
+    expect(updateRequestStatus).toHaveBeenCalledWith(94, "failed");
+    expect(deleteRequestBranch).not.toHaveBeenCalled();
+    expect(updateRequestWorkspace).toHaveBeenCalledTimes(1);
+    expect(updateRequestWorkspace).toHaveBeenCalledWith(94, "/tmp/worktree-plan", "ask/94-123");
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Plan request failed during iterative-loop"));
+  });
+
   it("iterative false uses existing single-shot implementation behavior", async () => {
     vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
     vi.mocked(createRequestWorktree).mockResolvedValue({

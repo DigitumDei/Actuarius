@@ -3031,7 +3031,9 @@ Output the result of the command or the link to the created issue.`;
       if (threadChannel && threadChannel.isThread()) {
         await threadChannel.send(`**Plan request failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 60)}`);
       }
-      await cleanupFailedWorktree();
+      if (stage !== "iterative-loop") {
+        await cleanupFailedWorktree();
+      }
       this.logger.error({ error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage }, "Plan request failed");
     }
   }
