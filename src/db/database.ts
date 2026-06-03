@@ -843,7 +843,7 @@ export class AppDatabase {
   public setGuildReviewRoleModelConfig(
     guildId: string,
     role: ReviewModelRole,
-    provider: AiProvider,
+    provider: AiProvider | null,
     model: string | null,
     updatedByUserId: string
   ): GuildModelConfigRow {

@@ -127,8 +127,8 @@ describe("AppDatabase reviewer slots", () => {
   });
 
   it("upserts single reviewer slot", () => {
-    const slot = db.setReviewerSlot("guild-1", 0, "claude", "claude-sonnet-4-5", "user-1");
-    expect(slot.slot_index).toBe(0);
+    const slot = db.setReviewerSlot("guild-1", 1, "claude", "claude-sonnet-4-5", "user-1");
+    expect(slot.slot_index).toBe(1);
     expect(slot.provider).toBe("claude");
     expect(slot.model).toBe("claude-sonnet-4-5");
     expect(slot.updated_by_user_id).toBe("user-1");
@@ -139,8 +139,8 @@ describe("AppDatabase reviewer slots", () => {
   });
 
   it("updates existing slot on second upsert", () => {
-    db.setReviewerSlot("guild-1", 0, "claude", "claude-sonnet-4-5", "user-1");
-    const updated = db.setReviewerSlot("guild-1", 0, "gemini", "gemini-2.0-flash", "user-2");
+    db.setReviewerSlot("guild-1", 1, "claude", "claude-sonnet-4-5", "user-1");
+    const updated = db.setReviewerSlot("guild-1", 1, "gemini", "gemini-2.0-flash", "user-2");
     expect(updated.provider).toBe("gemini");
     expect(updated.model).toBe("gemini-2.0-flash");
     expect(updated.updated_by_user_id).toBe("user-2");
@@ -151,37 +151,37 @@ describe("AppDatabase reviewer slots", () => {
   });
 
   it("stores multiple slots at different indices", () => {
-    db.setReviewerSlot("guild-1", 0, "claude", "claude-sonnet-4-5", "user-1");
-    db.setReviewerSlot("guild-1", 1, "gemini", "gemini-2.0-flash", "user-1");
-    db.setReviewerSlot("guild-1", 2, "opencode", "deepseek/deepseek-v4-pro", "user-1");
+    db.setReviewerSlot("guild-1", 1, "claude", "claude-sonnet-4-5", "user-1");
+    db.setReviewerSlot("guild-1", 2, "gemini", "gemini-2.0-flash", "user-1");
+    db.setReviewerSlot("guild-1", 3, "opencode", "deepseek/deepseek-v4-pro", "user-1");
 
     const slots = db.getReviewerSlots("guild-1");
     expect(slots).toHaveLength(3);
-    expect(slots[0].slot_index).toBe(0);
-    expect(slots[1].slot_index).toBe(1);
-    expect(slots[2].slot_index).toBe(2);
+    expect(slots[0].slot_index).toBe(1);
+    expect(slots[1].slot_index).toBe(2);
+    expect(slots[2].slot_index).toBe(3);
   });
 
   it("clears a single reviewer slot", () => {
-    db.setReviewerSlot("guild-1", 0, "claude", "claude-sonnet-4-5", "user-1");
-    db.setReviewerSlot("guild-1", 1, "gemini", "gemini-2.0-flash", "user-1");
+    db.setReviewerSlot("guild-1", 1, "claude", "claude-sonnet-4-5", "user-1");
+    db.setReviewerSlot("guild-1", 2, "gemini", "gemini-2.0-flash", "user-1");
 
-    db.clearReviewerSlot("guild-1", 0);
+    db.clearReviewerSlot("guild-1", 1);
 
     const slots = db.getReviewerSlots("guild-1");
     expect(slots).toHaveLength(1);
-    expect(slots[0].slot_index).toBe(1);
+    expect(slots[0].slot_index).toBe(2);
     expect(slots[0].provider).toBe("gemini");
   });
 
   it("clearing nonexistent slot does not throw", () => {
-    db.setReviewerSlot("guild-1", 0, "claude", "claude-sonnet-4-5", "user-1");
+    db.setReviewerSlot("guild-1", 1, "claude", "claude-sonnet-4-5", "user-1");
     expect(() => db.clearReviewerSlot("guild-1", 99)).not.toThrow();
     expect(db.getReviewerSlots("guild-1")).toHaveLength(1);
   });
 
   it("cascades delete when guild is removed", () => {
-    db.setReviewerSlot("guild-1", 0, "claude", "claude-sonnet-4-5", "user-1");
+    db.setReviewerSlot("guild-1", 1, "claude", "claude-sonnet-4-5", "user-1");
     db.removeGuild("guild-1");
     expect(db.getReviewerSlots("guild-1")).toEqual([]);
   });
@@ -246,14 +246,23 @@ describe("AppDatabase review role model config", () => {
     expect(config!.updated_by_user_id).toBe("user-2");
   });
 
-  it("can clear a review role override by setting model to null", () => {
+  it("can clear a review role override by setting provider to null", () => {
     db.setGuildModelConfig("guild-1", "gemini", "gemini-2.0-flash", "user-1");
     db.setGuildReviewRoleModelConfig("guild-1", "analyzer", "claude", "claude-sonnet-4-5", "user-1");
-    db.setGuildReviewRoleModelConfig("guild-1", "analyzer", "claude", null, "user-2");
+    db.setGuildReviewRoleModelConfig("guild-1", "analyzer", null, null, "user-2");
 
     const config = db.getGuildModelConfig("guild-1");
-    expect(config!.analyzer_provider).toBe("claude");
+    expect(config!.analyzer_provider).toBeNull();
     expect(config!.analyzer_model).toBeNull();
+  });
+
+  it("can set provider without model to partially override", () => {
+    db.setGuildModelConfig("guild-1", "gemini", "gemini-2.0-flash", "user-1");
+    db.setGuildReviewRoleModelConfig("guild-1", "judge", "claude", null, "user-2");
+
+    const config = db.getGuildModelConfig("guild-1");
+    expect(config!.judge_provider).toBe("claude");
+    expect(config!.judge_model).toBeNull();
   });
 
   it("cascades review role config delete when guild is removed", () => {
