@@ -301,8 +301,6 @@ export class AppDatabase {
       }
     }
 
-    this.db.exec("DROP TABLE IF EXISTS reviewer_slots");
-
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS guild_reviewer_slots (
         guild_id TEXT NOT NULL,
@@ -316,6 +314,29 @@ export class AppDatabase {
         FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE
       );
     `);
+
+    // Migrate from legacy reviewer_slots table, preserving existing data
+    const hasLegacyReviewerSlots =
+      this.db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='reviewer_slots'"
+      ).get() !== undefined;
+
+    if (hasLegacyReviewerSlots) {
+      this.db.exec("BEGIN");
+      try {
+        this.db.exec(`
+          INSERT OR IGNORE INTO guild_reviewer_slots
+            (guild_id, slot_index, provider, model, updated_by_user_id, created_at, updated_at)
+          SELECT guild_id, slot_index, provider, model, updated_by_user_id, created_at, updated_at
+          FROM reviewer_slots
+        `);
+        this.db.exec("DROP TABLE reviewer_slots");
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+    }
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS model_history (

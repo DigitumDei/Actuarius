@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { AppDatabase } from "../src/db/database.js";
 
 function createInMemoryDb(): AppDatabase {
@@ -350,5 +354,144 @@ describe("AppDatabase request workspace state", () => {
       error_message: "old error",
       completed_at: "2026-03-31T00:00:00.000Z"
     });
+  });
+});
+
+describe("AppDatabase migration from legacy reviewer_slots", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "actuarius-migration-test-"));
+  });
+
+  it("preserves data when upgrading from old reviewer_slots schema", () => {
+    const dbPath = join(tmpDir, "test-migrate.db");
+
+    // Seed a database with the legacy reviewer_slots table
+    const legacyDb = new DatabaseSync(dbPath);
+    legacyDb.exec("PRAGMA journal_mode = WAL");
+    legacyDb.exec(`
+      CREATE TABLE IF NOT EXISTS guilds (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    legacyDb.exec("INSERT OR IGNORE INTO guilds (id, name) VALUES ('guild-1', 'Test Guild')");
+
+    // Create the legacy reviewer_slots table (same column layout as expected)
+    legacyDb.exec(`
+      CREATE TABLE IF NOT EXISTS reviewer_slots (
+        guild_id TEXT NOT NULL,
+        slot_index INTEGER NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT,
+        updated_by_user_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (guild_id, slot_index)
+      )
+    `);
+
+    legacyDb
+      .prepare("INSERT INTO reviewer_slots (guild_id, slot_index, provider, model, updated_by_user_id) VALUES (?, ?, ?, ?, ?)")
+      .run("guild-1", 0, "claude", "claude-sonnet-4-20250514", "user-migrate");
+    legacyDb
+      .prepare("INSERT INTO reviewer_slots (guild_id, slot_index, provider, model, updated_by_user_id) VALUES (?, ?, ?, ?, ?)")
+      .run("guild-1", 1, "gemini", "gemini-2.5-pro", "user-migrate");
+    legacyDb.close();
+
+    // Open with AppDatabase — triggers runMigrations
+    const db = new AppDatabase(dbPath);
+    db.runMigrations();
+    db.upsertGuild("guild-1", "Test Guild");
+
+    const slots = db.getReviewerSlots("guild-1");
+    expect(slots).toHaveLength(2);
+    expect(slots[0]).toMatchObject({
+      guild_id: "guild-1",
+      slot_index: 0,
+      provider: "claude",
+      model: "claude-sonnet-4-20250514",
+      updated_by_user_id: "user-migrate"
+    });
+    expect(slots[1]).toMatchObject({
+      guild_id: "guild-1",
+      slot_index: 1,
+      provider: "gemini",
+      model: "gemini-2.5-pro",
+      updated_by_user_id: "user-migrate"
+    });
+
+    // Confirm old table is gone
+    const checkDb = new DatabaseSync(dbPath);
+    const row = checkDb
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='reviewer_slots'")
+      .get();
+    expect(row).toBeUndefined();
+    checkDb.close();
+
+    db.close();
+  });
+
+  it("survives a second runMigrations call without data loss", () => {
+    const dbPath = join(tmpDir, "test-twice.db");
+
+    // Seed legacy schema
+    const legacyDb = new DatabaseSync(dbPath);
+    legacyDb.exec("PRAGMA journal_mode = WAL");
+    legacyDb.exec(`
+      CREATE TABLE IF NOT EXISTS guilds (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    legacyDb.exec("INSERT OR IGNORE INTO guilds (id, name) VALUES ('guild-1', 'Test Guild')");
+    legacyDb.exec(`
+      CREATE TABLE IF NOT EXISTS reviewer_slots (
+        guild_id TEXT NOT NULL,
+        slot_index INTEGER NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT,
+        updated_by_user_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (guild_id, slot_index)
+      )
+    `);
+    legacyDb
+      .prepare("INSERT INTO reviewer_slots (guild_id, slot_index, provider, model, updated_by_user_id) VALUES (?, ?, ?, ?, ?)")
+      .run("guild-1", 0, "claude", "claude-sonnet-4-20250514", "user-migrate");
+    legacyDb.close();
+
+    const db = new AppDatabase(dbPath);
+    db.runMigrations();
+    db.upsertGuild("guild-1", "Test Guild");
+    expect(db.getReviewerSlots("guild-1")).toHaveLength(1);
+
+    // Run migrations again — should be idempotent
+    db.runMigrations();
+
+    const slots = db.getReviewerSlots("guild-1");
+    expect(slots).toHaveLength(1);
+    expect(slots[0]).toMatchObject({
+      guild_id: "guild-1",
+      slot_index: 0,
+      provider: "claude",
+      model: "claude-sonnet-4-20250514",
+      updated_by_user_id: "user-migrate"
+    });
+
+    db.close();
+  });
+
+  it("does not require the legacy table", () => {
+    const db = new AppDatabase(":memory:");
+    db.runMigrations();
+    db.upsertGuild("guild-1", "Test Guild");
+    expect(db.getReviewerSlots("guild-1")).toEqual([]);
   });
 });
