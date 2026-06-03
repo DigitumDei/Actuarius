@@ -1333,7 +1333,7 @@ export class ActuariusBot {
     if (reviewRoleMatch) {
       const reviewRole = reviewRoleMatch[1] as ReviewModelRole;
       if (isClear) {
-        this.db.setGuildReviewRoleConfig(interaction.guildId, reviewRole, null, null, interaction.user.id);
+        this.db.clearGuildReviewRoleConfig(interaction.guildId, reviewRole, interaction.user.id);
         await interaction.reply({
           content: `Reviewer **${reviewRole}** role override cleared.`,
           ephemeral: true

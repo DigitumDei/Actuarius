@@ -908,6 +908,36 @@ export class AppDatabase {
     };
   }
 
+  public clearGuildReviewRoleConfig(
+    guildId: string,
+    role: ReviewModelRole,
+    updatedByUserId: string
+  ): void {
+    const providerColumn = `${role}_provider` as const;
+    const modelColumn = `${role}_model` as const;
+
+    this.db
+      .prepare(
+        `UPDATE guild_review_config
+         SET ${providerColumn} = NULL,
+             ${modelColumn} = NULL,
+             updated_by_user_id = ?,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE guild_id = ?`
+      )
+      .run(updatedByUserId, guildId);
+
+    this.db
+      .prepare(
+        `DELETE FROM guild_review_config
+         WHERE guild_id = ?
+           AND analyzer_provider IS NULL
+           AND judge_provider IS NULL
+           AND summarizer_provider IS NULL`
+      )
+      .run(guildId);
+  }
+
   public addModelToHistory(provider: AiProvider, model: string): void {
     this.db.exec("BEGIN");
     try {

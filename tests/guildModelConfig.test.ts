@@ -322,13 +322,11 @@ describe("AppDatabase review role config on guild_review_config", () => {
     expect(config!.summarizer_model).toBe("deepseek/deepseek-v4-pro");
   });
 
-  it("can clear a review role override by setting provider to null", () => {
+  it("can clear a review role override by removing the stored config", () => {
     db.setGuildReviewRoleConfig("guild-1", "judge", "claude", "claude-sonnet-4-5", "user-1");
-    db.setGuildReviewRoleConfig("guild-1", "judge", null, null, "user-2");
+    db.clearGuildReviewRoleConfig("guild-1", "judge", "user-2");
 
-    const config = db.getGuildReviewConfig("guild-1");
-    expect(config!.judge_provider).toBeNull();
-    expect(config!.judge_model).toBeNull();
+    expect(db.getGuildReviewConfig("guild-1")).toBeUndefined();
   });
 
   it("updates existing override on second call", () => {

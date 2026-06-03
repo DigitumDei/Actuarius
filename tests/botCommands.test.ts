@@ -1767,9 +1767,9 @@ describe("ActuariusBot model-select command", () => {
   });
 
   it("clears a reviewer role override via clear flag", async () => {
-    const setGuildReviewRoleConfig = vi.fn();
+    const clearGuildReviewRoleConfig = vi.fn();
     const upsertGuild = vi.fn();
-    const bot = createBot({ setGuildReviewRoleConfig, upsertGuild });
+    const bot = createBot({ clearGuildReviewRoleConfig, upsertGuild });
     const interaction = createInteraction({
       memberPermissions: { has: vi.fn().mockReturnValue(true) },
       options: {
@@ -1786,7 +1786,7 @@ describe("ActuariusBot model-select command", () => {
 
     await (bot as any).handleModelSelect(interaction);
 
-    expect(setGuildReviewRoleConfig).toHaveBeenCalledWith("guild-1", "judge", null, null, "user-1");
+    expect(clearGuildReviewRoleConfig).toHaveBeenCalledWith("guild-1", "judge", "user-1");
     expect(interaction.reply).toHaveBeenCalledWith({
       content: "Reviewer **judge** role override cleared.",
       ephemeral: true
