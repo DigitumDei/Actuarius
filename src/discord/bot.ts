@@ -23,7 +23,7 @@ import {
 import type pino from "pino";
 import type { AppConfig } from "../config.js";
 import { AppDatabase } from "../db/database.js";
-import type { AiProvider, ModelRole, RepoRow, RequestStatus } from "../db/types.js";
+import type { AiProvider, ModelRole, ReviewModelRole, RepoRow, RequestStatus } from "../db/types.js";
 import { commandBuilders } from "./commands.js";
 import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
@@ -1245,6 +1245,7 @@ export class ActuariusBot {
     const rawProvider = interaction.options.getString("provider", true);
     const rawModel = interaction.options.getString("model");
     const rawRole = interaction.options.getString("role") ?? "default";
+    const isClear = interaction.options.getBoolean("clear") ?? false;
     const model = rawModel?.trim() || null;
 
     // Defense-in-depth: Discord already constrains the value via addChoices, but we
@@ -1258,15 +1259,96 @@ export class ActuariusBot {
     }
 
     const provider = rawProvider as AiProvider;
-    const role = rawRole as ModelRole;
+    const VALID_ROLES = [
+      "default",
+      "planner",
+      "implementer",
+      "reviewer-1",
+      "reviewer-2",
+      "reviewer-3",
+      "reviewer-4",
+      "reviewer-analyzer",
+      "reviewer-judge",
+      "reviewer-summarizer"
+    ] as const;
 
-    if (!["default", "planner", "implementer"].includes(role)) {
+    if (!(VALID_ROLES as readonly string[]).includes(rawRole)) {
       await interaction.reply({
-        content: "Invalid model role. Choose from: `default`, `planner`, `implementer`.",
+        content: "Invalid model role. Choose from: `default`, `planner`, `implementer`, `reviewer-1`–`reviewer-4`, `reviewer-analyzer`, `reviewer-judge`, `reviewer-summarizer`.",
         ephemeral: true
       });
       return;
     }
+
+    this.db.upsertGuild(interaction.guild.id, interaction.guild.name);
+
+    // --- Reviewer slot roles (reviewer-1 through reviewer-4) ---
+    const slotMatch = rawRole.match(/^reviewer-([1-4])$/);
+    if (slotMatch) {
+      const slotIndex = parseInt(slotMatch[1], 10);
+      if (isClear) {
+        this.db.clearReviewerSlot(interaction.guildId, slotIndex);
+        await interaction.reply({
+          content: `Reviewer slot **${slotIndex}** cleared.`,
+          ephemeral: true
+        });
+        return;
+      }
+
+      const providerUnavailableMessage = await this.getProviderUnavailableMessage(provider);
+      if (providerUnavailableMessage) {
+        await interaction.reply({ content: providerUnavailableMessage, ephemeral: true });
+        return;
+      }
+
+      this.db.setReviewerSlot(interaction.guildId, slotIndex, provider, model, interaction.user.id);
+      if (model) {
+        this.db.addModelToHistory(provider, model);
+      }
+
+      const modelDisplay = model ? `model \`${model}\`` : "CLI default model";
+      await interaction.reply({
+        content: `Reviewer slot **${slotIndex}** set to **${AI_PROVIDER_LABELS[provider]}** with ${modelDisplay}.`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    // --- Review role overrides (reviewer-analyzer, reviewer-judge, reviewer-summarizer) ---
+    const reviewRoleMatch = rawRole.match(/^reviewer-(analyzer|judge|summarizer)$/);
+    if (reviewRoleMatch) {
+      const reviewRole = reviewRoleMatch[1] as ReviewModelRole;
+      if (isClear) {
+        this.db.setGuildReviewRoleModelConfig(interaction.guildId, reviewRole, null, null, interaction.user.id);
+        await interaction.reply({
+          content: `Reviewer **${reviewRole}** role override cleared.`,
+          ephemeral: true
+        });
+        return;
+      }
+
+      const providerUnavailableMessage = await this.getProviderUnavailableMessage(provider);
+      if (providerUnavailableMessage) {
+        await interaction.reply({ content: providerUnavailableMessage, ephemeral: true });
+        return;
+      }
+
+      this.db.setGuildReviewRoleModelConfig(interaction.guildId, reviewRole, provider, model, interaction.user.id);
+      if (model) {
+        this.db.addModelToHistory(provider, model);
+      }
+
+      const modelDisplay = model ? `model \`${model}\`` : "CLI default model";
+      const roleLabel = reviewRole.charAt(0).toUpperCase() + reviewRole.slice(1);
+      await interaction.reply({
+        content: `Reviewer **${roleLabel}** role override set to **${AI_PROVIDER_LABELS[provider]}** with ${modelDisplay}.`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    // --- Default / planner / implementer (existing flow with clear support) ---
+    const role = rawRole as "default" | "planner" | "implementer";
 
     const providerUnavailableMessage = await this.getProviderUnavailableMessage(provider);
     if (providerUnavailableMessage) {
@@ -1274,15 +1356,23 @@ export class ActuariusBot {
       return;
     }
 
-    this.db.upsertGuild(interaction.guild.id, interaction.guild.name);
     if (role === "default") {
-      this.db.setGuildModelConfig(interaction.guildId, provider, model, interaction.user.id);
+      this.db.setGuildModelConfig(interaction.guildId, provider, isClear ? null : model, interaction.user.id);
     } else {
-      this.db.setGuildRoleModelConfig(interaction.guildId, role, provider, model, interaction.user.id);
+      this.db.setGuildRoleModelConfig(interaction.guildId, role, provider, isClear ? null : model, interaction.user.id);
     }
 
-    if (model) {
+    if (!isClear && model) {
       this.db.addModelToHistory(provider, model);
+    }
+
+    if (isClear) {
+      const roleDisplay = role === "default" ? "default AI provider" : `${role} provider`;
+      await interaction.reply({
+        content: `${roleDisplay} model cleared. Using CLI default model.`,
+        ephemeral: true
+      });
+      return;
     }
 
     const modelDisplay = model ? `model \`${model}\`` : "CLI default model";

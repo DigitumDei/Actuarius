@@ -189,7 +189,8 @@ function createInteraction(overrides: Record<string, unknown> = {}) {
     memberPermissions: { has: vi.fn().mockReturnValue(false) },
     options: {
       getString: vi.fn().mockReturnValue(null),
-      getInteger: vi.fn().mockReturnValue(null)
+      getInteger: vi.fn().mockReturnValue(null),
+      getBoolean: vi.fn().mockReturnValue(null)
     },
     reply: vi.fn().mockResolvedValue(undefined),
     fetchReply: vi.fn(),
@@ -1718,7 +1719,8 @@ describe("ActuariusBot model-select command", () => {
           }
 
           return null;
-        })
+        }),
+        getBoolean: vi.fn().mockReturnValue(null)
       }
     });
 
