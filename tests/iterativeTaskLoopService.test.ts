@@ -5,6 +5,7 @@ const mockRunProviderText = vi.fn();
 const mockGetHeadSha = vi.fn();
 const mockGetDiffSinceRef = vi.fn();
 const mockHasUncommittedChanges = vi.fn();
+const mockAutoCommitAll = vi.fn();
 const mockSend = vi.fn().mockResolvedValue(undefined);
 
 const defaultInput: IterativeTaskLoopInput = {
@@ -26,7 +27,8 @@ const defaultInput: IterativeTaskLoopInput = {
   env: undefined,
   getHeadSha: mockGetHeadSha,
   getDiffSinceRef: mockGetDiffSinceRef,
-  hasUncommittedChanges: mockHasUncommittedChanges
+  hasUncommittedChanges: mockHasUncommittedChanges,
+  autoCommitAll: mockAutoCommitAll
 };
 
 const { runIterativeTaskLoop } = await import("../src/services/iterativeTaskLoopService.js");
@@ -37,6 +39,7 @@ describe("runIterativeTaskLoop", () => {
     mockGetHeadSha.mockResolvedValue("abc123");
     mockGetDiffSinceRef.mockResolvedValue("diff --git a/src/index.ts b/src/index.ts\n+change");
     mockHasUncommittedChanges.mockResolvedValue(false);
+    mockAutoCommitAll.mockResolvedValue(undefined);
   });
 
   it("runs each task through implementer then verifier", async () => {
@@ -262,35 +265,43 @@ describe("runIterativeTaskLoop", () => {
     expect(implementerPrompt).toContain("The worktree must be clean when you respond");
   });
 
-  it("stops before verification when an implementer leaves uncommitted changes", async () => {
-    mockRunProviderText.mockResolvedValueOnce("impl 1");
+  it("auto-commits and notifies thread when implementer leaves uncommitted changes", async () => {
+    mockRunProviderText
+      .mockResolvedValueOnce("impl 1")
+      .mockResolvedValueOnce("APPROVED");
     mockHasUncommittedChanges.mockResolvedValueOnce(true);
 
-    await expect(runIterativeTaskLoop({
+    const result = await runIterativeTaskLoop({
       ...defaultInput,
       tasks: [{ title: "Task 1", description: "First task" }]
-    })).rejects.toThrow("left uncommitted changes");
+    });
 
-    expect(mockHasUncommittedChanges).toHaveBeenCalledWith("/tmp/worktree");
-    expect(mockGetDiffSinceRef).not.toHaveBeenCalled();
-    expect(mockRunProviderText).toHaveBeenCalledTimes(1);
+    expect(mockAutoCommitAll).toHaveBeenCalledWith("/tmp/worktree", "task 1/1: Task 1 (auto-committed)");
+    expect(mockSend).toHaveBeenCalledWith(expect.stringContaining("auto-committed"));
+    expect(result.taskResults).toHaveLength(1);
+    expect(result.taskResults[0]!.approved).toBe(true);
   });
 
-  it("does not allow task 2 to inherit task 1 uncommitted changes", async () => {
+  it("auto-commits per-task and continues when task 2 also leaves uncommitted changes", async () => {
     mockRunProviderText
       .mockResolvedValueOnce("impl 1")
       .mockResolvedValueOnce("APPROVED")
-      .mockResolvedValueOnce("impl 2");
+      .mockResolvedValueOnce("impl 2")
+      .mockResolvedValueOnce("APPROVED");
     mockHasUncommittedChanges
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true);
-    mockGetDiffSinceRef.mockResolvedValueOnce("task 1 diff");
+    mockGetDiffSinceRef
+      .mockResolvedValueOnce("task 1 diff")
+      .mockResolvedValueOnce("task 2 diff");
 
-    await expect(runIterativeTaskLoop(defaultInput)).rejects.toThrow("Task 2/2 left uncommitted changes");
+    const result = await runIterativeTaskLoop(defaultInput);
 
-    expect(mockGetDiffSinceRef).toHaveBeenCalledTimes(1);
-    expect(mockGetDiffSinceRef).toHaveBeenCalledWith("/tmp/worktree", "abc123");
-    expect(mockRunProviderText).toHaveBeenCalledTimes(3);
+    expect(mockAutoCommitAll).toHaveBeenCalledTimes(1);
+    expect(mockAutoCommitAll).toHaveBeenCalledWith("/tmp/worktree", "task 2/2: Task 2 (auto-committed)");
+    expect(result.taskResults).toHaveLength(2);
+    expect(result.taskResults[0]!.approved).toBe(true);
+    expect(result.taskResults[1]!.approved).toBe(true);
   });
 
   it("preserves blank-line separators in implementer prompts", async () => {
