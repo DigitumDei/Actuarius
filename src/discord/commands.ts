@@ -152,7 +152,7 @@ export const commandBuilders = [
     .addBooleanOption((option) =>
       option
         .setName("clear")
-        .setDescription("Clear the role configuration instead of setting it.")
+        .setDescription("Clear a reviewer slot or reviewer role override instead of setting it.")
         .setRequired(false)
     ),
   new SlashCommandBuilder()

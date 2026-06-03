@@ -1737,6 +1737,114 @@ describe("ActuariusBot model-select command", () => {
       ephemeral: true
     });
   });
+
+  it("clears a reviewer slot via clear flag", async () => {
+    const clearReviewerSlot = vi.fn();
+    const upsertGuild = vi.fn();
+    const bot = createBot({ clearReviewerSlot, upsertGuild });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "provider") return null;
+          if (name === "model") return null;
+          if (name === "role") return "reviewer-2";
+          return null;
+        }),
+        getBoolean: vi.fn((name: string) => name === "clear" ? true : null),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleModelSelect(interaction);
+
+    expect(clearReviewerSlot).toHaveBeenCalledWith("guild-1", 2);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Reviewer slot **2** cleared.",
+      ephemeral: true
+    });
+  });
+
+  it("clears a reviewer role override via clear flag", async () => {
+    const setGuildReviewRoleModelConfig = vi.fn();
+    const upsertGuild = vi.fn();
+    const bot = createBot({ setGuildReviewRoleModelConfig, upsertGuild });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "provider") return null;
+          if (name === "model") return null;
+          if (name === "role") return "reviewer-judge";
+          return null;
+        }),
+        getBoolean: vi.fn((name: string) => name === "clear" ? true : null),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleModelSelect(interaction);
+
+    expect(setGuildReviewRoleModelConfig).toHaveBeenCalledWith("guild-1", "judge", null, null, "user-1");
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Reviewer **judge** role override cleared.",
+      ephemeral: true
+    });
+  });
+
+  it("rejects clear=true with default role", async () => {
+    const setGuildModelConfig = vi.fn();
+    const upsertGuild = vi.fn();
+    const bot = createBot({ setGuildModelConfig, upsertGuild });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "provider") return null;
+          if (name === "model") return null;
+          if (name === "role") return "default";
+          return null;
+        }),
+        getBoolean: vi.fn((name: string) => name === "clear" ? true : null),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleModelSelect(interaction);
+
+    expect(setGuildModelConfig).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "`clear` is only supported for reviewer roles (`reviewer-1`–`reviewer-4`, `reviewer-analyzer`, `reviewer-judge`, `reviewer-summarizer`). Use `/model-select provider:... role:default` without `clear` to change the default provider.",
+      ephemeral: true
+    });
+  });
+
+  it("rejects clear=true with planner role", async () => {
+    const setGuildRoleModelConfig = vi.fn();
+    const upsertGuild = vi.fn();
+    const bot = createBot({ setGuildRoleModelConfig, upsertGuild });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "provider") return null;
+          if (name === "model") return null;
+          if (name === "role") return "planner";
+          return null;
+        }),
+        getBoolean: vi.fn((name: string) => name === "clear" ? true : null),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleModelSelect(interaction);
+
+    expect(setGuildRoleModelConfig).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "`clear` is only supported for reviewer roles (`reviewer-1`–`reviewer-4`, `reviewer-analyzer`, `reviewer-judge`, `reviewer-summarizer`). Use `/model-select provider:... role:default` without `clear` to change the default provider.",
+      ephemeral: true
+    });
+  });
 });
 
 describe("ActuariusBot pr command", () => {

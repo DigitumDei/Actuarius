@@ -1369,40 +1369,39 @@ export class ActuariusBot {
       return;
     }
 
-    // --- Default / planner / implementer (existing flow with clear support) ---
+    // --- Default / planner / implementer (existing flow) ---
     const role = rawRole as "default" | "planner" | "implementer";
 
-    if (!isClear && !provider) {
+    if (isClear) {
       await interaction.reply({
-        content: "`provider` is required when not clearing a role.",
+        content: "`clear` is only supported for reviewer roles (`reviewer-1`–`reviewer-4`, `reviewer-analyzer`, `reviewer-judge`, `reviewer-summarizer`). Use `/model-select provider:... role:default` without `clear` to change the default provider.",
         ephemeral: true
       });
       return;
     }
 
-    const providerUnavailableMessage = provider ? await this.getProviderUnavailableMessage(provider) : null;
+    if (!provider) {
+      await interaction.reply({
+        content: "`provider` is required. Choose from: `claude`, `codex`, `gemini`, `opencode`.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const providerUnavailableMessage = await this.getProviderUnavailableMessage(provider);
     if (providerUnavailableMessage) {
       await interaction.reply({ content: providerUnavailableMessage, ephemeral: true });
       return;
     }
 
     if (role === "default") {
-      this.db.setGuildModelConfig(interaction.guildId, provider!, isClear ? null : model, interaction.user.id);
+      this.db.setGuildModelConfig(interaction.guildId, provider, model, interaction.user.id);
     } else {
-      this.db.setGuildRoleModelConfig(interaction.guildId, role, provider!, isClear ? null : model, interaction.user.id);
+      this.db.setGuildRoleModelConfig(interaction.guildId, role, provider, model, interaction.user.id);
     }
 
-    if (!isClear && model) {
-      this.db.addModelToHistory(provider!, model);
-    }
-
-    if (isClear) {
-      const roleDisplay = role === "default" ? "default AI provider" : `${role} provider`;
-      await interaction.reply({
-        content: `${roleDisplay} model cleared. Using CLI default model.`,
-        ephemeral: true
-      });
-      return;
+    if (model) {
+      this.db.addModelToHistory(provider, model);
     }
 
     const modelDisplay = model ? `model \`${model}\`` : "CLI default model";
@@ -1410,7 +1409,7 @@ export class ActuariusBot {
     const affectedCommands =
       role === "default" ? "future `/ask`, `/bug`, and `/issue` requests" : `future \`/plan\` ${role} stages`;
     await interaction.reply({
-      content: `${roleDisplay} set to **${AI_PROVIDER_LABELS[provider!]}** with ${modelDisplay}. This applies to ${affectedCommands}.`,
+      content: `${roleDisplay} set to **${AI_PROVIDER_LABELS[provider]}** with ${modelDisplay}. This applies to ${affectedCommands}.`,
       ephemeral: true
     });
   }
