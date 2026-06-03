@@ -115,8 +115,8 @@ export const commandBuilders = [
     .addStringOption((option) =>
       option
         .setName("provider")
-        .setDescription("AI provider to use")
-        .setRequired(true)
+        .setDescription("AI provider to use (optional when clearing)")
+        .setRequired(false)
         .addChoices(
           { name: "Claude", value: "claude" },
           { name: "Codex", value: "codex" },

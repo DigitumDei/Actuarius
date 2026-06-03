@@ -1242,15 +1242,21 @@ export class ActuariusBot {
       return;
     }
 
-    const rawProvider = interaction.options.getString("provider", true);
+    const rawProvider = interaction.options.getString("provider");
     const rawModel = interaction.options.getString("model");
     const rawRole = interaction.options.getString("role") ?? "default";
     const isClear = interaction.options.getBoolean("clear") ?? false;
     const model = rawModel?.trim() || null;
 
-    // Defense-in-depth: Discord already constrains the value via addChoices, but we
-    // validate here in case of direct API calls that bypass the UI constraint.
-    if (!Object.keys(AI_PROVIDER_LABELS).includes(rawProvider)) {
+    if (!isClear && !rawProvider) {
+      await interaction.reply({
+        content: "`provider` is required when not clearing a role. Choose from: `claude`, `codex`, `gemini`, `opencode`.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (rawProvider && !Object.keys(AI_PROVIDER_LABELS).includes(rawProvider)) {
       await interaction.reply({
         content: `Invalid provider. Choose from: \`${Object.keys(AI_PROVIDER_LABELS).join("`, `")}\`.`,
         ephemeral: true
@@ -1258,7 +1264,7 @@ export class ActuariusBot {
       return;
     }
 
-    const provider = rawProvider as AiProvider;
+    const provider = rawProvider as AiProvider | null;
     const VALID_ROLES = [
       "default",
       "planner",
@@ -1285,11 +1291,19 @@ export class ActuariusBot {
     // --- Reviewer slot roles (reviewer-1 through reviewer-4) ---
     const slotMatch = rawRole.match(/^reviewer-([1-4])$/);
     if (slotMatch) {
-      const slotIndex = parseInt(slotMatch[1], 10);
+      const slotIndex = parseInt(slotMatch[1]!, 10);
       if (isClear) {
         this.db.clearReviewerSlot(interaction.guildId, slotIndex);
         await interaction.reply({
           content: `Reviewer slot **${slotIndex}** cleared.`,
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (!provider) {
+        await interaction.reply({
+          content: "`provider` is required when setting a reviewer slot.",
           ephemeral: true
         });
         return;
@@ -1327,6 +1341,14 @@ export class ActuariusBot {
         return;
       }
 
+      if (!provider) {
+        await interaction.reply({
+          content: "`provider` is required when setting a reviewer role override.",
+          ephemeral: true
+        });
+        return;
+      }
+
       const providerUnavailableMessage = await this.getProviderUnavailableMessage(provider);
       if (providerUnavailableMessage) {
         await interaction.reply({ content: providerUnavailableMessage, ephemeral: true });
@@ -1350,20 +1372,28 @@ export class ActuariusBot {
     // --- Default / planner / implementer (existing flow with clear support) ---
     const role = rawRole as "default" | "planner" | "implementer";
 
-    const providerUnavailableMessage = await this.getProviderUnavailableMessage(provider);
+    if (!isClear && !provider) {
+      await interaction.reply({
+        content: "`provider` is required when not clearing a role.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const providerUnavailableMessage = provider ? await this.getProviderUnavailableMessage(provider) : null;
     if (providerUnavailableMessage) {
       await interaction.reply({ content: providerUnavailableMessage, ephemeral: true });
       return;
     }
 
     if (role === "default") {
-      this.db.setGuildModelConfig(interaction.guildId, provider, isClear ? null : model, interaction.user.id);
+      this.db.setGuildModelConfig(interaction.guildId, provider!, isClear ? null : model, interaction.user.id);
     } else {
-      this.db.setGuildRoleModelConfig(interaction.guildId, role, provider, isClear ? null : model, interaction.user.id);
+      this.db.setGuildRoleModelConfig(interaction.guildId, role, provider!, isClear ? null : model, interaction.user.id);
     }
 
     if (!isClear && model) {
-      this.db.addModelToHistory(provider, model);
+      this.db.addModelToHistory(provider!, model);
     }
 
     if (isClear) {
@@ -1380,7 +1410,7 @@ export class ActuariusBot {
     const affectedCommands =
       role === "default" ? "future `/ask`, `/bug`, and `/issue` requests" : `future \`/plan\` ${role} stages`;
     await interaction.reply({
-      content: `${roleDisplay} set to **${AI_PROVIDER_LABELS[provider]}** with ${modelDisplay}. This applies to ${affectedCommands}.`,
+      content: `${roleDisplay} set to **${AI_PROVIDER_LABELS[provider!]}** with ${modelDisplay}. This applies to ${affectedCommands}.`,
       ephemeral: true
     });
   }

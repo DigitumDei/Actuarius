@@ -15,7 +15,7 @@ export function buildHelpText(): string {
     "- `/pr` Open a draft pull request for the current request thread after changes are committed and `/review` returns `ready_for_pr` for the current HEAD.",
     "- `/review-rounds [rounds:<number>]` Show or set the max `/review` consensus rounds for this server (admin only to set).",
     "- `/update-clis [provider:<claude|codex|gemini>]` Update provider CLIs to latest. Omit provider to update all (admin only).",
-    "- `/model-select provider:<claude|codex|gemini|opencode> model:<name> [role:<default|planner|implementer>]` Set provider/model roles (admin only).",
+    "- `/model-select [provider:<claude|codex|gemini|opencode>] [model:<name>] [role:<default|planner|implementer|reviewer-1–reviewer-4|reviewer-analyzer|reviewer-judge|reviewer-summarizer>] [clear:true]` Set or clear provider/model roles (admin only).",
     "- `/model-current` Show the active AI provider and model for this server.",
     "- `/codex-auth credentials:<file>` Upload Codex credentials file from `~/.codex/auth.json` (admin only).",
     "- `/opencode-auth provider:<name> key:<your-key>` Configure an API key for OpenCode to use with a specific AI provider (admin only).",
