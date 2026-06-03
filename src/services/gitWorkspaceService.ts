@@ -422,6 +422,11 @@ export async function hasUncommittedChanges(worktreePath: string): Promise<boole
   return !(await isWorktreeClean(worktreePath));
 }
 
+export async function autoCommitAll(worktreePath: string, message: string): Promise<void> {
+  await runGitWithOutput(["add", "-A"], { cwd: worktreePath });
+  await runGitWithOutput(["commit", "-m", message], { cwd: worktreePath });
+}
+
 export async function detectDefaultBranch(repoPath: string): Promise<{ branchName: string; remoteRef: string }> {
   const candidates = ["main", "master"] as const;
 

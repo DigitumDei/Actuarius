@@ -40,6 +40,7 @@ import {
 } from "../services/githubService.js";
 import {
   GitWorkspaceError,
+  autoCommitAll,
   cleanupDeletedRemoteBranches,
   detectDefaultBranch,
   ensureRepoCheckedOutToMaster,
@@ -2927,7 +2928,8 @@ Output the result of the command or the link to the created issue.`;
           env,
           getHeadSha,
           getDiffSinceRef,
-          hasUncommittedChanges
+          hasUncommittedChanges,
+          autoCommitAll
         });
 
         this.db.updateRequestStatus(input.requestId, "succeeded");

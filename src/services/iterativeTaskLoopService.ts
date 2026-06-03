@@ -39,6 +39,7 @@ export interface IterativeTaskLoopInput {
   getHeadSha: (repoPath: string, ref?: string) => Promise<string>;
   getDiffSinceRef: (repoPath: string, baseRef: string) => Promise<string>;
   hasUncommittedChanges: (repoPath: string) => Promise<boolean>;
+  autoCommitAll: (repoPath: string, message: string) => Promise<void>;
 }
 
 const MAX_TWEAKS_PER_TASK = 3;
@@ -120,7 +121,11 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
       });
 
       if (await input.hasUncommittedChanges(worktreePath)) {
-        throw new Error(`Task ${taskIndex}/${taskCount} left uncommitted changes in the worktree. Commit or discard task changes before continuing.`);
+        const autoMsg = `task ${taskIndex}/${taskCount}: ${task.title} (auto-committed)`;
+        await input.autoCommitAll(worktreePath, autoMsg);
+        await threadChannel.send(
+          `Task ${taskIndex}/${taskCount}: ${taskTitle} - implementer left uncommitted changes; auto-committed.`
+        );
       }
 
       diff = await input.getDiffSinceRef(worktreePath, preTaskSha);
