@@ -8,6 +8,7 @@ import type {
   InstallRequestStatus,
   InstallScope,
   ModelRole,
+  ReviewModelRole,
   ReviewerSlotRow,
   RepoRow,
   RequestRow,
@@ -804,6 +805,70 @@ export class AppDatabase {
       throw error;
     }
     return this.getReviewerSlots(guildId);
+  }
+
+  public setReviewerSlot(
+    guildId: string,
+    slotIndex: number,
+    provider: AiProvider,
+    model: string | null,
+    updatedByUserId: string
+  ): ReviewerSlotRow {
+    const raw = reviewerSlotRowRawSchema.parse(
+      this.db
+        .prepare(
+          `INSERT INTO guild_reviewer_slots (guild_id, slot_index, provider, model, updated_by_user_id)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(guild_id, slot_index) DO UPDATE
+           SET provider = excluded.provider,
+               model = excluded.model,
+               updated_by_user_id = excluded.updated_by_user_id,
+               updated_at = CURRENT_TIMESTAMP
+           RETURNING *`
+        )
+        .get(guildId, slotIndex, provider, model, updatedByUserId)
+    );
+    return {
+      ...raw,
+      slot_index: toNumber(raw.slot_index)
+    };
+  }
+
+  public clearReviewerSlot(guildId: string, slotIndex: number): void {
+    this.db
+      .prepare("DELETE FROM guild_reviewer_slots WHERE guild_id = ? AND slot_index = ?")
+      .run(guildId, slotIndex);
+  }
+
+  public setGuildReviewRoleModelConfig(
+    guildId: string,
+    role: ReviewModelRole,
+    provider: AiProvider,
+    model: string | null,
+    updatedByUserId: string
+  ): GuildModelConfigRow {
+    const providerColumn = `${role}_provider` as const;
+    const modelColumn = `${role}_model` as const;
+
+    return guildModelConfigRowSchema.parse(
+      this.db
+        .prepare(
+          `INSERT INTO guild_model_config (
+             guild_id, provider, model,
+             ${providerColumn},
+             ${modelColumn},
+             updated_by_user_id
+           )
+           VALUES (?, 'claude', NULL, ?, ?, ?)
+           ON CONFLICT(guild_id) DO UPDATE
+           SET ${providerColumn} = excluded.${providerColumn},
+               ${modelColumn} = excluded.${modelColumn},
+               updated_by_user_id = excluded.updated_by_user_id,
+               updated_at = CURRENT_TIMESTAMP
+           RETURNING *`
+        )
+        .get(guildId, provider, model, updatedByUserId)
+    );
   }
 
   public addModelToHistory(provider: AiProvider, model: string): void {
