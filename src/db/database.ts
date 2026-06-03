@@ -8,6 +8,7 @@ import type {
   InstallRequestStatus,
   InstallScope,
   ModelRole,
+  ReviewerSlotRow,
   RepoRow,
   RequestRow,
   RequestStatus,
@@ -20,6 +21,7 @@ import {
   guildReviewConfigRowRawSchema,
   installRequestRowRawSchema,
   modelHistoryRowSchema,
+  reviewerSlotRowRawSchema,
   repoRowRawSchema,
   requestRowRawSchema,
   reviewRunRowRawSchema,
@@ -244,8 +246,45 @@ export class AppDatabase {
       CREATE TABLE IF NOT EXISTS guild_review_config (
         guild_id TEXT PRIMARY KEY,
         rounds INTEGER NOT NULL,
+        analyzer_provider TEXT,
+        analyzer_model TEXT,
+        judge_provider TEXT,
+        judge_model TEXT,
+        summarizer_provider TEXT,
+        summarizer_model TEXT,
         updated_by_user_id TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE
+      );
+    `);
+
+    // Keep additive migrations for deployments that already had guild_review_config before these columns existed.
+    const reviewConfigColumns = new Map<string, string>([
+      ["analyzer_provider", "TEXT"],
+      ["analyzer_model", "TEXT"],
+      ["judge_provider", "TEXT"],
+      ["judge_model", "TEXT"],
+      ["summarizer_provider", "TEXT"],
+      ["summarizer_model", "TEXT"],
+    ]);
+    const existingReviewConfigColumns = new Set(
+      z.array(tableInfoRowSchema)
+        .parse(this.db.prepare("PRAGMA table_info(guild_review_config)").all())
+        .map((column) => column.name)
+    );
+    for (const [columnName, columnDefinition] of reviewConfigColumns) {
+      if (!existingReviewConfigColumns.has(columnName)) {
+        this.db.exec(`ALTER TABLE guild_review_config ADD COLUMN ${columnName} ${columnDefinition}`);
+      }
+    }
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS reviewer_slots (
+        guild_id TEXT NOT NULL,
+        slot_index INTEGER NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT,
+        PRIMARY KEY (guild_id, slot_index),
         FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE
       );
     `);
@@ -600,25 +639,89 @@ export class AppDatabase {
     };
   }
 
-  public setGuildReviewConfig(guildId: string, rounds: number, updatedByUserId: string): GuildReviewConfigRow {
+  public setGuildReviewConfig(
+    guildId: string,
+    rounds: number,
+    updatedByUserId: string,
+    options?: {
+      analyzerProvider?: AiProvider | null;
+      analyzerModel?: string | null;
+      judgeProvider?: AiProvider | null;
+      judgeModel?: string | null;
+      summarizerProvider?: AiProvider | null;
+      summarizerModel?: string | null;
+    }
+  ): GuildReviewConfigRow {
     const raw = guildReviewConfigRowRawSchema.parse(
       this.db
         .prepare(
-          `INSERT INTO guild_review_config (guild_id, rounds, updated_by_user_id)
-           VALUES (?, ?, ?)
+          `INSERT INTO guild_review_config (
+             guild_id, rounds,
+             analyzer_provider, analyzer_model,
+             judge_provider, judge_model,
+             summarizer_provider, summarizer_model,
+             updated_by_user_id
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(guild_id) DO UPDATE
            SET rounds = excluded.rounds,
+               analyzer_provider = excluded.analyzer_provider,
+               analyzer_model = excluded.analyzer_model,
+               judge_provider = excluded.judge_provider,
+               judge_model = excluded.judge_model,
+               summarizer_provider = excluded.summarizer_provider,
+               summarizer_model = excluded.summarizer_model,
                updated_by_user_id = excluded.updated_by_user_id,
                updated_at = CURRENT_TIMESTAMP
            RETURNING *`
         )
-        .get(guildId, rounds, updatedByUserId)
+        .get(
+          guildId,
+          rounds,
+          options?.analyzerProvider ?? null,
+          options?.analyzerModel ?? null,
+          options?.judgeProvider ?? null,
+          options?.judgeModel ?? null,
+          options?.summarizerProvider ?? null,
+          options?.summarizerModel ?? null,
+          updatedByUserId
+        )
     );
 
     return {
       ...raw,
       rounds: toNumber(raw.rounds)
     };
+  }
+
+  public getReviewerSlots(guildId: string): ReviewerSlotRow[] {
+    return z.array(reviewerSlotRowRawSchema).parse(
+      this.db
+        .prepare("SELECT * FROM reviewer_slots WHERE guild_id = ? ORDER BY slot_index")
+        .all(guildId)
+    ).map((slot) => ({
+      ...slot,
+      slot_index: toNumber(slot.slot_index)
+    }));
+  }
+
+  public setReviewerSlots(guildId: string, slots: Array<{ slot_index: number; provider: AiProvider; model: string | null }>): ReviewerSlotRow[] {
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM reviewer_slots WHERE guild_id = ?").run(guildId);
+      for (const slot of slots) {
+        this.db
+          .prepare(
+            "INSERT INTO reviewer_slots (guild_id, slot_index, provider, model) VALUES (?, ?, ?, ?)"
+          )
+          .run(guildId, slot.slot_index, slot.provider, slot.model);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return this.getReviewerSlots(guildId);
   }
 
   public addModelToHistory(provider: AiProvider, model: string): void {

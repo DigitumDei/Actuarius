@@ -104,8 +104,21 @@ export const guildModelConfigRowSchema = z.object({
 export const guildReviewConfigRowRawSchema = z.object({
   guild_id: z.string(),
   rounds: dbInteger,
+  analyzer_provider: aiProviderSchema.nullable(),
+  analyzer_model: z.string().nullable(),
+  judge_provider: aiProviderSchema.nullable(),
+  judge_model: z.string().nullable(),
+  summarizer_provider: aiProviderSchema.nullable(),
+  summarizer_model: z.string().nullable(),
   updated_by_user_id: z.string(),
   updated_at: z.string(),
+});
+
+export const reviewerSlotRowRawSchema = z.object({
+  guild_id: z.string(),
+  slot_index: dbInteger,
+  provider: aiProviderSchema,
+  model: z.string().nullable(),
 });
 
 export const tableInfoRowSchema = z.object({
