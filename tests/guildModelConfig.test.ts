@@ -271,3 +271,79 @@ describe("AppDatabase review role model config", () => {
     expect(db.getGuildModelConfig("guild-1")).toBeUndefined();
   });
 });
+
+describe("AppDatabase review role config on guild_review_config", () => {
+  let db: AppDatabase;
+
+  beforeEach(() => {
+    db = createInMemoryDb();
+    db.upsertGuild("guild-1", "Test Guild");
+  });
+
+  it("sets analyzer override without clobbering existing rounds", () => {
+    db.setGuildReviewConfig("guild-1", 3, "user-1");
+    const result = db.setGuildReviewRoleConfig("guild-1", "analyzer", "claude", "claude-sonnet-4-5", "user-2");
+
+    expect(result.analyzer_provider).toBe("claude");
+    expect(result.analyzer_model).toBe("claude-sonnet-4-5");
+    expect(result.rounds).toBe(3);
+    expect(result.updated_by_user_id).toBe("user-2");
+
+    const config = db.getGuildReviewConfig("guild-1");
+    expect(config!.analyzer_provider).toBe("claude");
+    expect(config!.analyzer_model).toBe("claude-sonnet-4-5");
+    expect(config!.rounds).toBe(3);
+  });
+
+  it("sets judge override before any review config exists", () => {
+    const result = db.setGuildReviewRoleConfig("guild-1", "judge", "opencode", "deepseek/deepseek-v4-pro", "user-1");
+
+    expect(result.judge_provider).toBe("opencode");
+    expect(result.judge_model).toBe("deepseek/deepseek-v4-pro");
+    expect(result.rounds).toBe(1);
+
+    const config = db.getGuildReviewConfig("guild-1");
+    expect(config!.judge_provider).toBe("opencode");
+    expect(config!.judge_model).toBe("deepseek/deepseek-v4-pro");
+    expect(config!.rounds).toBe(1);
+  });
+
+  it("sets summarizer override without clobbering other roles", () => {
+    db.setGuildReviewRoleConfig("guild-1", "analyzer", "claude", "claude-sonnet-4-5", "user-1");
+    db.setGuildReviewRoleConfig("guild-1", "judge", "gemini", "gemini-2.0-flash", "user-2");
+    db.setGuildReviewRoleConfig("guild-1", "summarizer", "opencode", "deepseek/deepseek-v4-pro", "user-3");
+
+    const config = db.getGuildReviewConfig("guild-1");
+    expect(config!.analyzer_provider).toBe("claude");
+    expect(config!.analyzer_model).toBe("claude-sonnet-4-5");
+    expect(config!.judge_provider).toBe("gemini");
+    expect(config!.judge_model).toBe("gemini-2.0-flash");
+    expect(config!.summarizer_provider).toBe("opencode");
+    expect(config!.summarizer_model).toBe("deepseek/deepseek-v4-pro");
+  });
+
+  it("can clear a review role override by setting provider to null", () => {
+    db.setGuildReviewRoleConfig("guild-1", "judge", "claude", "claude-sonnet-4-5", "user-1");
+    db.setGuildReviewRoleConfig("guild-1", "judge", null, null, "user-2");
+
+    const config = db.getGuildReviewConfig("guild-1");
+    expect(config!.judge_provider).toBeNull();
+    expect(config!.judge_model).toBeNull();
+  });
+
+  it("updates existing override on second call", () => {
+    db.setGuildReviewRoleConfig("guild-1", "analyzer", "claude", "claude-sonnet-4-5", "user-1");
+    db.setGuildReviewRoleConfig("guild-1", "analyzer", "gemini", "gemini-2.0-flash", "user-2");
+
+    const config = db.getGuildReviewConfig("guild-1");
+    expect(config!.analyzer_provider).toBe("gemini");
+    expect(config!.analyzer_model).toBe("gemini-2.0-flash");
+    expect(config!.updated_by_user_id).toBe("user-2");
+  });
+
+  it("cascades delete when guild is removed", () => {
+    db.setGuildReviewRoleConfig("guild-1", "analyzer", "claude", "claude-sonnet-4-5", "user-1");
+    db.removeGuild("guild-1");
+    expect(db.getGuildReviewConfig("guild-1")).toBeUndefined();
+  });
+});
