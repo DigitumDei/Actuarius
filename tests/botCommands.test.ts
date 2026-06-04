@@ -2227,6 +2227,55 @@ describe("ActuariusBot model-select command", () => {
     });
   });
 
+  it("hides legacy overrides when slots are active and falls back to slot references instead", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        analyzer_provider: "gemini",
+        analyzer_model: null,
+        judge_provider: "codex",
+        judge_model: "codex-preview-0503",
+        summarizer_provider: null,
+        summarizer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "gemini", model: "gemini-2.5-pro" }
+      ])
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Summarizer**: falls back to **Slot 2** (**Gemini**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using explicit reviewer slots."),
+      ephemeral: true
+    });
+    expect(interaction.reply).not.toHaveBeenCalledWith({
+      content: expect.stringContaining("legacy override"),
+      ephemeral: true
+    });
+  });
+
   it("does not reuse the default model for a role-specific different provider", async () => {
     const bot = createBot({
       getGuildModelConfig: vi.fn().mockReturnValue({

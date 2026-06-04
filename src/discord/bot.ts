@@ -1504,7 +1504,7 @@ export class ActuariusBot {
         const modelDisplay = overrideModelValue ? `\`${overrideModelValue}\`` : "CLI default model";
         const disabledSuffix = !this.isProviderEnabled(overrideModel) ? " ⚠️ *disabled by server*" : "";
         roleLines.push(`  **${label}**: **${AI_PROVIDER_LABELS[overrideModel]}**, model: ${modelDisplay} (set via \`/model-select\`)${disabledSuffix}`);
-      } else if (legacyOverride) {
+      } else if (legacyOverride && slots.length === 0) {
         const modelDisplay = legacyModel ? `\`${legacyModel}\`` : "CLI default model";
         const disabledSuffix = !this.isProviderEnabled(legacyOverride) ? " ⚠️ *disabled by server*" : "";
         roleLines.push(`  **${label}**: **${AI_PROVIDER_LABELS[legacyOverride]}**, model: ${modelDisplay} (legacy override)${disabledSuffix}`);
