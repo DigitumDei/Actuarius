@@ -2391,6 +2391,70 @@ Output the result of the command or the link to the created issue.`;
     return result;
   }
 
+  private isProviderEnabled(provider: AiProvider): boolean {
+    if (provider === "codex") return !!this.config.enableCodexExecution;
+    if (provider === "gemini") return !!this.config.enableGeminiExecution;
+    if (provider === "opencode") return !!this.config.enableOpencodeExecution;
+    return true;
+  }
+
+  private validateReviewConfig(guildId: string): string | null {
+    const slots = this.db.getReviewerSlots(guildId);
+    const reviewConfig = this.db.getGuildReviewConfig(guildId);
+
+    if (slots.length > 0) {
+      if (slots.length < 2) {
+        return "**Insufficient reviewers configured** — at least 2 reviewer slots are required for `/review`. Use `/model-select reviewer-1` and `/model-select reviewer-2` to set them up.";
+      }
+
+      for (const slot of slots) {
+        if (!this.isProviderEnabled(slot.provider)) {
+          return `**Provider disabled** — slot ${slot.slot_index} uses \`${slot.provider}\` which is not enabled by the server administrator. Use \`/model-select reviewer-${slot.slot_index}\` with an enabled provider to fix this.`;
+        }
+      }
+
+      const roles: ReviewModelRole[] = ["analyzer", "judge", "summarizer"];
+      for (const role of roles) {
+        const overrideProvider = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] as AiProvider | undefined;
+        if (overrideProvider && !this.isProviderEnabled(overrideProvider)) {
+          return `**Provider disabled** — the \`${role}\` role override uses \`${overrideProvider}\` which is not enabled. Use \`/model-select reviewer-${role} clear\` to remove the override or select an enabled provider.`;
+        }
+      }
+
+      return null;
+    }
+
+    const modelConfig = this.db.getGuildModelConfig(guildId);
+    const preferredProvider: AiProvider = modelConfig?.provider ?? "claude";
+    const providers: AiProvider[] = [preferredProvider];
+    for (const candidate of ["claude", "codex", "gemini", "opencode"] satisfies AiProvider[]) {
+      if (!providers.includes(candidate)) {
+        providers.push(candidate);
+      }
+    }
+
+    const enabled: AiProvider[] = [];
+    for (const provider of providers) {
+      if (this.isProviderEnabled(provider)) {
+        enabled.push(provider);
+      }
+    }
+
+    if (enabled.length < 2) {
+      return "**Insufficient reviewers configured** — at least 2 enabled AI providers are required for `/review`. Use `/model-select` to configure a second provider or ask the server administrator to enable additional providers.";
+    }
+
+    const roles: ReviewModelRole[] = ["analyzer", "judge", "summarizer"];
+    for (const role of roles) {
+      const overrideProvider = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] as AiProvider | undefined;
+      if (overrideProvider && !this.isProviderEnabled(overrideProvider)) {
+        return `**Provider disabled** — the \`${role}\` role override uses \`${overrideProvider}\` which is not enabled. Use \`/model-select reviewer-${role} clear\` to remove the override or select an enabled provider.`;
+      }
+    }
+
+    return null;
+  }
+
   private buildReviewRunners(guildId: string): {
     analyzer: ReviewModelRunner;
     reviewers: ReviewModelRunner[];
@@ -2411,13 +2475,6 @@ Output the result of the command or the link to the created issue.`;
         this.runProviderText({ provider, prompt, cwd, timeoutMs, ...(model ? { model } : {}) })
     });
 
-    const isProviderEnabled = (provider: AiProvider): boolean => {
-      if (provider === "codex") return !!this.config.enableCodexExecution;
-      if (provider === "gemini") return !!this.config.enableGeminiExecution;
-      if (provider === "opencode") return !!this.config.enableOpencodeExecution;
-      return true;
-    };
-
     if (slots.length > 0) {
       const reviewers: ReviewModelRunner[] = slots.map((s) =>
         buildRunner(s.provider, s.model, s.slot_index)
@@ -2431,13 +2488,13 @@ Output the result of the command or the link to the created issue.`;
       }
 
       const defaultSummarizer = reviewers[1] ?? reviewers[0]!;
-      const analyzer = hasSlotOverride("analyzer") && isProviderEnabled(reviewConfig!.analyzer_provider!)
+      const analyzer = hasSlotOverride("analyzer") && this.isProviderEnabled(reviewConfig!.analyzer_provider!)
         ? buildRunner(reviewConfig!.analyzer_provider!, reviewConfig!.analyzer_model)
         : reviewers[0]!;
-      const judge = hasSlotOverride("judge") && isProviderEnabled(reviewConfig!.judge_provider!)
+      const judge = hasSlotOverride("judge") && this.isProviderEnabled(reviewConfig!.judge_provider!)
         ? buildRunner(reviewConfig!.judge_provider!, reviewConfig!.judge_model)
         : reviewers[0]!;
-      const summarizer = hasSlotOverride("summarizer") && isProviderEnabled(reviewConfig!.summarizer_provider!)
+      const summarizer = hasSlotOverride("summarizer") && this.isProviderEnabled(reviewConfig!.summarizer_provider!)
         ? buildRunner(reviewConfig!.summarizer_provider!, reviewConfig!.summarizer_model)
         : defaultSummarizer;
 
@@ -2499,7 +2556,7 @@ Output the result of the command or the link to the created issue.`;
       const overrideProvider = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] as AiProvider | null
         ?? (modelConfig as Record<string, unknown>)?.[`${role}_provider`] as AiProvider | null;
       if (!overrideProvider) return defaultRunner;
-      if (!isProviderEnabled(overrideProvider)) return defaultRunner;
+      if (!this.isProviderEnabled(overrideProvider)) return defaultRunner;
       const overrideModel = reviewConfig?.[`${role}_model` as keyof typeof reviewConfig] as string | null
         ?? (modelConfig as Record<string, unknown>)?.[`${role}_model`] as string | null;
       return buildRunner(overrideProvider, overrideModel);
@@ -2688,16 +2745,35 @@ Output the result of the command or the link to the created issue.`;
       return;
     }
 
+    const configError = this.validateReviewConfig(interaction.guildId);
+    if (configError) {
+      await interaction.reply({ content: configError, ephemeral: true });
+      return;
+    }
+
     await interaction.deferReply({ ephemeral: true });
     await reviewThread.send("Adversarial review started.");
 
+    let autoCommitted = false;
     try {
-      const autoCommitted = await autoCommitDirtyWorktree(latestRequest.worktree_path);
-      if (autoCommitted) {
-        await reviewThread.send("Uncommitted changes in the worktree were auto-committed for review.");
-      }
+      autoCommitted = await autoCommitDirtyWorktree(latestRequest.worktree_path);
+    } catch (error) {
+      const detail = error instanceof GitWorkspaceError && error.code === "AUTO_COMMIT_FAILED"
+        ? "The worktree has changes that could not be auto-committed. This usually means the repository has a pre-existing conflict or an unexpected git state. Commit or stash changes manually and try again."
+        : error instanceof GitWorkspaceError && error.code === "GIT_UNAVAILABLE"
+          ? "Git is not available on this server. The review cannot prepare the worktree. Contact the server administrator."
+          : `An unexpected git error occurred: ${error instanceof Error ? error.message : "Unknown error"}`;
+      await reviewThread.send(`**Auto-commit failed** — ${detail}`);
+      await interaction.editReply(`Review preflight failed: auto-commit error.`);
+      return;
+    }
 
-      const runners = this.buildReviewRunners(interaction.guildId);
+    if (autoCommitted) {
+      await reviewThread.send("Uncommitted changes in the worktree were auto-committed for review.");
+    }
+
+    const runners = this.buildReviewRunners(interaction.guildId);
+    try {
       const threadHistory = await this.buildThreadHistory(reviewThread);
       const result = await new Promise<Awaited<ReturnType<typeof runAdversarialReview>>>((resolve, reject) => {
         this.requestQueue.enqueue(interaction.guildId!, async () => {
@@ -3910,6 +3986,12 @@ Output the result of the command or the link to the created issue.`;
     }
 
     if (error instanceof GitWorkspaceError) {
+      if (error.code === "AUTO_COMMIT_FAILED") {
+        return `Auto-commit failed: ${error.message}. The worktree has changes that could not be committed; resolve conflicts manually and try again.`;
+      }
+      if (error.code === "GIT_UNAVAILABLE") {
+        return "Git is not available on this server. The review cannot prepare the worktree. Contact the server administrator.";
+      }
       return `Repository sync failed: ${error.message}`;
     }
 

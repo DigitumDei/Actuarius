@@ -1313,10 +1313,11 @@ describe("ActuariusBot review command", () => {
         status: "install_running"
       })
     });
+    (bot as any).config.enableCodexExecution = true;
+    (bot as any).config.enableGeminiExecution = true;
     const interaction = createInteraction({
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
-
     await (bot as any).handleReview(interaction);
 
     expect(interaction.reply).toHaveBeenCalledWith({
@@ -1371,6 +1372,7 @@ describe("ActuariusBot review command", () => {
         updated_at: "2026-03-18T00:00:00Z"
       })
     });
+    (bot as any).config.enableCodexExecution = true;
     vi.spyOn((bot as any), "buildReviewRunners").mockReturnValue({
       analyzer: { provider: "claude", model: "claude-opus", label: "Claude", run: vi.fn() },
       reviewers: [
@@ -1411,6 +1413,167 @@ describe("ActuariusBot review command", () => {
     expect(send).toHaveBeenNthCalledWith(4, "Round 1/4 complete.");
     expect(send).toHaveBeenNthCalledWith(5, "Round 2/4: consensus reached.");
     expect(send).toHaveBeenNthCalledWith(6, "Synthesizing final verdict…");
+  });
+
+  it("rejects review when fewer than 2 reviewer slots are configured", async () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { guild_id: "guild-1", slot_index: 1, provider: "claude", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" }
+      ]),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      })
+    });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "**Insufficient reviewers configured** — at least 2 reviewer slots are required for `/review`. Use `/model-select reviewer-1` and `/model-select reviewer-2` to set them up.",
+      ephemeral: true
+    });
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("rejects review when a slot provider is not enabled", async () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { guild_id: "guild-1", slot_index: 1, provider: "claude", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" },
+        { guild_id: "guild-1", slot_index: 2, provider: "codex", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" }
+      ]),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      })
+    });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "**Provider disabled** — slot 2 uses `codex` which is not enabled by the server administrator. Use `/model-select reviewer-2` with an enabled provider to fix this.",
+      ephemeral: true
+    });
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("rejects review when a role override provider is not enabled (slot mode)", async () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { guild_id: "guild-1", slot_index: 1, provider: "claude", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" },
+        { guild_id: "guild-1", slot_index: 2, provider: "codex", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" }
+      ]),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1", rounds: 2, analyzer_provider: "gemini", updated_by_user_id: "admin-1", updated_at: "2026-03-24T00:00:00Z"
+      }),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      })
+    });
+    (bot as any).config.enableCodexExecution = true;
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "**Provider disabled** — the `analyzer` role override uses `gemini` which is not enabled. Use `/model-select reviewer-analyzer clear` to remove the override or select an enabled provider.",
+      ephemeral: true
+    });
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("rejects review when fewer than 2 providers are enabled in legacy mode", async () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([]),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      }),
+      getGuildModelConfig: vi.fn().mockReturnValue({ provider: "claude", model: null, updated_at: "2026-03-18T00:00:00Z" })
+    });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "**Insufficient reviewers configured** — at least 2 enabled AI providers are required for `/review`. Use `/model-select` to configure a second provider or ask the server administrator to enable additional providers.",
+      ephemeral: true
+    });
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("sends clear auto-commit failure message when git workspace errors on auto-commit", async () => {
+    const { GitWorkspaceError } = await import("../src/services/gitWorkspaceService.js");
+    vi.mocked(autoCommitDirtyWorktree).mockRejectedValue(
+      new GitWorkspaceError("AUTO_COMMIT_FAILED", "could not commit")
+    );
+    const bot = createBot({
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      }),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1", rounds: 2, updated_by_user_id: "admin-1", updated_at: "2026-03-24T00:00:00Z"
+      }),
+      getGuildModelConfig: vi.fn().mockReturnValue({ provider: "claude", model: "claude-opus", updated_at: "2026-03-18T00:00:00Z" })
+    });
+    (bot as any).config.enableCodexExecution = true;
+    const send = vi.fn().mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      channel: { isThread: () => true, parentId: "channel-1", send, messages: { fetch: vi.fn().mockResolvedValue(new Map()) } }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("**Auto-commit failed**"));
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("stash changes manually"));
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("auto-commit error"));
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("sends clear git-unavailable message when git is not installed", async () => {
+    const { GitWorkspaceError } = await import("../src/services/gitWorkspaceService.js");
+    vi.mocked(autoCommitDirtyWorktree).mockRejectedValue(
+      new GitWorkspaceError("GIT_UNAVAILABLE", "git not found")
+    );
+    const bot = createBot({
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      }),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1", rounds: 2, updated_by_user_id: "admin-1", updated_at: "2026-03-24T00:00:00Z"
+      }),
+      getGuildModelConfig: vi.fn().mockReturnValue({ provider: "claude", model: "claude-opus", updated_at: "2026-03-18T00:00:00Z" })
+    });
+    (bot as any).config.enableCodexExecution = true;
+    const send = vi.fn().mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      channel: { isThread: () => true, parentId: "channel-1", send, messages: { fetch: vi.fn().mockResolvedValue(new Map()) } }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("**Auto-commit failed**"));
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Git is not available"));
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("auto-commit error"));
+    expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 });
 
