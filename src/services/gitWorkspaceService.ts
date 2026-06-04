@@ -24,7 +24,8 @@ export class GitWorkspaceError extends Error {
     | "CHECKOUT_FAILED"
     | "CLEANUP_FAILED"
     | "DIFF_FAILED"
-    | "PUSH_FAILED";
+    | "PUSH_FAILED"
+    | "AUTO_COMMIT_FAILED";
 
   public constructor(
     code:
@@ -34,7 +35,8 @@ export class GitWorkspaceError extends Error {
       | "CHECKOUT_FAILED"
       | "CLEANUP_FAILED"
       | "DIFF_FAILED"
-      | "PUSH_FAILED",
+      | "PUSH_FAILED"
+      | "AUTO_COMMIT_FAILED",
     message: string
   ) {
     super(message);
@@ -425,6 +427,26 @@ export async function hasUncommittedChanges(worktreePath: string): Promise<boole
 export async function autoCommitAll(worktreePath: string, message: string): Promise<void> {
   await runGitWithOutput(["add", "-A"], { cwd: worktreePath });
   await runGitWithOutput(["commit", "-m", message], { cwd: worktreePath });
+}
+
+const AUTO_COMMIT_MESSAGE = "review: auto-commit working tree changes";
+
+export async function autoCommitDirtyWorktree(worktreePath: string): Promise<boolean> {
+  try {
+    if (!(await hasUncommittedChanges(worktreePath))) {
+      return false;
+    }
+
+    await autoCommitAll(worktreePath, AUTO_COMMIT_MESSAGE);
+    return true;
+  } catch (error) {
+    if (error instanceof GitWorkspaceError) {
+      throw error;
+    }
+
+    const message = error instanceof Error ? error.message : "Could not auto-commit dirty worktree.";
+    throw new GitWorkspaceError("AUTO_COMMIT_FAILED", message);
+  }
 }
 
 export async function detectDefaultBranch(repoPath: string): Promise<{ branchName: string; remoteRef: string }> {

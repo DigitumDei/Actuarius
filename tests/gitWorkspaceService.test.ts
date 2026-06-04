@@ -11,6 +11,7 @@ const { spawnCollect } = await import("../src/utils/spawnCollect.js");
 const mockSpawnCollect = vi.mocked(spawnCollect);
 
 const {
+  autoCommitDirtyWorktree,
   buildRepoCheckoutPath,
   cleanupDeletedRemoteBranches,
   detectDefaultBranch,
@@ -423,5 +424,54 @@ describe("gitWorkspaceService", () => {
       ],
       expect.any(Object)
     );
+  });
+
+  it("autoCommitDirtyWorktree returns false for a clean worktree", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    await expect(autoCommitDirtyWorktree("/tmp/repo")).resolves.toBe(false);
+
+    expect(mockSpawnCollect).toHaveBeenCalledTimes(1);
+  });
+
+  it("autoCommitDirtyWorktree runs add and commit for a dirty worktree", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: " M src/index.ts\n", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    await expect(autoCommitDirtyWorktree("/tmp/repo")).resolves.toBe(true);
+
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(
+      2,
+      "git",
+      ["add", "-A"],
+      expect.objectContaining({ cwd: "/tmp/repo" })
+    );
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(
+      3,
+      "git",
+      ["commit", "-m", "review: auto-commit working tree changes"],
+      expect.objectContaining({ cwd: "/tmp/repo" })
+    );
+  });
+
+  it("autoCommitDirtyWorktree wraps generic git errors as AUTO_COMMIT_FAILED", async () => {
+    mockSpawnCollect.mockRejectedValueOnce(new Error("fatal: could not read index"));
+
+    await expect(autoCommitDirtyWorktree("/tmp/repo")).rejects.toMatchObject({
+      code: "AUTO_COMMIT_FAILED",
+      name: "GitWorkspaceError"
+    } satisfies Partial<GitWorkspaceError>);
+  });
+
+  it("autoCommitDirtyWorktree propagates GIT_UNAVAILABLE from hasUncommittedChanges", async () => {
+    const enoentError = Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" });
+    mockSpawnCollect.mockRejectedValueOnce(enoentError);
+
+    await expect(autoCommitDirtyWorktree("/tmp/repo")).rejects.toMatchObject({
+      code: "GIT_UNAVAILABLE",
+      name: "GitWorkspaceError"
+    } satisfies Partial<GitWorkspaceError>);
   });
 });
