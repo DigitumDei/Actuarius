@@ -5,6 +5,8 @@ import {
   estimateSpawnPayloadBytes,
   DEFAULT_ARGV_TOTAL_LIMIT,
   decidePromptTransport,
+  writeTempPromptFile,
+  cleanupTempPromptFile,
 } from "../src/utils/spawnCollect.js";
 
 describe("estimateArgvBytes", () => {
@@ -168,7 +170,7 @@ describe("decidePromptTransport", () => {
     const args = ["-p", bigPrompt, "--flag"];
     const decision = decidePromptTransport(args, [0, 1], undefined, false, ["--prompt-file", "/tmp/p.txt"]);
     expect(decision.transport).toBe("tempfile");
-    expect(decision.args).toEqual(["--flag", "--prompt-file", "/tmp/p.txt"]);
+    expect(decision.args).toEqual(["--prompt-file", "/tmp/p.txt", "--flag"]);
     expect(decision.stdinPayload).toBe(bigPrompt);
   });
 
@@ -191,5 +193,86 @@ describe("decidePromptTransport", () => {
     const decision = decidePromptTransport(args, [0, 1], env);
     expect(decision.transport).toBe("argv");
     expect(decision.totalBytes).toBe(33);
+  });
+
+  it("throws on duplicate promptArgIndices", () => {
+    const args = ["-p", "prompt"];
+    expect(() => decidePromptTransport(args, [0, 0])).toThrow(RangeError);
+    expect(() => decidePromptTransport(args, [0, 0])).toThrow(/duplicate.*0/i);
+  });
+
+  it("throws on out-of-bounds promptArgIndex (negative)", () => {
+    const args = ["-p", "prompt"];
+    expect(() => decidePromptTransport(args, [-1])).toThrow(RangeError);
+    expect(() => decidePromptTransport(args, [-1])).toThrow(/out of bounds/i);
+  });
+
+  it("throws on out-of-bounds promptArgIndex (too large)", () => {
+    const args = ["-p", "prompt"];
+    expect(() => decidePromptTransport(args, [5])).toThrow(RangeError);
+    expect(() => decidePromptTransport(args, [5])).toThrow(/out of bounds/i);
+  });
+
+  it("throws on non-integer promptArgIndex", () => {
+    const args = ["-p", "prompt"];
+    expect(() => decidePromptTransport(args, [0.5])).toThrow(RangeError);
+    expect(() => decidePromptTransport(args, [0.5])).toThrow(/must be integers/i);
+  });
+
+  it("throws on empty args with non-empty promptArgIndices", () => {
+    expect(() => decidePromptTransport([], [0])).toThrow(RangeError);
+    expect(() => decidePromptTransport([], [0])).toThrow(/out of bounds/i);
+  });
+
+  it("inserts tempfile flags at the prompt position for a positional prompt", () => {
+    const bigPrompt = "s".repeat(2 * 1024 * 1024);
+    // Positional prompt at index 1, like opencode: [prefix, prompt, extraArgs...]
+    const args = ["run", bigPrompt, "--model", "claude"];
+    const decision = decidePromptTransport(args, [1], undefined, false, ["--prompt-file", "/tmp/p.txt"]);
+    expect(decision.transport).toBe("tempfile");
+    // Flags inserted at index 1 (the prompt position), not appended at end
+    expect(decision.args).toEqual(["run", "--prompt-file", "/tmp/p.txt", "--model", "claude"]);
+    expect(decision.stdinPayload).toBe(bigPrompt);
+  });
+});
+
+describe("writeTempPromptFile / cleanupTempPromptFile", () => {
+  it("creates a file with the given content and cleans it up", async () => {
+    const content = "test prompt content";
+    const filePath = await writeTempPromptFile(content);
+    expect(filePath).toBeTruthy();
+    expect(filePath.endsWith("prompt.txt")).toBe(true);
+
+    // Verify content was written
+    const { readFile } = await import("node:fs/promises");
+    const written = await readFile(filePath, "utf-8");
+    expect(written).toBe(content);
+
+    // Cleanup
+    await cleanupTempPromptFile(filePath);
+
+    // Verify file is gone
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(filePath)).toBe(false);
+  });
+
+  it("cleanupTempPromptFile does not throw on non-existent path", async () => {
+    await expect(cleanupTempPromptFile("/tmp/nonexistent-actuarius-test-file")).resolves.toBeUndefined();
+  });
+
+  it("creates temp files with unique directories per call", async () => {
+    const fileA = await writeTempPromptFile("A");
+    const fileB = await writeTempPromptFile("B");
+    try {
+      // Different parent directories
+      expect(fileA).not.toBe(fileB);
+      // Both readable
+      const { readFile } = await import("node:fs/promises");
+      expect(await readFile(fileA, "utf-8")).toBe("A");
+      expect(await readFile(fileB, "utf-8")).toBe("B");
+    } finally {
+      await cleanupTempPromptFile(fileA);
+      await cleanupTempPromptFile(fileB);
+    }
   });
 });

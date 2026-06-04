@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 
 // ── Byte estimation helpers ──────────────────────────────────────────────
 
@@ -48,6 +51,35 @@ export function estimateSpawnPayloadBytes(args: string[], env?: NodeJS.ProcessEn
  */
 export const DEFAULT_ARGV_TOTAL_LIMIT = 1.5 * 1024 * 1024; // 1.5 MB
 
+// ── Temp file helpers for prompt transport ────────────────────────────────
+
+const TEMP_DIR_PREFIX = "actuarius-prompt-";
+
+/**
+ * Create a temporary file with the given content and return its resolved path.
+ * The caller is responsible for calling `cleanupTempPromptFile` after the
+ * spawned process has completed.
+ */
+export async function writeTempPromptFile(content: string): Promise<string> {
+  const tmpDir = await mkdtemp(join(tmpdir(), TEMP_DIR_PREFIX));
+  const filePath = join(tmpDir, "prompt.txt");
+  await writeFile(filePath, content, "utf-8");
+  return filePath;
+}
+
+/**
+ * Remove a temporary prompt file and its parent directory created by
+ * `writeTempPromptFile`.  No error is thrown if the path does not exist.
+ */
+export async function cleanupTempPromptFile(filePath: string): Promise<void> {
+  try {
+    await rm(filePath, { force: true });
+    await rm(dirname(filePath), { recursive: true, force: true });
+  } catch {
+    // Ignore — best-effort cleanup
+  }
+}
+
 // ── Prompt transport primitives ──────────────────────────────────────────
 
 /** How a prompt is delivered to a spawned process. */
@@ -64,6 +96,12 @@ export interface PromptTransportDecision {
    * Undefined for "argv" transport.
    */
   stdinPayload?: string;
+  /**
+   * For "tempfile" transport: the resolved path of the temp file.
+   * Set by the caller after calling `writeTempPromptFile`.
+   * Undefined for other transports.
+   */
+  promptFilePath?: string;
   /** Total estimated bytes of the original argv + env. */
   totalBytes: number;
 }
@@ -103,6 +141,23 @@ export function decidePromptTransport(
   supportsStdinFallback?: boolean,
   tempfileFlag?: string[],
 ): PromptTransportDecision {
+  // ── Validate promptArgIndices ─────────────────────────────────────
+  const seen = new Set<number>();
+  for (const idx of promptArgIndices) {
+    if (!Number.isInteger(idx)) {
+      throw new RangeError(`promptArgIndices must be integers, got ${typeof idx}`);
+    }
+    if (seen.has(idx)) {
+      throw new RangeError(`Duplicate promptArgIndex: ${idx}`);
+    }
+    seen.add(idx);
+    if (idx < 0 || idx >= args.length) {
+      throw new RangeError(
+        `promptArgIndex ${idx} is out of bounds for args of length ${args.length}`,
+      );
+    }
+  }
+
   const totalBytes = estimateSpawnPayloadBytes(args, env);
 
   if (totalBytes <= DEFAULT_ARGV_TOTAL_LIMIT) {
@@ -123,9 +178,12 @@ export function decidePromptTransport(
   }
 
   if (tempfileFlag) {
+    // Insert tempfile flags at the position of the first (lowest) removed prompt arg
+    const insertAt = Math.min(...promptArgIndices);
+    adjustedArgs.splice(insertAt, 0, ...tempfileFlag);
     return {
       transport: "tempfile",
-      args: [...adjustedArgs, ...tempfileFlag],
+      args: adjustedArgs,
       stdinPayload: promptText,
       totalBytes,
     };
