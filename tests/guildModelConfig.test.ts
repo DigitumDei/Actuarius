@@ -275,4 +275,83 @@ describe("AppDatabase review role config on guild_review_config", () => {
     db.removeGuild("guild-1");
     expect(db.getGuildReviewConfig("guild-1")).toBeUndefined();
   });
+
+  it("clearGuildModelConfigReviewRole nulls the role columns in guild_model_config", () => {
+    db.setGuildModelConfig("guild-1", "claude", "claude-sonnet-4-6", "user-1");
+    db.setGuildReviewRoleConfig("guild-1", "analyzer", "gemini", "gemini-2.0-flash", "user-2");
+
+    const configBefore = db.getGuildModelConfig("guild-1");
+    expect(configBefore!.analyzer_provider).toBeNull();
+
+    db.clearGuildModelConfigReviewRole("guild-1", "analyzer", "user-3");
+
+    const configAfter = db.getGuildModelConfig("guild-1");
+    expect(configAfter!.analyzer_provider).toBeNull();
+    expect(configAfter!.analyzer_model).toBeNull();
+  });
+
+  it("clearGuildModelConfigReviewRole is a no-op when guild_model_config row does not exist", () => {
+    expect(() =>
+      db.clearGuildModelConfigReviewRole("guild-1", "judge", "user-1")
+    ).not.toThrow();
+  });
+
+  it("clearGuildModelConfigReviewRole removes legacy override fallback", () => {
+    db.upsertGuild("guild-1", "Test Guild");
+    db.setGuildModelConfig("guild-1", "claude", "claude-sonnet-4-6", "user-1");
+    (db as unknown as Record<string, unknown>).db
+      .prepare("UPDATE guild_model_config SET analyzer_provider = ?, analyzer_model = ? WHERE guild_id = ?")
+      .run("gemini", "gemini-2.0-flash", "guild-1");
+
+    const before = db.getGuildModelConfig("guild-1");
+    expect(before!.analyzer_provider).toBe("gemini");
+
+    db.clearGuildModelConfigReviewRole("guild-1", "analyzer", "user-1");
+
+    const after = db.getGuildModelConfig("guild-1");
+    expect(after!.analyzer_provider).toBeNull();
+    expect(after!.analyzer_model).toBeNull();
+  });
+});
+
+describe("AppDatabase setGuildReviewConfig with options", () => {
+  let db: AppDatabase;
+
+  beforeEach(() => {
+    db = createInMemoryDb();
+    db.upsertGuild("guild-1", "Test Guild");
+  });
+
+  it("sets role overrides without clobbering rounds", () => {
+    db.setGuildReviewConfig("guild-1", 3, "user-1", {
+      analyzerProvider: "gemini",
+      analyzerModel: "gemini-2.0-flash"
+    });
+
+    const config = db.getGuildReviewConfig("guild-1");
+    expect(config!.rounds).toBe(3);
+    expect(config!.analyzer_provider).toBe("gemini");
+    expect(config!.analyzer_model).toBe("gemini-2.0-flash");
+    expect(config!.judge_provider).toBeNull();
+    expect(config!.summarizer_provider).toBeNull();
+  });
+
+  it("preserves existing overrides when updating a different role via options", () => {
+    db.setGuildReviewConfig("guild-1", 3, "user-1", {
+      analyzerProvider: "gemini",
+      analyzerModel: null
+    });
+
+    db.setGuildReviewConfig("guild-1", 3, "user-2", {
+      judgeProvider: "claude",
+      judgeModel: "claude-sonnet-4-5"
+    });
+
+    const config = db.getGuildReviewConfig("guild-1");
+    expect(config!.analyzer_provider).toBe("gemini");
+    expect(config!.analyzer_model).toBeNull();
+    expect(config!.judge_provider).toBe("claude");
+    expect(config!.judge_model).toBe("claude-sonnet-4-5");
+    expect(config!.rounds).toBe(3);
+  });
 });

@@ -2046,15 +2046,15 @@ describe("ActuariusBot model-select command", () => {
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("**Analyzer**: falls back to default reviewer ordering"),
+      content: expect.stringContaining("**Analyzer**: falls back to first available reviewer in default ordering"),
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("**Judge**: falls back to default reviewer ordering"),
+      content: expect.stringContaining("**Judge**: falls back to first available reviewer in default ordering"),
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("**Summarizer**: falls back to default reviewer ordering"),
+      content: expect.stringContaining("**Summarizer**: falls back to second available reviewer in default ordering"),
       ephemeral: true
     });
   });
@@ -2092,15 +2092,15 @@ describe("ActuariusBot model-select command", () => {
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("**Analyzer**: falls back to default reviewer ordering"),
+      content: expect.stringContaining("**Analyzer**: falls back to first available reviewer in default ordering"),
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("**Judge**: falls back to default reviewer ordering"),
+      content: expect.stringContaining("**Judge**: falls back to first available reviewer in default ordering"),
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("**Summarizer**: falls back to default reviewer ordering"),
+      content: expect.stringContaining("**Summarizer**: falls back to second available reviewer in default ordering"),
       ephemeral: true
     });
   });
@@ -2122,6 +2122,10 @@ describe("ActuariusBot model-select command", () => {
         { slot_index: 2, provider: "gemini", model: "gemini-2.5-pro" }
       ])
     });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true
+    };
     const interaction = createInteraction();
 
     await (bot as any).handleModelCurrent(interaction);
@@ -2176,6 +2180,11 @@ describe("ActuariusBot model-select command", () => {
         updated_at: "2026-05-30T00:00:00.000Z"
       })
     });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true,
+      enableCodexExecution: true
+    };
     const interaction = createInteraction();
 
     await (bot as any).handleModelCurrent(interaction);
@@ -2213,6 +2222,11 @@ describe("ActuariusBot model-select command", () => {
         updated_at: "2026-05-29T00:00:00.000Z"
       })
     });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true,
+      enableCodexExecution: true
+    };
     const interaction = createInteraction();
 
     await (bot as any).handleModelCurrent(interaction);
@@ -2320,6 +2334,10 @@ describe("ActuariusBot model-select command", () => {
         updated_at: "2026-05-30T00:00:00.000Z"
       })
     });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true
+    };
     const interaction = createInteraction();
 
     await (bot as any).handleModelCurrent(interaction);
@@ -2487,8 +2505,9 @@ describe("ActuariusBot model-select command", () => {
 
   it("clears a reviewer role override via clear flag", async () => {
     const clearGuildReviewRoleConfig = vi.fn();
+    const clearGuildModelConfigReviewRole = vi.fn();
     const upsertGuild = vi.fn();
-    const bot = createBot({ clearGuildReviewRoleConfig, upsertGuild });
+    const bot = createBot({ clearGuildReviewRoleConfig, clearGuildModelConfigReviewRole, upsertGuild });
     const interaction = createInteraction({
       memberPermissions: { has: vi.fn().mockReturnValue(true) },
       options: {
@@ -2506,6 +2525,7 @@ describe("ActuariusBot model-select command", () => {
     await (bot as any).handleModelSelect(interaction);
 
     expect(clearGuildReviewRoleConfig).toHaveBeenCalledWith("guild-1", "judge", "user-1");
+    expect(clearGuildModelConfigReviewRole).toHaveBeenCalledWith("guild-1", "judge", "user-1");
     expect(interaction.reply).toHaveBeenCalledWith({
       content: "Reviewer **judge** role override cleared.",
       ephemeral: true
@@ -2539,17 +2559,168 @@ describe("ActuariusBot model-select command", () => {
     });
   });
 
-  it("rejects clear=true with planner role", async () => {
-    const setGuildRoleModelConfig = vi.fn();
+  it("shows ⚠️ unavailable when a slot uses Gemini enabled without API key", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "gemini", model: "gemini-2.5-pro" }
+      ])
+    });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true,
+      geminiApiKey: undefined
+    };
+
+    const interaction = createInteraction();
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Slot **2**: **Gemini**, model: `gemini-2.5-pro` ⚠️ *unavailable*"),
+      ephemeral: true
+    });
+  });
+
+  it("shows ⚠️ unavailable when a review_config override uses Gemini enabled without API key", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        rounds: 2,
+        analyzer_provider: "gemini",
+        analyzer_model: null,
+        judge_provider: null,
+        judge_model: null,
+        summarizer_provider: null,
+        summarizer_model: null,
+        updated_at: "2026-05-30T00:00:00.000Z"
+      })
+    });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true,
+      geminiApiKey: undefined
+    };
+
+    const interaction = createInteraction();
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: **Gemini**, model: CLI default model (set via `/model-select`) ⚠️ *unavailable*"),
+      ephemeral: true
+    });
+  });
+
+  it("shows ⚠️ unavailable when a disabled provider is in a slot", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "codex", model: "o4-mini" }
+      ])
+    });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableCodexExecution: false
+    };
+
+    const interaction = createInteraction();
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Slot **2**: **Codex**, model: `o4-mini` ⚠️ *unavailable*"),
+      ephemeral: true
+    });
+  });
+
+  it("non-slot buildReviewRunners uses guild_review_config overrides", () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        rounds: 2,
+        analyzer_provider: "gemini",
+        analyzer_model: "gemini-2.0-flash",
+        judge_provider: null,
+        judge_model: null,
+        summarizer_provider: null,
+        summarizer_model: null,
+        updated_at: "2026-05-30T00:00:00.000Z"
+      }),
+      getModelHistory: vi.fn().mockReturnValue([])
+    });
+    (bot as any).config.enableGeminiExecution = true;
+    (bot as any).config.enableCodexExecution = true;
+
+    const runners = (bot as any).buildReviewRunners("guild-1");
+
+    expect(runners.analyzer.provider).toBe("gemini");
+    expect(runners.analyzer.model).toBe("gemini-2.0-flash");
+    expect(runners.judge.provider).toBe("claude");
+    expect(runners.summarizer.provider).toBe("codex");
+  });
+
+  it("clear:true clears both guild_review_config and guild_model_config overrides", async () => {
+    const clearGuildReviewRoleConfig = vi.fn();
+    const clearGuildModelConfigReviewRole = vi.fn();
     const upsertGuild = vi.fn();
-    const bot = createBot({ setGuildRoleModelConfig, upsertGuild });
+    const bot = createBot({
+      clearGuildReviewRoleConfig,
+      clearGuildModelConfigReviewRole,
+      upsertGuild,
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        analyzer_provider: "gemini",
+        analyzer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      })
+    });
     const interaction = createInteraction({
       memberPermissions: { has: vi.fn().mockReturnValue(true) },
       options: {
         getString: vi.fn((name: string) => {
           if (name === "provider") return null;
           if (name === "model") return null;
-          if (name === "role") return "planner";
+          if (name === "role") return "reviewer-analyzer";
           return null;
         }),
         getBoolean: vi.fn((name: string) => name === "clear" ? true : null),
@@ -2559,9 +2730,48 @@ describe("ActuariusBot model-select command", () => {
 
     await (bot as any).handleModelSelect(interaction);
 
-    expect(setGuildRoleModelConfig).not.toHaveBeenCalled();
+    expect(clearGuildReviewRoleConfig).toHaveBeenCalledWith("guild-1", "analyzer", "user-1");
+    expect(clearGuildModelConfigReviewRole).toHaveBeenCalledWith("guild-1", "analyzer", "user-1");
+  });
+
+  it("shows legacy overrides when no slots are configured", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        analyzer_provider: "gemini",
+        analyzer_model: null,
+        judge_provider: "codex",
+        judge_model: "codex-preview-0503",
+        summarizer_provider: null,
+        summarizer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      })
+    });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true,
+      enableCodexExecution: true
+    };
+
+    const interaction = createInteraction();
+    await (bot as any).handleModelCurrent(interaction);
+
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: "`clear` is only supported for reviewer roles (`reviewer-1`–`reviewer-4`, `reviewer-analyzer`, `reviewer-judge`, `reviewer-summarizer`). Use `/model-select provider:... role:default` without `clear` to change the default provider.",
+      content: expect.stringContaining("**Analyzer**: **Gemini**, model: CLI default model (legacy override)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: **Codex**, model: `codex-preview-0503` (legacy override)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using role overrides with provider ordering."),
       ephemeral: true
     });
   });

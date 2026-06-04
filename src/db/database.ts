@@ -897,6 +897,26 @@ export class AppDatabase {
       .run(updatedByUserId, guildId);
   }
 
+  public clearGuildModelConfigReviewRole(
+    guildId: string,
+    role: ReviewModelRole,
+    updatedByUserId: string
+  ): void {
+    const providerColumn = `${role}_provider` as const;
+    const modelColumn = `${role}_model` as const;
+
+    this.db
+      .prepare(
+        `UPDATE guild_model_config
+         SET ${providerColumn} = NULL,
+             ${modelColumn} = NULL,
+             updated_by_user_id = ?,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE guild_id = ?`
+      )
+      .run(updatedByUserId, guildId);
+  }
+
   public addModelToHistory(provider: AiProvider, model: string): void {
     this.db.exec("BEGIN");
     try {
