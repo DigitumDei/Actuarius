@@ -74,6 +74,17 @@ vi.mock("../src/services/claudeExecutionService.js", async () => {
   };
 });
 
+vi.mock("../src/services/opencodeExecutionService.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/opencodeExecutionService.js")>(
+    "../src/services/opencodeExecutionService.js"
+  );
+
+  return {
+    ...actual,
+    hasOpencodeAuth: vi.fn().mockResolvedValue(false)
+  };
+});
+
 vi.mock("../src/services/adversarialReviewService.js", async () => {
   const actual = await vi.importActual<typeof import("../src/services/adversarialReviewService.js")>(
     "../src/services/adversarialReviewService.js"
@@ -1528,7 +1539,7 @@ describe("ActuariusBot review command", () => {
     });
     await (bot as any).handleReview(interaction);
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Provider disabled** — slot 2 uses `codex` which is not enabled by the server administrator. Use `/model-select reviewer-2` with an enabled provider to fix this.",
+      content: "**Provider unavailable** — slot 2 uses `codex` which is not available. Codex execution is not enabled on this instance (`ENABLE_CODEX_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
       ephemeral: true
     });
     expect(runAdversarialReview).not.toHaveBeenCalled();
@@ -1556,7 +1567,7 @@ describe("ActuariusBot review command", () => {
     });
     await (bot as any).handleReview(interaction);
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Provider disabled** — the `analyzer` role override uses `gemini` which is not enabled. Use `/model-select reviewer-analyzer clear` to remove the override or select an enabled provider.",
+      content: "**Provider unavailable** — the `analyzer` role override uses `gemini` which is not available. Gemini execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
       ephemeral: true
     });
     expect(runAdversarialReview).not.toHaveBeenCalled();
@@ -1578,7 +1589,7 @@ describe("ActuariusBot review command", () => {
     });
     await (bot as any).handleReview(interaction);
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Insufficient reviewers configured** — at least 2 enabled AI providers are required for `/review`. Use `/model-select` to configure a second provider or ask the server administrator to enable additional providers.",
+      content: "**Insufficient reviewers configured** — at least 2 available AI providers are required for `/review`. Use `/model-select` to configure a second provider or ask the server administrator to enable or configure additional providers.",
       ephemeral: true
     });
     expect(runAdversarialReview).not.toHaveBeenCalled();
@@ -1645,6 +1656,85 @@ describe("ActuariusBot review command", () => {
     expect(send).toHaveBeenCalledWith(expect.stringContaining("**Auto-commit failed**"));
     expect(send).toHaveBeenCalledWith(expect.stringContaining("Git is not available"));
     expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Git is not available"));
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("rejects review when Gemini slot provider lacks GEMINI_API_KEY (stale config)", async () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { guild_id: "guild-1", slot_index: 1, provider: "claude", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" },
+        { guild_id: "guild-1", slot_index: 2, provider: "gemini", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" }
+      ]),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      })
+    });
+    (bot as any).config.enableGeminiExecution = true;
+    (bot as any).config.enableCodexExecution = true;
+    (bot as any).config.geminiApiKey = undefined;
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "**Provider unavailable** — slot 2 uses `gemini` which is not available. Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.",
+      ephemeral: true
+    });
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("rejects review when OpenCode slot provider lacks credentials (stale config)", async () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { guild_id: "guild-1", slot_index: 1, provider: "claude", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" },
+        { guild_id: "guild-1", slot_index: 2, provider: "opencode", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" }
+      ]),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      })
+    });
+    (bot as any).config.enableOpencodeExecution = true;
+    (bot as any).config.enableCodexExecution = true;
+    const hasOpencodeAuthMock = (await import("../src/services/opencodeExecutionService.js")).hasOpencodeAuth as ReturnType<typeof vi.fn>;
+    hasOpencodeAuthMock.mockResolvedValue(false);
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "**Provider unavailable** — slot 2 uses `opencode` which is not available. OpenCode execution requires an API key. Use `/opencode-auth` to configure keys (e.g. `deepseek`, `openai`, `anthropic`), or set `DEEPSEEK_API_KEY` on the instance.",
+      ephemeral: true
+    });
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("rejects review when Gemini is the only legacy provider and GEMINI_API_KEY is missing (stale config)", async () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([]),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      }),
+      getGuildModelConfig: vi.fn().mockReturnValue({ provider: "gemini", model: null, updated_at: "2026-03-18T00:00:00Z" })
+    });
+    (bot as any).config.enableGeminiExecution = true;
+    (bot as any).config.geminiApiKey = undefined;
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "**Insufficient reviewers configured** — at least 2 available AI providers are required for `/review`. Use `/model-select` to configure a second provider or ask the server administrator to enable or configure additional providers.",
+      ephemeral: true
+    });
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 });

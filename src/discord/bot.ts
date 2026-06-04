@@ -2401,7 +2401,7 @@ Output the result of the command or the link to the created issue.`;
     return true;
   }
 
-  private validateReviewConfig(guildId: string): string | null {
+  private async validateReviewConfig(guildId: string): Promise<string | null> {
     const slots = this.db.getReviewerSlots(guildId);
     const reviewConfig = this.db.getGuildReviewConfig(guildId);
 
@@ -2411,16 +2411,20 @@ Output the result of the command or the link to the created issue.`;
       }
 
       for (const slot of slots) {
-        if (!this.isProviderEnabled(slot.provider)) {
-          return `**Provider disabled** — slot ${slot.slot_index} uses \`${slot.provider}\` which is not enabled by the server administrator. Use \`/model-select reviewer-${slot.slot_index}\` with an enabled provider to fix this.`;
+        const unavailMsg = await this.getProviderUnavailableMessage(slot.provider);
+        if (unavailMsg) {
+          return `**Provider unavailable** — slot ${slot.slot_index} uses \`${slot.provider}\` which is not available. ${unavailMsg}`;
         }
       }
 
       const roles: ReviewModelRole[] = ["analyzer", "judge", "summarizer"];
       for (const role of roles) {
         const overrideProvider = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] as AiProvider | undefined;
-        if (overrideProvider && !this.isProviderEnabled(overrideProvider)) {
-          return `**Provider disabled** — the \`${role}\` role override uses \`${overrideProvider}\` which is not enabled. Use \`/model-select reviewer-${role} clear\` to remove the override or select an enabled provider.`;
+        if (overrideProvider) {
+          const unavailMsg = await this.getProviderUnavailableMessage(overrideProvider);
+          if (unavailMsg) {
+            return `**Provider unavailable** — the \`${role}\` role override uses \`${overrideProvider}\` which is not available. ${unavailMsg}`;
+          }
         }
       }
 
@@ -2436,24 +2440,28 @@ Output the result of the command or the link to the created issue.`;
       }
     }
 
-    const enabled: AiProvider[] = [];
+    const available: AiProvider[] = [];
     for (const provider of providers) {
-      if (this.isProviderEnabled(provider)) {
-        enabled.push(provider);
+      const unavailMsg = await this.getProviderUnavailableMessage(provider);
+      if (!unavailMsg) {
+        available.push(provider);
       }
     }
 
-    if (enabled.length < 2) {
-      return "**Insufficient reviewers configured** — at least 2 enabled AI providers are required for `/review`. Use `/model-select` to configure a second provider or ask the server administrator to enable additional providers.";
+    if (available.length < 2) {
+      return "**Insufficient reviewers configured** — at least 2 available AI providers are required for `/review`. Use `/model-select` to configure a second provider or ask the server administrator to enable or configure additional providers.";
     }
 
     const roles: ReviewModelRole[] = ["analyzer", "judge", "summarizer"];
     for (const role of roles) {
       const overrideProvider = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] as AiProvider | undefined
         ?? (modelConfig as unknown as Record<string, unknown>)?.[`${role}_provider`] as AiProvider | undefined;
-      if (overrideProvider && !this.isProviderEnabled(overrideProvider)) {
-        const source = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] ? "`/model-select`" : "legacy configuration";
-        return `**Provider disabled** — the \`${role}\` role override uses \`${overrideProvider}\` (from ${source}) which is not enabled. Use \`/model-select reviewer-${role} clear\` to remove the override or select an enabled provider.`;
+      if (overrideProvider) {
+        const unavailMsg = await this.getProviderUnavailableMessage(overrideProvider);
+        if (unavailMsg) {
+          const source = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] ? "`/model-select`" : "legacy configuration";
+          return `**Provider unavailable** — the \`${role}\` role override uses \`${overrideProvider}\` (from ${source}) which is not available. ${unavailMsg}`;
+        }
       }
     }
 
@@ -2750,7 +2758,7 @@ Output the result of the command or the link to the created issue.`;
       return;
     }
 
-    const configError = this.validateReviewConfig(interaction.guildId);
+    const configError = await this.validateReviewConfig(interaction.guildId);
     if (configError) {
       await interaction.reply({ content: configError, ephemeral: true });
       return;
