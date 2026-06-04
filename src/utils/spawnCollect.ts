@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
 
 // ── Byte estimation helpers ──────────────────────────────────────────────
@@ -55,26 +55,43 @@ export const DEFAULT_ARGV_TOTAL_LIMIT = 1.5 * 1024 * 1024; // 1.5 MB
 
 const TEMP_DIR_PREFIX = "actuarius-prompt-";
 
-/**
- * Create a temporary file with the given content and return its resolved path.
- * The caller is responsible for calling `cleanupTempPromptFile` after the
- * spawned process has completed.
- */
-export async function writeTempPromptFile(content: string): Promise<string> {
-  const tmpDir = await mkdtemp(join(tmpdir(), TEMP_DIR_PREFIX));
-  const filePath = join(tmpDir, "prompt.txt");
-  await writeFile(filePath, content, "utf-8");
-  return filePath;
+export interface TempPromptFile {
+  /** Resolved path to the created prompt file. */
+  filePath: string;
+  /** The temporary directory containing the prompt file. */
+  tempDir: string;
 }
 
 /**
- * Remove a temporary prompt file and its parent directory created by
- * `writeTempPromptFile`.  No error is thrown if the path does not exist.
+ * Create a temporary file with the given content and return the file path
+ * and temp directory.  The caller is responsible for calling
+ * `cleanupTempPromptFile` with the returned `tempDir` after the spawned
+ * process has completed.
  */
-export async function cleanupTempPromptFile(filePath: string): Promise<void> {
+export async function writeTempPromptFile(content: string): Promise<TempPromptFile> {
+  const tempDir = await mkdtemp(join(tmpdir(), TEMP_DIR_PREFIX));
+  const filePath = join(tempDir, "prompt.txt");
+  await writeFile(filePath, content, "utf-8");
+  return { filePath, tempDir };
+}
+
+/**
+ * Remove a temporary prompt directory created by `writeTempPromptFile`.
+ * Only directories under the system temp dir with the `actuarius-prompt-`
+ * prefix are removed; anything else is silently ignored as a safety guard.
+ * No error is thrown if the path does not exist.
+ */
+export async function cleanupTempPromptFile(tempDir: string): Promise<void> {
+  const systemTmp = tmpdir();
+  const resolved = join(systemTmp, basename(tempDir));
+  if (
+    resolved !== tempDir ||
+    !basename(tempDir).startsWith(TEMP_DIR_PREFIX)
+  ) {
+    return;
+  }
   try {
-    await rm(filePath, { force: true });
-    await rm(dirname(filePath), { recursive: true, force: true });
+    await rm(tempDir, { recursive: true, force: true });
   } catch {
     // Ignore — best-effort cleanup
   }

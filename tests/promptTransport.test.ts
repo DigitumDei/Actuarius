@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { randomBytes } from "node:crypto";
 import {
   estimateArgvBytes,
   estimateEnvBytes,
@@ -7,6 +10,7 @@ import {
   decidePromptTransport,
   writeTempPromptFile,
   cleanupTempPromptFile,
+  type TempPromptFile,
 } from "../src/utils/spawnCollect.js";
 
 describe("estimateArgvBytes", () => {
@@ -239,40 +243,43 @@ describe("decidePromptTransport", () => {
 describe("writeTempPromptFile / cleanupTempPromptFile", () => {
   it("creates a file with the given content and cleans it up", async () => {
     const content = "test prompt content";
-    const filePath = await writeTempPromptFile(content);
-    expect(filePath).toBeTruthy();
-    expect(filePath.endsWith("prompt.txt")).toBe(true);
+    const result = await writeTempPromptFile(content);
+    expect(result.filePath).toBeTruthy();
+    expect(result.filePath.endsWith("prompt.txt")).toBe(true);
+    expect(result.tempDir).toBeTruthy();
 
     // Verify content was written
     const { readFile } = await import("node:fs/promises");
-    const written = await readFile(filePath, "utf-8");
+    const written = await readFile(result.filePath, "utf-8");
     expect(written).toBe(content);
 
     // Cleanup
-    await cleanupTempPromptFile(filePath);
+    await cleanupTempPromptFile(result.tempDir);
 
     // Verify file is gone
     const { existsSync } = await import("node:fs");
-    expect(existsSync(filePath)).toBe(false);
+    expect(existsSync(result.filePath)).toBe(false);
   });
 
   it("cleanupTempPromptFile does not throw on non-existent path", async () => {
-    await expect(cleanupTempPromptFile("/tmp/nonexistent-actuarius-test-file")).resolves.toBeUndefined();
+    const nonExistentDir = join(tmpdir(), `actuarius-prompt-${randomBytes(8).toString("hex")}`);
+    await expect(cleanupTempPromptFile(nonExistentDir)).resolves.toBeUndefined();
   });
 
   it("creates temp files with unique directories per call", async () => {
-    const fileA = await writeTempPromptFile("A");
-    const fileB = await writeTempPromptFile("B");
+    const a = await writeTempPromptFile("A");
+    const b = await writeTempPromptFile("B");
     try {
       // Different parent directories
-      expect(fileA).not.toBe(fileB);
+      expect(a.filePath).not.toBe(b.filePath);
+      expect(a.tempDir).not.toBe(b.tempDir);
       // Both readable
       const { readFile } = await import("node:fs/promises");
-      expect(await readFile(fileA, "utf-8")).toBe("A");
-      expect(await readFile(fileB, "utf-8")).toBe("B");
+      expect(await readFile(a.filePath, "utf-8")).toBe("A");
+      expect(await readFile(b.filePath, "utf-8")).toBe("B");
     } finally {
-      await cleanupTempPromptFile(fileA);
-      await cleanupTempPromptFile(fileB);
+      await cleanupTempPromptFile(a.tempDir);
+      await cleanupTempPromptFile(b.tempDir);
     }
   });
 });
