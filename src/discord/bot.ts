@@ -2410,6 +2410,13 @@ Output the result of the command or the link to the created issue.`;
         this.runProviderText({ provider, prompt, cwd, timeoutMs, ...(model ? { model } : {}) })
     });
 
+    const isProviderEnabled = (provider: AiProvider): boolean => {
+      if (provider === "codex") return !!this.config.enableCodexExecution;
+      if (provider === "gemini") return !!this.config.enableGeminiExecution;
+      if (provider === "opencode") return !!this.config.enableOpencodeExecution;
+      return true;
+    };
+
     if (slots.length > 0) {
       const reviewers: ReviewModelRunner[] = slots.map((s) =>
         buildRunner(s.provider, s.model, s.slot_index)
@@ -2422,15 +2429,16 @@ Output the result of the command or the link to the created issue.`;
         );
       }
 
-      const analyzer = hasSlotOverride("analyzer")
+      const defaultSummarizer = reviewers[1] ?? reviewers[0]!;
+      const analyzer = hasSlotOverride("analyzer") && isProviderEnabled(reviewConfig!.analyzer_provider!)
         ? buildRunner(reviewConfig!.analyzer_provider!, reviewConfig!.analyzer_model)
         : reviewers[0]!;
-      const judge = hasSlotOverride("judge")
+      const judge = hasSlotOverride("judge") && isProviderEnabled(reviewConfig!.judge_provider!)
         ? buildRunner(reviewConfig!.judge_provider!, reviewConfig!.judge_model)
         : reviewers[0]!;
-      const summarizer = hasSlotOverride("summarizer")
+      const summarizer = hasSlotOverride("summarizer") && isProviderEnabled(reviewConfig!.summarizer_provider!)
         ? buildRunner(reviewConfig!.summarizer_provider!, reviewConfig!.summarizer_model)
-        : (reviewers.find((r) => r.provider !== reviewers[0]!.provider || r.model !== reviewers[0]!.model) ?? reviewers[0]!);
+        : defaultSummarizer;
 
       return { analyzer, reviewers, judge, summarizer };
     }
@@ -2490,6 +2498,7 @@ Output the result of the command or the link to the created issue.`;
       const overrideProvider = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] as AiProvider | null
         ?? (modelConfig as Record<string, unknown>)?.[`${role}_provider`] as AiProvider | null;
       if (!overrideProvider) return defaultRunner;
+      if (!isProviderEnabled(overrideProvider)) return defaultRunner;
       const overrideModel = reviewConfig?.[`${role}_model` as keyof typeof reviewConfig] as string | null
         ?? (modelConfig as Record<string, unknown>)?.[`${role}_model`] as string | null;
       return buildRunner(overrideProvider, overrideModel);
@@ -2497,7 +2506,7 @@ Output the result of the command or the link to the created issue.`;
 
     const analyzer = resolveRoleRunner("analyzer", reviewers[0]!);
     const judge = resolveRoleRunner("judge", reviewers[0]!);
-    const defaultSummarizer = reviewers.find((r) => r.provider !== reviewers[0]!.provider || r.model !== reviewers[0]!.model) ?? reviewers[0]!;
+    const defaultSummarizer = reviewers[1] ?? reviewers[0]!;
     const summarizer = resolveRoleRunner("summarizer", defaultSummarizer);
     return { analyzer, reviewers, judge, summarizer };
   }
