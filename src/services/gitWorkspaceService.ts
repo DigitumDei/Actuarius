@@ -424,6 +424,13 @@ export async function hasUncommittedChanges(worktreePath: string): Promise<boole
   return !(await isWorktreeClean(worktreePath));
 }
 
+export async function hasUncommittedChangesExcluding(worktreePath: string, excludePaths: string[]): Promise<boolean> {
+  const excludeArgs = getExcludePathspecArgs(excludePaths);
+  const pathspecArgs = excludeArgs.length > 0 ? ["--", ".", ...excludeArgs] : [];
+  const result = await runGitWithOutput(["status", "--porcelain", ...pathspecArgs], { cwd: worktreePath });
+  return result.stdout.trim().length > 0;
+}
+
 export async function autoCommitAll(worktreePath: string, message: string, excludePaths?: string[]): Promise<boolean> {
   await runGitWithOutput(["add", "-A"], { cwd: worktreePath });
 

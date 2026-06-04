@@ -49,6 +49,7 @@ import {
   getHeadSha,
   getReviewDiff,
   hasUncommittedChanges,
+  hasUncommittedChangesExcluding,
   listBranches,
   pushBranch
 } from "../services/gitWorkspaceService.js";
@@ -3075,7 +3076,7 @@ Output the result of the command or the link to the created issue.`;
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      if (await hasUncommittedChanges(latestRequest.worktree_path)) {
+      if (await hasUncommittedChangesExcluding(latestRequest.worktree_path, ["docs/reviews/"])) {
         await interaction.editReply(
           "The worktree has uncommitted changes. `/review` includes working-tree changes, but `/pr` can only push commits. Commit the reviewed changes, then run `/review` again before `/pr`."
         );
@@ -3277,6 +3278,7 @@ Output the result of the command or the link to the created issue.`;
       getHeadSha,
       getDiffSinceRef,
       hasUncommittedChanges,
+      hasUncommittedChangesExcluding,
       autoCommitAll
     })).taskResults;
 

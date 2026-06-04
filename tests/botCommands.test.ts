@@ -34,6 +34,7 @@ vi.mock("../src/services/gitWorkspaceService.js", async () => {
     getDiffSinceRef: vi.fn(),
     getReviewDiff: vi.fn(),
     hasUncommittedChanges: vi.fn(),
+    hasUncommittedChangesExcluding: vi.fn(),
     pushBranch: vi.fn(),
     autoCommitDirtyWorktree: vi.fn()
   };
@@ -104,6 +105,7 @@ const {
   getHeadSha,
   getReviewDiff,
   hasUncommittedChanges,
+  hasUncommittedChangesExcluding,
   listBranches,
   cleanupDeletedRemoteBranches,
   pushBranch
@@ -2404,10 +2406,10 @@ describe("ActuariusBot pr command", () => {
     };
   }
 
-  it("blocks PR creation when the worktree has uncommitted changes", async () => {
+  it("blocks PR creation when the worktree has uncommitted changes excluding review artifacts", async () => {
     const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-dirty-"));
     const bot = createBot(createPrDb(worktreePath));
-    vi.mocked(hasUncommittedChanges).mockResolvedValue(true);
+    vi.mocked(hasUncommittedChangesExcluding).mockResolvedValue(true);
 
     const interaction = createInteraction();
 
@@ -2423,7 +2425,7 @@ describe("ActuariusBot pr command", () => {
     const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-clean-"));
     const channelSend = vi.fn().mockResolvedValue(undefined);
     const bot = createBot(createPrDb(worktreePath));
-    vi.mocked(hasUncommittedChanges).mockResolvedValue(false);
+    vi.mocked(hasUncommittedChangesExcluding).mockResolvedValue(false);
     vi.mocked(getHeadSha).mockResolvedValue("reviewed-sha");
     vi.mocked(detectDefaultBranch).mockResolvedValue({ branchName: "main", remoteRef: "origin/main" });
     vi.mocked(pushBranch).mockResolvedValue(undefined);
@@ -2442,7 +2444,45 @@ describe("ActuariusBot pr command", () => {
 
     await (bot as any).handlePr(interaction);
 
-    expect(hasUncommittedChanges).toHaveBeenCalledWith(worktreePath);
+    expect(hasUncommittedChangesExcluding).toHaveBeenCalledWith(worktreePath, ["docs/reviews/"]);
+    expect(getHeadSha).toHaveBeenCalledWith(worktreePath, "ask/719-123");
+    expect(pushBranch).toHaveBeenCalledWith(worktreePath, "ask/719-123");
+    expect(createDraftPullRequest).toHaveBeenCalledWith(expect.objectContaining({
+      worktreePath,
+      head: "ask/719-123",
+      base: "main",
+      title: "Implement issue 127"
+    }));
+    expect(channelSend).toHaveBeenCalledWith(expect.stringContaining("Draft PR opened"));
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Draft PR opened for `octocat/hello-world`"));
+  });
+
+  it("opens a draft PR even when docs/reviews/ artifacts exist from a previous /review", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-artifacts-"));
+    const channelSend = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot(createPrDb(worktreePath));
+    vi.mocked(hasUncommittedChangesExcluding).mockResolvedValue(false);
+    vi.mocked(hasUncommittedChanges).mockResolvedValue(true);
+    vi.mocked(getHeadSha).mockResolvedValue("reviewed-sha");
+    vi.mocked(detectDefaultBranch).mockResolvedValue({ branchName: "main", remoteRef: "origin/main" });
+    vi.mocked(pushBranch).mockResolvedValue(undefined);
+    vi.mocked(createDraftPullRequest).mockResolvedValue("https://github.com/octocat/hello-world/pull/1");
+
+    const interaction = createInteraction({
+      channel: {
+        isThread: () => true,
+        isTextBased: () => true,
+        isDMBased: () => false,
+        parentId: "channel-1",
+        url: "https://discord.test/thread-1",
+        send: channelSend
+      }
+    });
+
+    await (bot as any).handlePr(interaction);
+
+    expect(hasUncommittedChangesExcluding).toHaveBeenCalledWith(worktreePath, ["docs/reviews/"]);
+    expect(hasUncommittedChanges).not.toHaveBeenCalled();
     expect(getHeadSha).toHaveBeenCalledWith(worktreePath, "ask/719-123");
     expect(pushBranch).toHaveBeenCalledWith(worktreePath, "ask/719-123");
     expect(createDraftPullRequest).toHaveBeenCalledWith(expect.objectContaining({
