@@ -2402,17 +2402,17 @@ Output the result of the command or the link to the created issue.`;
     const hasSlotOverride = (role: ReviewModelRole): boolean =>
       !!reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig];
 
-    const buildRunner = (provider: AiProvider, defaultModel?: string | null): ReviewModelRunner => ({
+    const buildRunner = (provider: AiProvider, defaultModel?: string | null, slotIndex?: number): ReviewModelRunner => ({
       provider,
       ...(defaultModel ? { model: defaultModel } : {}),
-      label: AI_PROVIDER_LABELS[provider],
+      label: slotIndex !== undefined ? `${AI_PROVIDER_LABELS[provider]} (Slot ${slotIndex})` : AI_PROVIDER_LABELS[provider],
       run: async ({ prompt, cwd, timeoutMs, model }) =>
         this.runProviderText({ provider, prompt, cwd, timeoutMs, ...(model ? { model } : {}) })
     });
 
     if (slots.length > 0) {
       const reviewers: ReviewModelRunner[] = slots.map((s) =>
-        buildRunner(s.provider, s.model)
+        buildRunner(s.provider, s.model, s.slot_index)
       );
 
       if (reviewers.length < 2) {
