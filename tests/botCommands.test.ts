@@ -34,7 +34,9 @@ vi.mock("../src/services/gitWorkspaceService.js", async () => {
     getDiffSinceRef: vi.fn(),
     getReviewDiff: vi.fn(),
     hasUncommittedChanges: vi.fn(),
-    pushBranch: vi.fn()
+    hasUncommittedChangesExcluding: vi.fn(),
+    pushBranch: vi.fn(),
+    autoCommitDirtyWorktree: vi.fn()
   };
 });
 
@@ -72,6 +74,17 @@ vi.mock("../src/services/claudeExecutionService.js", async () => {
   };
 });
 
+vi.mock("../src/services/opencodeExecutionService.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/opencodeExecutionService.js")>(
+    "../src/services/opencodeExecutionService.js"
+  );
+
+  return {
+    ...actual,
+    hasOpencodeAuth: vi.fn().mockResolvedValue(false)
+  };
+});
+
 vi.mock("../src/services/adversarialReviewService.js", async () => {
   const actual = await vi.importActual<typeof import("../src/services/adversarialReviewService.js")>(
     "../src/services/adversarialReviewService.js"
@@ -96,12 +109,14 @@ vi.mock("../src/services/iterativeTaskLoopService.js", async () => {
 
 const { createRequestWorktree, deleteRequestBranch } = await import("../src/services/requestWorktreeService.js");
 const {
+  autoCommitDirtyWorktree,
   detectDefaultBranch,
   ensureRepoCheckedOutToMaster,
   getDiffSinceRef,
   getHeadSha,
   getReviewDiff,
   hasUncommittedChanges,
+  hasUncommittedChangesExcluding,
   listBranches,
   cleanupDeletedRemoteBranches,
   pushBranch
@@ -157,6 +172,7 @@ function createBot(dbOverrides: Record<string, unknown> = {}, memPalace: unknown
     getGuildModelConfig: vi.fn(),
     getGuildReviewConfig: vi.fn(),
     getModelHistory: vi.fn().mockReturnValue([]),
+    getReviewerSlots: vi.fn().mockReturnValue([]),
     getLatestRequestWithWorkspaceByThreadId: vi.fn(),
     getRequestByThreadId: vi.fn(),
     getRepoByFullName: vi.fn(),
@@ -189,7 +205,8 @@ function createInteraction(overrides: Record<string, unknown> = {}) {
     memberPermissions: { has: vi.fn().mockReturnValue(false) },
     options: {
       getString: vi.fn().mockReturnValue(null),
-      getInteger: vi.fn().mockReturnValue(null)
+      getInteger: vi.fn().mockReturnValue(null),
+      getBoolean: vi.fn().mockReturnValue(null)
     },
     reply: vi.fn().mockResolvedValue(undefined),
     fetchReply: vi.fn(),
@@ -1205,6 +1222,24 @@ describe("ActuariusBot review runner selection", () => {
     expect(runners.summarizer.provider).toBe("claude");
     expect(runners.summarizer.model).toBe("claude-sonnet-4");
   });
+
+  it("selects summarizer as first slot differing from slot 1 when slots 1 and 2 are identical", () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "claude", model: null },
+        { slot_index: 3, provider: "gemini", model: "gemini-2.5-pro" }
+      ])
+    });
+
+    const runners = (bot as any).buildReviewRunners("guild-1");
+
+    expect(runners.reviewers).toHaveLength(3);
+    expect(runners.analyzer.provider).toBe("claude");
+    expect(runners.judge.provider).toBe("claude");
+    expect(runners.summarizer.provider).toBe("gemini");
+    expect(runners.summarizer.model).toBe("gemini-2.5-pro");
+  });
 });
 
 describe("ActuariusBot review-rounds command", () => {
@@ -1309,10 +1344,11 @@ describe("ActuariusBot review command", () => {
         status: "install_running"
       })
     });
+    (bot as any).config.enableCodexExecution = true;
+    (bot as any).config.enableGeminiExecution = true;
     const interaction = createInteraction({
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
-
     await (bot as any).handleReview(interaction);
 
     expect(interaction.reply).toHaveBeenCalledWith({
@@ -1323,6 +1359,7 @@ describe("ActuariusBot review command", () => {
   });
 
   it("passes review progress into the review service and maps events to Discord messages", async () => {
+    vi.mocked(autoCommitDirtyWorktree).mockResolvedValue(false);
     vi.mocked(runAdversarialReview).mockResolvedValue({
       reviewRunId: 12,
       diffHeadSha: "abc123",
@@ -1366,6 +1403,7 @@ describe("ActuariusBot review command", () => {
         updated_at: "2026-03-18T00:00:00Z"
       })
     });
+    (bot as any).config.enableCodexExecution = true;
     vi.spyOn((bot as any), "buildReviewRunners").mockReturnValue({
       analyzer: { provider: "claude", model: "claude-opus", label: "Claude", run: vi.fn() },
       reviewers: [
@@ -1385,6 +1423,7 @@ describe("ActuariusBot review command", () => {
 
     await (bot as any).handleReview(interaction);
 
+    expect(autoCommitDirtyWorktree).toHaveBeenCalledWith("/tmp");
     expect(runAdversarialReview).toHaveBeenCalledWith(expect.objectContaining({
       maxConsensusRounds: 4,
       onProgress: expect.any(Function)
@@ -1405,6 +1444,316 @@ describe("ActuariusBot review command", () => {
     expect(send).toHaveBeenNthCalledWith(4, "Round 1/4 complete.");
     expect(send).toHaveBeenNthCalledWith(5, "Round 2/4: consensus reached.");
     expect(send).toHaveBeenNthCalledWith(6, "Synthesizing final verdict…");
+  });
+
+  it("does not auto-commit review artifacts when running /review a second time on the same worktree", async () => {
+    vi.mocked(autoCommitDirtyWorktree).mockResolvedValue(false);
+    vi.mocked(runAdversarialReview).mockResolvedValue({
+      reviewRunId: 13,
+      diffHeadSha: "def456",
+      reviewersSucceeded: 2,
+      reviewersAttempted: 2,
+      artifactPath: "docs/reviews/41/review.md",
+      summary: {
+        executiveSummary: "No new issues.",
+        blockingIssues: [],
+        nonBlockingIssues: [],
+        missingTests: [],
+        outstandingConcerns: [],
+        verdict: "ready_for_pr"
+      }
+    });
+
+    const bot = createBot({
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "user-1",
+        worktree_path: "/tmp",
+        branch_name: "ask/41-123",
+        status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      }),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1", rounds: 4, updated_by_user_id: "admin-1", updated_at: "2026-03-24T00:00:00Z"
+      }),
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        provider: "claude", model: "claude-opus", updated_at: "2026-03-18T00:00:00Z"
+      })
+    });
+    (bot as any).config.enableCodexExecution = true;
+    (bot as any).config.enableGeminiExecution = true;
+    vi.spyOn((bot as any), "buildReviewRunners").mockReturnValue({
+      analyzer: { provider: "claude", model: "claude-opus", label: "Claude", run: vi.fn() },
+      reviewers: [
+        { provider: "claude", model: "claude-opus", label: "Claude", run: vi.fn() },
+        { provider: "codex", model: "o4-mini", label: "Codex", run: vi.fn() }
+      ],
+      judge: { provider: "claude", model: "claude-opus", label: "Claude", run: vi.fn() },
+      summarizer: { provider: "codex", model: "o4-mini", label: "Codex", run: vi.fn() }
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      channel: {
+        isThread: () => true,
+        parentId: "channel-1",
+        send,
+        messages: { fetch: vi.fn().mockResolvedValue(new Map()) }
+      }
+    });
+
+    await (bot as any).handleReview(interaction);
+
+    expect(autoCommitDirtyWorktree).toHaveBeenCalledWith("/tmp");
+    expect(send).not.toHaveBeenCalledWith("Uncommitted changes in the worktree were auto-committed for review.");
+    expect(runAdversarialReview).toHaveBeenCalledWith(expect.objectContaining({
+      maxConsensusRounds: 4,
+      onProgress: expect.any(Function)
+    }));
+  });
+
+  it("rejects review when fewer than 2 reviewer slots are configured", async () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { guild_id: "guild-1", slot_index: 1, provider: "claude", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" }
+      ]),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      })
+    });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "**Insufficient reviewers configured** — at least 2 reviewer slots are required for `/review`. Use `/model-select reviewer-1` and `/model-select reviewer-2` to set them up.",
+      ephemeral: true
+    });
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("rejects review when a slot provider is not enabled", async () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { guild_id: "guild-1", slot_index: 1, provider: "claude", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" },
+        { guild_id: "guild-1", slot_index: 2, provider: "codex", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" }
+      ]),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      })
+    });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "**Provider unavailable** — slot 2 uses `codex` which is not available. Codex execution is not enabled on this instance (`ENABLE_CODEX_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
+      ephemeral: true
+    });
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("rejects review when a role override provider is not enabled (slot mode)", async () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { guild_id: "guild-1", slot_index: 1, provider: "claude", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" },
+        { guild_id: "guild-1", slot_index: 2, provider: "codex", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" }
+      ]),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1", rounds: 2, analyzer_provider: "gemini", updated_by_user_id: "admin-1", updated_at: "2026-03-24T00:00:00Z"
+      }),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      })
+    });
+    (bot as any).config.enableCodexExecution = true;
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "**Provider unavailable** — the `analyzer` role override uses `gemini` which is not available. Gemini execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
+      ephemeral: true
+    });
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("rejects review when fewer than 2 providers are enabled in legacy mode", async () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([]),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      }),
+      getGuildModelConfig: vi.fn().mockReturnValue({ provider: "claude", model: null, updated_at: "2026-03-18T00:00:00Z" })
+    });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "**Insufficient reviewers configured** — at least 2 available AI providers are required for `/review`. Use `/model-select` to configure a second provider or ask the server administrator to enable or configure additional providers.",
+      ephemeral: true
+    });
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("sends clear auto-commit failure message when git workspace errors on auto-commit", async () => {
+    const { GitWorkspaceError } = await import("../src/services/gitWorkspaceService.js");
+    vi.mocked(autoCommitDirtyWorktree).mockRejectedValue(
+      new GitWorkspaceError("AUTO_COMMIT_FAILED", "could not commit")
+    );
+    const bot = createBot({
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      }),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1", rounds: 2, updated_by_user_id: "admin-1", updated_at: "2026-03-24T00:00:00Z"
+      }),
+      getGuildModelConfig: vi.fn().mockReturnValue({ provider: "claude", model: "claude-opus", updated_at: "2026-03-18T00:00:00Z" })
+    });
+    (bot as any).config.enableCodexExecution = true;
+    const send = vi.fn().mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      channel: { isThread: () => true, parentId: "channel-1", send, messages: { fetch: vi.fn().mockResolvedValue(new Map()) } }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("**Auto-commit failed**"));
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("stash changes manually"));
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("could not be auto-committed"));
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("sends clear git-unavailable message when git is not installed", async () => {
+    const { GitWorkspaceError } = await import("../src/services/gitWorkspaceService.js");
+    vi.mocked(autoCommitDirtyWorktree).mockRejectedValue(
+      new GitWorkspaceError("GIT_UNAVAILABLE", "git not found")
+    );
+    const bot = createBot({
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      }),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1", rounds: 2, updated_by_user_id: "admin-1", updated_at: "2026-03-24T00:00:00Z"
+      }),
+      getGuildModelConfig: vi.fn().mockReturnValue({ provider: "claude", model: "claude-opus", updated_at: "2026-03-18T00:00:00Z" })
+    });
+    (bot as any).config.enableCodexExecution = true;
+    const send = vi.fn().mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      channel: { isThread: () => true, parentId: "channel-1", send, messages: { fetch: vi.fn().mockResolvedValue(new Map()) } }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("**Auto-commit failed**"));
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Git is not available"));
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Git is not available"));
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("rejects review when Gemini slot provider lacks GEMINI_API_KEY (stale config)", async () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { guild_id: "guild-1", slot_index: 1, provider: "claude", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" },
+        { guild_id: "guild-1", slot_index: 2, provider: "gemini", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" }
+      ]),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      })
+    });
+    (bot as any).config.enableGeminiExecution = true;
+    (bot as any).config.enableCodexExecution = true;
+    (bot as any).config.geminiApiKey = undefined;
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "**Provider unavailable** — slot 2 uses `gemini` which is not available. Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.",
+      ephemeral: true
+    });
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("rejects review when OpenCode slot provider lacks credentials (stale config)", async () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { guild_id: "guild-1", slot_index: 1, provider: "claude", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" },
+        { guild_id: "guild-1", slot_index: 2, provider: "opencode", model: null, updated_by_user_id: "user-1", created_at: "", updated_at: "" }
+      ]),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      })
+    });
+    (bot as any).config.enableOpencodeExecution = true;
+    (bot as any).config.enableCodexExecution = true;
+    const hasOpencodeAuthMock = (await import("../src/services/opencodeExecutionService.js")).hasOpencodeAuth as ReturnType<typeof vi.fn>;
+    hasOpencodeAuthMock.mockResolvedValue(false);
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "**Provider unavailable** — slot 2 uses `opencode` which is not available. OpenCode execution requires an API key. Use `/opencode-auth` to configure keys (e.g. `deepseek`, `openai`, `anthropic`), or set `DEEPSEEK_API_KEY` on the instance.",
+      ephemeral: true
+    });
+    expect(runAdversarialReview).not.toHaveBeenCalled();
+  });
+
+  it("rejects review when Gemini is the only legacy provider and GEMINI_API_KEY is missing (stale config)", async () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([]),
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41, user_id: "user-1", worktree_path: "/tmp", branch_name: "ask/41-123", status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      }),
+      getGuildModelConfig: vi.fn().mockReturnValue({ provider: "gemini", model: null, updated_at: "2026-03-18T00:00:00Z" })
+    });
+    (bot as any).config.enableGeminiExecution = true;
+    (bot as any).config.geminiApiKey = undefined;
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleReview(interaction);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: '**Provider unavailable** — saved default provider `gemini` is not available. Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.',
+      ephemeral: true
+    });
+    expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 });
 
@@ -1675,6 +2024,272 @@ describe("ActuariusBot model-select command", () => {
     });
   });
 
+  it("shows legacy fallback review mode when no slots or overrides are configured", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      })
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using all enabled providers (legacy fallback)."),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: falls back to first available reviewer in default ordering"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: falls back to first available reviewer in default ordering"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Summarizer**: falls back to second available reviewer in default ordering"),
+      ephemeral: true
+    });
+  });
+
+  it("shows legacy fallback review mode when review_config has only rounds set", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        rounds: 3,
+        analyzer_provider: null,
+        analyzer_model: null,
+        judge_provider: null,
+        judge_model: null,
+        summarizer_provider: null,
+        summarizer_model: null,
+        updated_at: "2026-05-30T00:00:00.000Z"
+      })
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using all enabled providers (legacy fallback)."),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: falls back to first available reviewer in default ordering"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: falls back to first available reviewer in default ordering"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Summarizer**: falls back to second available reviewer in default ordering"),
+      ephemeral: true
+    });
+  });
+
+  it("shows reviewer slots and fallback role assignments when slots are configured without overrides", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "gemini", model: "gemini-2.5-pro" }
+      ])
+    });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true
+    };
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Slot **1**: **Claude**, model: CLI default model"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Slot **2**: **Gemini**, model: `gemini-2.5-pro`"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Summarizer**: falls back to **Slot 2** (**Gemini**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using explicit reviewer slots."),
+      ephemeral: true
+    });
+  });
+
+  it("shows guild_review_config overrides as set via /model-select", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        rounds: 2,
+        analyzer_provider: "gemini",
+        analyzer_model: null,
+        judge_provider: null,
+        judge_model: null,
+        summarizer_provider: "codex",
+        summarizer_model: "codex-preview-0503",
+        updated_at: "2026-05-30T00:00:00.000Z"
+      })
+    });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true,
+      enableCodexExecution: true
+    };
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: **Gemini**, model: CLI default model (set via `/model-select`)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Summarizer**: **Codex**, model: `codex-preview-0503` (set via `/model-select`)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using role overrides with provider ordering."),
+      ephemeral: true
+    });
+  });
+
+  it("shows guild_model_config overrides as legacy", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        analyzer_provider: "gemini",
+        analyzer_model: null,
+        judge_provider: "codex",
+        judge_model: "codex-preview-0503",
+        summarizer_provider: null,
+        summarizer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      })
+    });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true,
+      enableCodexExecution: true
+    };
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: **Gemini**, model: CLI default model (legacy override)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: **Codex**, model: `codex-preview-0503` (legacy override)"),
+      ephemeral: true
+    });
+  });
+
+  it("hides legacy overrides when slots are active and falls back to slot references instead", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        analyzer_provider: "gemini",
+        analyzer_model: null,
+        judge_provider: "codex",
+        judge_model: "codex-preview-0503",
+        summarizer_provider: null,
+        summarizer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "gemini", model: "gemini-2.5-pro" }
+      ])
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Summarizer**: falls back to **Slot 2** (**Gemini**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using explicit reviewer slots."),
+      ephemeral: true
+    });
+    expect(interaction.reply).not.toHaveBeenCalledWith({
+      content: expect.stringContaining("legacy override"),
+      ephemeral: true
+    });
+  });
+
   it("does not reuse the default model for a role-specific different provider", async () => {
     const bot = createBot({
       getGuildModelConfig: vi.fn().mockReturnValue({
@@ -1700,6 +2315,130 @@ describe("ActuariusBot model-select command", () => {
     expect(roles.implementer).toEqual({ provider: "claude", model: "claude-sonnet-4-6" });
   });
 
+  it("shows review-only configuration when no guild_model_config exists", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue(undefined),
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "gemini", model: "gemini-2.5-pro" }
+      ]),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        rounds: 2,
+        analyzer_provider: "gemini",
+        analyzer_model: null,
+        judge_provider: null,
+        judge_model: null,
+        summarizer_provider: null,
+        summarizer_model: null,
+        updated_at: "2026-05-30T00:00:00.000Z"
+      })
+    });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true
+    };
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("No AI provider configured. Defaulting to **Claude**"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Slot **1**: **Claude**"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Slot **2**: **Gemini**, model: `gemini-2.5-pro`"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: **Gemini**, model: CLI default model (set via `/model-select`)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using explicit reviewer slots."),
+      ephemeral: true
+    });
+  });
+
+  it("shows summarizer falling back to slot 1 when explicit slots are identical", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "claude", model: null }
+      ])
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Summarizer**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using explicit reviewer slots."),
+      ephemeral: true
+    });
+  });
+
+  it("shows summarizer falling back to first differing slot when slots 1 and 2 are identical but slot 3 differs", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "claude", model: null },
+        { slot_index: 3, provider: "gemini", model: "gemini-2.5-pro" }
+      ])
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Summarizer**: falls back to **Slot 3** (**Gemini**)"),
+      ephemeral: true
+    });
+  });
+
   it("rejects Gemini when GEMINI_API_KEY is whitespace only", async () => {
     const bot = createBot({
       setGuildModelConfig: vi.fn(),
@@ -1718,7 +2457,8 @@ describe("ActuariusBot model-select command", () => {
           }
 
           return null;
-        })
+        }),
+        getBoolean: vi.fn().mockReturnValue(null)
       }
     });
 
@@ -1732,6 +2472,306 @@ describe("ActuariusBot model-select command", () => {
 
     expect(interaction.reply).toHaveBeenCalledWith({
       content: "Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.",
+      ephemeral: true
+    });
+  });
+
+  it("clears a reviewer slot via clear flag", async () => {
+    const clearReviewerSlot = vi.fn();
+    const upsertGuild = vi.fn();
+    const bot = createBot({ clearReviewerSlot, upsertGuild });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "provider") return null;
+          if (name === "model") return null;
+          if (name === "role") return "reviewer-2";
+          return null;
+        }),
+        getBoolean: vi.fn((name: string) => name === "clear" ? true : null),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleModelSelect(interaction);
+
+    expect(clearReviewerSlot).toHaveBeenCalledWith("guild-1", 2);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Reviewer slot **2** cleared.",
+      ephemeral: true
+    });
+  });
+
+  it("clears a reviewer role override via clear flag", async () => {
+    const clearGuildReviewRoleConfig = vi.fn();
+    const clearGuildModelConfigReviewRole = vi.fn();
+    const upsertGuild = vi.fn();
+    const bot = createBot({ clearGuildReviewRoleConfig, clearGuildModelConfigReviewRole, upsertGuild });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "provider") return null;
+          if (name === "model") return null;
+          if (name === "role") return "reviewer-judge";
+          return null;
+        }),
+        getBoolean: vi.fn((name: string) => name === "clear" ? true : null),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleModelSelect(interaction);
+
+    expect(clearGuildReviewRoleConfig).toHaveBeenCalledWith("guild-1", "judge", "user-1");
+    expect(clearGuildModelConfigReviewRole).toHaveBeenCalledWith("guild-1", "judge", "user-1");
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Reviewer **judge** role override cleared.",
+      ephemeral: true
+    });
+  });
+
+  it("rejects clear=true with default role", async () => {
+    const setGuildModelConfig = vi.fn();
+    const upsertGuild = vi.fn();
+    const bot = createBot({ setGuildModelConfig, upsertGuild });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "provider") return null;
+          if (name === "model") return null;
+          if (name === "role") return "default";
+          return null;
+        }),
+        getBoolean: vi.fn((name: string) => name === "clear" ? true : null),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleModelSelect(interaction);
+
+    expect(setGuildModelConfig).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "`clear` is only supported for reviewer roles (`reviewer-1`–`reviewer-4`, `reviewer-analyzer`, `reviewer-judge`, `reviewer-summarizer`). Use `/model-select provider:... role:default` without `clear` to change the default provider.",
+      ephemeral: true
+    });
+  });
+
+  it("shows ⚠️ unavailable when a slot uses Gemini enabled without API key", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "gemini", model: "gemini-2.5-pro" }
+      ])
+    });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true,
+      geminiApiKey: undefined
+    };
+
+    const interaction = createInteraction();
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Slot **2**: **Gemini**, model: `gemini-2.5-pro` ⚠️ *unavailable*"),
+      ephemeral: true
+    });
+  });
+
+  it("shows ⚠️ unavailable when a review_config override uses Gemini enabled without API key", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        rounds: 2,
+        analyzer_provider: "gemini",
+        analyzer_model: null,
+        judge_provider: null,
+        judge_model: null,
+        summarizer_provider: null,
+        summarizer_model: null,
+        updated_at: "2026-05-30T00:00:00.000Z"
+      })
+    });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true,
+      geminiApiKey: undefined
+    };
+
+    const interaction = createInteraction();
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: **Gemini**, model: CLI default model (set via `/model-select`) ⚠️ *unavailable*"),
+      ephemeral: true
+    });
+  });
+
+  it("shows ⚠️ unavailable when a disabled provider is in a slot", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "codex", model: "o4-mini" }
+      ])
+    });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableCodexExecution: false
+    };
+
+    const interaction = createInteraction();
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Slot **2**: **Codex**, model: `o4-mini` ⚠️ *unavailable*"),
+      ephemeral: true
+    });
+  });
+
+  it("non-slot buildReviewRunners uses guild_review_config overrides", () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        rounds: 2,
+        analyzer_provider: "gemini",
+        analyzer_model: "gemini-2.0-flash",
+        judge_provider: null,
+        judge_model: null,
+        summarizer_provider: null,
+        summarizer_model: null,
+        updated_at: "2026-05-30T00:00:00.000Z"
+      }),
+      getModelHistory: vi.fn().mockReturnValue([])
+    });
+    (bot as any).config.enableGeminiExecution = true;
+    (bot as any).config.enableCodexExecution = true;
+
+    const runners = (bot as any).buildReviewRunners("guild-1");
+
+    expect(runners.analyzer.provider).toBe("gemini");
+    expect(runners.analyzer.model).toBe("gemini-2.0-flash");
+    expect(runners.judge.provider).toBe("claude");
+    expect(runners.summarizer.provider).toBe("codex");
+  });
+
+  it("clear:true clears both guild_review_config and guild_model_config overrides", async () => {
+    const clearGuildReviewRoleConfig = vi.fn();
+    const clearGuildModelConfigReviewRole = vi.fn();
+    const upsertGuild = vi.fn();
+    const bot = createBot({
+      clearGuildReviewRoleConfig,
+      clearGuildModelConfigReviewRole,
+      upsertGuild,
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        analyzer_provider: "gemini",
+        analyzer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      })
+    });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "provider") return null;
+          if (name === "model") return null;
+          if (name === "role") return "reviewer-analyzer";
+          return null;
+        }),
+        getBoolean: vi.fn((name: string) => name === "clear" ? true : null),
+        getInteger: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handleModelSelect(interaction);
+
+    expect(clearGuildReviewRoleConfig).toHaveBeenCalledWith("guild-1", "analyzer", "user-1");
+    expect(clearGuildModelConfigReviewRole).toHaveBeenCalledWith("guild-1", "analyzer", "user-1");
+  });
+
+  it("shows legacy overrides when no slots are configured", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        analyzer_provider: "gemini",
+        analyzer_model: null,
+        judge_provider: "codex",
+        judge_model: "codex-preview-0503",
+        summarizer_provider: null,
+        summarizer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      })
+    });
+    (bot as any).config = {
+      ...(bot as any).config,
+      enableGeminiExecution: true,
+      enableCodexExecution: true
+    };
+
+    const interaction = createInteraction();
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: **Gemini**, model: CLI default model (legacy override)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: **Codex**, model: `codex-preview-0503` (legacy override)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Review mode:** Using role overrides with provider ordering."),
       ephemeral: true
     });
   });
@@ -1769,10 +2809,10 @@ describe("ActuariusBot pr command", () => {
     };
   }
 
-  it("blocks PR creation when the worktree has uncommitted changes", async () => {
+  it("blocks PR creation when the worktree has uncommitted changes excluding review artifacts", async () => {
     const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-dirty-"));
     const bot = createBot(createPrDb(worktreePath));
-    vi.mocked(hasUncommittedChanges).mockResolvedValue(true);
+    vi.mocked(hasUncommittedChangesExcluding).mockResolvedValue(true);
 
     const interaction = createInteraction();
 
@@ -1788,7 +2828,7 @@ describe("ActuariusBot pr command", () => {
     const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-clean-"));
     const channelSend = vi.fn().mockResolvedValue(undefined);
     const bot = createBot(createPrDb(worktreePath));
-    vi.mocked(hasUncommittedChanges).mockResolvedValue(false);
+    vi.mocked(hasUncommittedChangesExcluding).mockResolvedValue(false);
     vi.mocked(getHeadSha).mockResolvedValue("reviewed-sha");
     vi.mocked(detectDefaultBranch).mockResolvedValue({ branchName: "main", remoteRef: "origin/main" });
     vi.mocked(pushBranch).mockResolvedValue(undefined);
@@ -1807,7 +2847,45 @@ describe("ActuariusBot pr command", () => {
 
     await (bot as any).handlePr(interaction);
 
-    expect(hasUncommittedChanges).toHaveBeenCalledWith(worktreePath);
+    expect(hasUncommittedChangesExcluding).toHaveBeenCalledWith(worktreePath, ["docs/reviews/"]);
+    expect(getHeadSha).toHaveBeenCalledWith(worktreePath, "ask/719-123");
+    expect(pushBranch).toHaveBeenCalledWith(worktreePath, "ask/719-123");
+    expect(createDraftPullRequest).toHaveBeenCalledWith(expect.objectContaining({
+      worktreePath,
+      head: "ask/719-123",
+      base: "main",
+      title: "Implement issue 127"
+    }));
+    expect(channelSend).toHaveBeenCalledWith(expect.stringContaining("Draft PR opened"));
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Draft PR opened for `octocat/hello-world`"));
+  });
+
+  it("opens a draft PR even when docs/reviews/ artifacts exist from a previous /review", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-artifacts-"));
+    const channelSend = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot(createPrDb(worktreePath));
+    vi.mocked(hasUncommittedChangesExcluding).mockResolvedValue(false);
+    vi.mocked(hasUncommittedChanges).mockResolvedValue(true);
+    vi.mocked(getHeadSha).mockResolvedValue("reviewed-sha");
+    vi.mocked(detectDefaultBranch).mockResolvedValue({ branchName: "main", remoteRef: "origin/main" });
+    vi.mocked(pushBranch).mockResolvedValue(undefined);
+    vi.mocked(createDraftPullRequest).mockResolvedValue("https://github.com/octocat/hello-world/pull/1");
+
+    const interaction = createInteraction({
+      channel: {
+        isThread: () => true,
+        isTextBased: () => true,
+        isDMBased: () => false,
+        parentId: "channel-1",
+        url: "https://discord.test/thread-1",
+        send: channelSend
+      }
+    });
+
+    await (bot as any).handlePr(interaction);
+
+    expect(hasUncommittedChangesExcluding).toHaveBeenCalledWith(worktreePath, ["docs/reviews/"]);
+    expect(hasUncommittedChanges).not.toHaveBeenCalled();
     expect(getHeadSha).toHaveBeenCalledWith(worktreePath, "ask/719-123");
     expect(pushBranch).toHaveBeenCalledWith(worktreePath, "ask/719-123");
     expect(createDraftPullRequest).toHaveBeenCalledWith(expect.objectContaining({

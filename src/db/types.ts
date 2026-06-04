@@ -7,6 +7,7 @@ export interface GuildRow {
 
 export type AiProvider = "claude" | "codex" | "gemini" | "opencode";
 export type ModelRole = "default" | "planner" | "implementer";
+export type ReviewModelRole = "analyzer" | "judge" | "summarizer";
 
 export interface GuildModelConfigRow {
   guild_id: string;
@@ -16,6 +17,12 @@ export interface GuildModelConfigRow {
   planner_model: string | null;
   implementer_provider: AiProvider | null;
   implementer_model: string | null;
+  analyzer_provider: AiProvider | null;
+  analyzer_model: string | null;
+  judge_provider: AiProvider | null;
+  judge_model: string | null;
+  summarizer_provider: AiProvider | null;
+  summarizer_model: string | null;
   updated_by_user_id: string;
   updated_at: string;
 }
@@ -23,7 +30,23 @@ export interface GuildModelConfigRow {
 export interface GuildReviewConfigRow {
   guild_id: string;
   rounds: number;
+  analyzer_provider: AiProvider | null;
+  analyzer_model: string | null;
+  judge_provider: AiProvider | null;
+  judge_model: string | null;
+  summarizer_provider: AiProvider | null;
+  summarizer_model: string | null;
   updated_by_user_id: string;
+  updated_at: string;
+}
+
+export interface ReviewerSlotRow {
+  guild_id: string;
+  slot_index: number;
+  provider: AiProvider;
+  model: string | null;
+  updated_by_user_id: string;
+  created_at: string;
   updated_at: string;
 }
 

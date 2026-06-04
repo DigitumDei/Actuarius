@@ -23,7 +23,7 @@ import {
 import type pino from "pino";
 import type { AppConfig } from "../config.js";
 import { AppDatabase } from "../db/database.js";
-import type { AiProvider, ModelRole, RepoRow, RequestStatus } from "../db/types.js";
+import type { AiProvider, ReviewModelRole, RepoRow, RequestStatus } from "../db/types.js";
 import { commandBuilders } from "./commands.js";
 import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
@@ -41,6 +41,7 @@ import {
 import {
   GitWorkspaceError,
   autoCommitAll,
+  autoCommitDirtyWorktree,
   cleanupDeletedRemoteBranches,
   detectDefaultBranch,
   ensureRepoCheckedOutToMaster,
@@ -48,6 +49,7 @@ import {
   getHeadSha,
   getReviewDiff,
   hasUncommittedChanges,
+  hasUncommittedChangesExcluding,
   listBranches,
   pushBranch
 } from "../services/gitWorkspaceService.js";
@@ -1242,14 +1244,21 @@ export class ActuariusBot {
       return;
     }
 
-    const rawProvider = interaction.options.getString("provider", true);
+    const rawProvider = interaction.options.getString("provider");
     const rawModel = interaction.options.getString("model");
     const rawRole = interaction.options.getString("role") ?? "default";
+    const isClear = interaction.options.getBoolean("clear") ?? false;
     const model = rawModel?.trim() || null;
 
-    // Defense-in-depth: Discord already constrains the value via addChoices, but we
-    // validate here in case of direct API calls that bypass the UI constraint.
-    if (!Object.keys(AI_PROVIDER_LABELS).includes(rawProvider)) {
+    if (!isClear && !rawProvider) {
+      await interaction.reply({
+        content: "`provider` is required when not clearing a role. Choose from: `claude`, `codex`, `gemini`, `opencode`.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (rawProvider && !Object.keys(AI_PROVIDER_LABELS).includes(rawProvider)) {
       await interaction.reply({
         content: `Invalid provider. Choose from: \`${Object.keys(AI_PROVIDER_LABELS).join("`, `")}\`.`,
         ephemeral: true
@@ -1257,12 +1266,126 @@ export class ActuariusBot {
       return;
     }
 
-    const provider = rawProvider as AiProvider;
-    const role = rawRole as ModelRole;
+    const provider = rawProvider as AiProvider | null;
+    const VALID_ROLES = [
+      "default",
+      "planner",
+      "implementer",
+      "reviewer-1",
+      "reviewer-2",
+      "reviewer-3",
+      "reviewer-4",
+      "reviewer-analyzer",
+      "reviewer-judge",
+      "reviewer-summarizer"
+    ] as const;
 
-    if (!["default", "planner", "implementer"].includes(role)) {
+    if (!(VALID_ROLES as readonly string[]).includes(rawRole)) {
       await interaction.reply({
-        content: "Invalid model role. Choose from: `default`, `planner`, `implementer`.",
+        content: "Invalid model role. Choose from: `default`, `planner`, `implementer`, `reviewer-1`–`reviewer-4`, `reviewer-analyzer`, `reviewer-judge`, `reviewer-summarizer`.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    this.db.upsertGuild(interaction.guild.id, interaction.guild.name);
+
+    // --- Reviewer slot roles (reviewer-1 through reviewer-4) ---
+    const slotMatch = rawRole.match(/^reviewer-([1-4])$/);
+    if (slotMatch) {
+      const slotIndex = parseInt(slotMatch[1]!, 10);
+      if (isClear) {
+        this.db.clearReviewerSlot(interaction.guildId, slotIndex);
+        await interaction.reply({
+          content: `Reviewer slot **${slotIndex}** cleared.`,
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (!provider) {
+        await interaction.reply({
+          content: "`provider` is required when setting a reviewer slot.",
+          ephemeral: true
+        });
+        return;
+      }
+
+      const providerUnavailableMessage = await this.getProviderUnavailableMessage(provider);
+      if (providerUnavailableMessage) {
+        await interaction.reply({ content: providerUnavailableMessage, ephemeral: true });
+        return;
+      }
+
+      this.db.setReviewerSlot(interaction.guildId, slotIndex, provider, model, interaction.user.id);
+      if (model) {
+        this.db.addModelToHistory(provider, model);
+      }
+
+      const modelDisplay = model ? `model \`${model}\`` : "CLI default model";
+      await interaction.reply({
+        content: `Reviewer slot **${slotIndex}** set to **${AI_PROVIDER_LABELS[provider]}** with ${modelDisplay}.`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    // --- Review role overrides (reviewer-analyzer, reviewer-judge, reviewer-summarizer) ---
+    const reviewRoleMatch = rawRole.match(/^reviewer-(analyzer|judge|summarizer)$/);
+    if (reviewRoleMatch) {
+      const reviewRole = reviewRoleMatch[1] as ReviewModelRole;
+      if (isClear) {
+        this.db.clearGuildReviewRoleConfig(interaction.guildId, reviewRole, interaction.user.id);
+        this.db.clearGuildModelConfigReviewRole(interaction.guildId, reviewRole, interaction.user.id);
+        await interaction.reply({
+          content: `Reviewer **${reviewRole}** role override cleared.`,
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (!provider) {
+        await interaction.reply({
+          content: "`provider` is required when setting a reviewer role override.",
+          ephemeral: true
+        });
+        return;
+      }
+
+      const providerUnavailableMessage = await this.getProviderUnavailableMessage(provider);
+      if (providerUnavailableMessage) {
+        await interaction.reply({ content: providerUnavailableMessage, ephemeral: true });
+        return;
+      }
+
+      this.db.setGuildReviewRoleConfig(interaction.guildId, reviewRole, provider, model, interaction.user.id);
+      if (model) {
+        this.db.addModelToHistory(provider, model);
+      }
+
+      const modelDisplay = model ? `model \`${model}\`` : "CLI default model";
+      const roleLabel = reviewRole.charAt(0).toUpperCase() + reviewRole.slice(1);
+      await interaction.reply({
+        content: `Reviewer **${roleLabel}** role override set to **${AI_PROVIDER_LABELS[provider]}** with ${modelDisplay}.`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    // --- Default / planner / implementer (existing flow) ---
+    const role = rawRole as "default" | "planner" | "implementer";
+
+    if (isClear) {
+      await interaction.reply({
+        content: "`clear` is only supported for reviewer roles (`reviewer-1`–`reviewer-4`, `reviewer-analyzer`, `reviewer-judge`, `reviewer-summarizer`). Use `/model-select provider:... role:default` without `clear` to change the default provider.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!provider) {
+      await interaction.reply({
+        content: "`provider` is required. Choose from: `claude`, `codex`, `gemini`, `opencode`.",
         ephemeral: true
       });
       return;
@@ -1274,7 +1397,6 @@ export class ActuariusBot {
       return;
     }
 
-    this.db.upsertGuild(interaction.guild.id, interaction.guild.name);
     if (role === "default") {
       this.db.setGuildModelConfig(interaction.guildId, provider, model, interaction.user.id);
     } else {
@@ -1320,6 +1442,34 @@ export class ActuariusBot {
     return null;
   }
 
+  private resolveReviewRoleOverride(
+    guildId: string,
+    role: ReviewModelRole,
+  ): { provider: AiProvider | null; model: string | null; source: "review_config" | "legacy" | null } {
+    const reviewConfig = this.db.getGuildReviewConfig(guildId);
+    const modelConfig = this.db.getGuildModelConfig(guildId);
+
+    const reviewProvider = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] as AiProvider | null | undefined;
+    if (reviewProvider) {
+      return {
+        provider: reviewProvider,
+        model: (reviewConfig?.[`${role}_model` as keyof typeof reviewConfig] as string | null | undefined) ?? null,
+        source: "review_config"
+      };
+    }
+
+    const legacyProvider = (modelConfig as unknown as Record<string, unknown> | undefined)?.[`${role}_provider`] as AiProvider | null | undefined;
+    if (legacyProvider) {
+      return {
+        provider: legacyProvider,
+        model: ((modelConfig as unknown as Record<string, unknown> | undefined)?.[`${role}_model`] as string | null | undefined) ?? null,
+        source: "legacy"
+      };
+    }
+
+    return { provider: null, model: null, source: null };
+  }
+
   private async handleModelCurrent(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
       await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
@@ -1327,27 +1477,108 @@ export class ActuariusBot {
     }
 
     const config = this.db.getGuildModelConfig(interaction.guildId);
-    if (!config) {
-      await interaction.reply({
-        content: "No AI provider configured. Defaulting to **Claude** (no model override). Use `/model-select` to configure.",
-        ephemeral: true
-      });
-      return;
-    }
 
-    const ts = new Date(config.updated_at).getTime();
-    const timeStr = Number.isNaN(ts) ? config.updated_at : `<t:${Math.floor(ts / 1000)}:R>`;
-    const modelStr = config.model || "none (CLI default)";
-    const plannerProvider = config.planner_provider ?? config.provider;
-    const plannerModel = config.planner_model ?? (plannerProvider === config.provider ? config.model : null);
-    const implementerProvider = config.implementer_provider ?? config.provider;
-    const implementerModel = config.implementer_model ?? (implementerProvider === config.provider ? config.model : null);
-    await interaction.reply({
-      content: [
+    const lines: string[] = [];
+
+    if (config) {
+      const ts = new Date(config.updated_at).getTime();
+      const timeStr = Number.isNaN(ts) ? config.updated_at : `<t:${Math.floor(ts / 1000)}:R>`;
+      const modelStr = config.model || "none (CLI default)";
+      const plannerProvider = config.planner_provider ?? config.provider;
+      const plannerModel = config.planner_model ?? (plannerProvider === config.provider ? config.model : null);
+      const implementerProvider = config.implementer_provider ?? config.provider;
+      const implementerModel = config.implementer_model ?? (implementerProvider === config.provider ? config.model : null);
+
+      lines.push(
         `Current default AI provider: **${AI_PROVIDER_LABELS[config.provider]}**, model: \`${modelStr}\` (set ${timeStr}).`,
         `Planner role: **${AI_PROVIDER_LABELS[plannerProvider]}**, model: \`${plannerModel || "none (CLI default)"}\`.`,
         `Implementer role: **${AI_PROVIDER_LABELS[implementerProvider]}**, model: \`${implementerModel || "none (CLI default)"}\`.`
-      ].join("\n"),
+      );
+    } else {
+      lines.push(
+        "No AI provider configured. Defaulting to **Claude** (no model override). Use `/model-select` to configure.",
+        "Planner role: **Claude**, model: `none (CLI default)`.",
+        "Implementer role: **Claude**, model: `none (CLI default)`."
+      );
+    }
+
+    const reviewConfig = this.db.getGuildReviewConfig(interaction.guildId);
+    const slots = this.db.getReviewerSlots(interaction.guildId);
+
+    const providersToCheck = new Set<AiProvider>();
+    for (const slot of slots) {
+      providersToCheck.add(slot.provider);
+    }
+    const reviewRoleSpec: Array<{ key: ReviewModelRole; label: string }> = [
+      { key: "analyzer", label: "Analyzer" },
+      { key: "judge", label: "Judge" },
+      { key: "summarizer", label: "Summarizer" }
+    ];
+    for (const { key } of reviewRoleSpec) {
+      const resolved = this.resolveReviewRoleOverride(interaction.guildId, key);
+      if (resolved.provider) providersToCheck.add(resolved.provider);
+    }
+
+    const providerUnavailable = new Map<AiProvider, boolean>();
+    for (const provider of providersToCheck) {
+      providerUnavailable.set(provider, await this.getProviderUnavailableMessage(provider) !== null);
+    }
+
+    const isProviderUnavailable = (p: AiProvider): boolean =>
+      providerUnavailable.get(p) ?? !this.isProviderEnabled(p);
+
+    if (slots.length > 0) {
+      const slotLines = slots.map(
+        (s) => {
+          const modelDisplay = s.model ? `\`${s.model}\`` : "CLI default model";
+          const disabledSuffix = isProviderUnavailable(s.provider) ? " ⚠️ *unavailable*" : "";
+          return `  Slot **${s.slot_index}**: **${AI_PROVIDER_LABELS[s.provider]}**, model: ${modelDisplay}${disabledSuffix}`;
+        }
+      );
+      lines.push(`Reviewer slots:\n${slotLines.join("\n")}`);
+    }
+
+    const roleLines: string[] = [];
+
+    for (const { key, label } of reviewRoleSpec) {
+      const resolved = this.resolveReviewRoleOverride(interaction.guildId, key);
+      // Legacy guild_model_config overrides are intentionally suppressed when reviewer slots
+      // are active. If slots are later deleted, those legacy overrides will reappear in both
+      // display and runtime selection.
+      const showOverride = resolved.provider && (resolved.source === "review_config" || slots.length === 0);
+
+      if (showOverride) {
+        const modelDisplay = resolved.model ? `\`${resolved.model}\`` : "CLI default model";
+        const sourceLabel = resolved.source === "review_config" ? "set via `/model-select`" : "legacy override";
+        const disabledSuffix = isProviderUnavailable(resolved.provider!) ? " ⚠️ *unavailable*" : "";
+        roleLines.push(`  **${label}**: **${AI_PROVIDER_LABELS[resolved.provider!]}**, model: ${modelDisplay} (${sourceLabel})${disabledSuffix}`);
+      } else if (slots.length > 0) {
+        const fallbackSlot = key === "summarizer"
+          ? (slots.find((s) => s.provider !== slots[0]!.provider || s.model !== slots[0]!.model) ?? slots[0]!)
+          : slots[0]!;
+        roleLines.push(`  **${label}**: falls back to **Slot ${fallbackSlot.slot_index}** (**${AI_PROVIDER_LABELS[fallbackSlot.provider]}**)`);
+      } else {
+        const fallbackDesc = key === "summarizer"
+          ? "falls back to second available reviewer in default ordering"
+          : "falls back to first available reviewer in default ordering";
+        roleLines.push(`  **${label}**: ${fallbackDesc}`);
+      }
+    }
+
+    if (roleLines.length > 0) {
+      lines.push(`Review roles:\n${roleLines.join("\n")}`);
+    }
+
+    if (slots.length > 0) {
+      lines.push(`**Review mode:** Using explicit reviewer slots.`);
+    } else if (reviewConfig?.analyzer_provider || reviewConfig?.judge_provider || reviewConfig?.summarizer_provider || config?.analyzer_provider || config?.judge_provider || config?.summarizer_provider) {
+      lines.push(`**Review mode:** Using role overrides with provider ordering.`);
+    } else {
+      lines.push(`**Review mode:** Using all enabled providers (legacy fallback).`);
+    }
+
+    await interaction.reply({
+      content: lines.join("\n"),
       ephemeral: true
     });
   }
@@ -2210,12 +2441,135 @@ Output the result of the command or the link to the created issue.`;
     return result;
   }
 
+  private isProviderEnabled(provider: AiProvider): boolean {
+    if (provider === "codex") return !!this.config.enableCodexExecution;
+    if (provider === "gemini") return !!this.config.enableGeminiExecution;
+    if (provider === "opencode") return !!this.config.enableOpencodeExecution;
+    return true;
+  }
+
+  private async validateReviewConfig(guildId: string): Promise<string | null> {
+    const slots = this.db.getReviewerSlots(guildId);
+    const reviewConfig = this.db.getGuildReviewConfig(guildId);
+
+    if (slots.length > 0) {
+      if (slots.length < 2) {
+        return "**Insufficient reviewers configured** — at least 2 reviewer slots are required for `/review`. Use `/model-select reviewer-1` and `/model-select reviewer-2` to set them up.";
+      }
+
+      for (const slot of slots) {
+        const unavailMsg = await this.getProviderUnavailableMessage(slot.provider);
+        if (unavailMsg) {
+          return `**Provider unavailable** — slot ${slot.slot_index} uses \`${slot.provider}\` which is not available. ${unavailMsg}`;
+        }
+      }
+
+      const roles: ReviewModelRole[] = ["analyzer", "judge", "summarizer"];
+      for (const role of roles) {
+        const overrideProvider = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] as AiProvider | undefined;
+        if (overrideProvider) {
+          const unavailMsg = await this.getProviderUnavailableMessage(overrideProvider);
+          if (unavailMsg) {
+            return `**Provider unavailable** — the \`${role}\` role override uses \`${overrideProvider}\` which is not available. ${unavailMsg}`;
+          }
+        }
+      }
+
+      return null;
+    }
+
+    const modelConfig = this.db.getGuildModelConfig(guildId);
+    const preferredProvider: AiProvider = modelConfig?.provider ?? "claude";
+
+    const preferredUnavail = await this.getProviderUnavailableMessage(preferredProvider);
+    if (preferredUnavail) {
+      return `**Provider unavailable** — saved default provider \`${preferredProvider}\` is not available. ${preferredUnavail}`;
+    }
+
+    const roles: ReviewModelRole[] = ["analyzer", "judge", "summarizer"];
+    for (const role of roles) {
+      const resolved = this.resolveReviewRoleOverride(guildId, role);
+      if (resolved.provider) {
+        const unavailMsg = await this.getProviderUnavailableMessage(resolved.provider);
+        if (unavailMsg) {
+          const source = resolved.source === "review_config" ? "`/model-select`" : "legacy configuration";
+          return `**Provider unavailable** — the \`${role}\` role override uses \`${resolved.provider}\` (from ${source}) which is not available. ${unavailMsg}`;
+        }
+      }
+    }
+
+    const providers: AiProvider[] = [preferredProvider];
+    for (const candidate of ["claude", "codex", "gemini", "opencode"] satisfies AiProvider[]) {
+      if (!providers.includes(candidate)) {
+        providers.push(candidate);
+      }
+    }
+
+    const available: AiProvider[] = [];
+    for (const provider of providers) {
+      const unavailMsg = await this.getProviderUnavailableMessage(provider);
+      if (!unavailMsg) {
+        available.push(provider);
+      }
+    }
+
+    if (available.length < 2) {
+      return "**Insufficient reviewers configured** — at least 2 available AI providers are required for `/review`. Use `/model-select` to configure a second provider or ask the server administrator to enable or configure additional providers.";
+    }
+
+    return null;
+  }
+
   private buildReviewRunners(guildId: string): {
     analyzer: ReviewModelRunner;
     reviewers: ReviewModelRunner[];
     judge: ReviewModelRunner;
     summarizer: ReviewModelRunner;
   } {
+    const reviewConfig = this.db.getGuildReviewConfig(guildId);
+    const slots = this.db.getReviewerSlots(guildId);
+
+    const hasSlotOverride = (role: ReviewModelRole): boolean =>
+      !!reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig];
+
+    const buildRunner = (provider: AiProvider, defaultModel?: string | null, slotIndex?: number): ReviewModelRunner => ({
+      provider,
+      ...(defaultModel ? { model: defaultModel } : {}),
+      label: slotIndex !== undefined ? `${AI_PROVIDER_LABELS[provider]} (Slot ${slotIndex})` : AI_PROVIDER_LABELS[provider],
+      run: async ({ prompt, cwd, timeoutMs, model }) =>
+        this.runProviderText({ provider, prompt, cwd, timeoutMs, ...(model ? { model } : {}) })
+    });
+
+    if (slots.length > 0) {
+      // Slot mode: legacy guild_model_config role overrides are intentionally bypassed.
+      // If all slots are later deleted, legacy overrides will silently reappear.
+      const reviewers: ReviewModelRunner[] = slots.map((s) =>
+        buildRunner(s.provider, s.model, s.slot_index)
+      );
+
+      if (reviewers.length < 2) {
+        throw new AdversarialReviewError(
+          "INSUFFICIENT_REVIEWERS",
+          "At least two reviewer slots are required for /review."
+        );
+      }
+
+      const defaultSummarizer = reviewers.find(
+        (r) => r.provider !== reviewers[0]!.provider || r.model !== reviewers[0]!.model
+      ) ?? reviewers[0]!;
+      const analyzer = hasSlotOverride("analyzer") && this.isProviderEnabled(reviewConfig!.analyzer_provider!)
+        ? buildRunner(reviewConfig!.analyzer_provider!, reviewConfig!.analyzer_model)
+        : reviewers[0]!;
+      const judge = hasSlotOverride("judge") && this.isProviderEnabled(reviewConfig!.judge_provider!)
+        ? buildRunner(reviewConfig!.judge_provider!, reviewConfig!.judge_model)
+        : reviewers[0]!;
+      const summarizer = hasSlotOverride("summarizer") && this.isProviderEnabled(reviewConfig!.summarizer_provider!)
+        ? buildRunner(reviewConfig!.summarizer_provider!, reviewConfig!.summarizer_model)
+        : defaultSummarizer;
+
+      return { analyzer, reviewers, judge, summarizer };
+    }
+
     const modelConfig = this.db.getGuildModelConfig(guildId);
     const preferredProvider: AiProvider = modelConfig?.provider ?? "claude";
     const preferredModel = modelConfig?.model ?? undefined;
@@ -2250,13 +2604,7 @@ Output the result of the command or the link to the created issue.`;
       }
 
       const reviewModel = reviewModels.get(provider);
-      reviewers.push({
-        provider,
-        ...(reviewModel ? { model: reviewModel } : {}),
-        label: AI_PROVIDER_LABELS[provider],
-        run: async ({ prompt, cwd, timeoutMs, model }) =>
-          this.runProviderText({ provider, prompt, cwd, timeoutMs, ...(model ? { model } : {}) })
-      });
+      reviewers.push(buildRunner(provider, reviewModel));
     }
 
     if (reviewers.length < 2) {
@@ -2266,9 +2614,20 @@ Output the result of the command or the link to the created issue.`;
       );
     }
 
-    const analyzer = reviewers[0]!;
-    const judge = reviewers[0]!;
-    const summarizer = reviewers.find((reviewer) => reviewer.provider !== analyzer.provider || reviewer.model !== analyzer.model) ?? analyzer;
+    const resolveRoleRunner = (
+      role: ReviewModelRole,
+      defaultRunner: ReviewModelRunner
+    ): ReviewModelRunner => {
+      const resolved = this.resolveReviewRoleOverride(guildId, role);
+      if (!resolved.provider) return defaultRunner;
+      if (!this.isProviderEnabled(resolved.provider)) return defaultRunner;
+      return buildRunner(resolved.provider, resolved.model);
+    };
+
+    const analyzer = resolveRoleRunner("analyzer", reviewers[0]!);
+    const judge = resolveRoleRunner("judge", reviewers[0]!);
+    const defaultSummarizer = reviewers[1] ?? reviewers[0]!;
+    const summarizer = resolveRoleRunner("summarizer", defaultSummarizer);
     return { analyzer, reviewers, judge, summarizer };
   }
 
@@ -2448,8 +2807,37 @@ Output the result of the command or the link to the created issue.`;
       return;
     }
 
+    const configError = await this.validateReviewConfig(interaction.guildId);
+    if (configError) {
+      await interaction.reply({ content: configError, ephemeral: true });
+      return;
+    }
+
     await interaction.deferReply({ ephemeral: true });
     await reviewThread.send("Adversarial review started.");
+
+    let autoCommitted = false;
+    try {
+      autoCommitted = await autoCommitDirtyWorktree(latestRequest.worktree_path);
+    } catch (error) {
+      const detail = error instanceof GitWorkspaceError && error.code === "AUTO_COMMIT_FAILED"
+        ? "The worktree has changes that could not be auto-committed. This usually means the repository has a pre-existing conflict or an unexpected git state. Commit or stash changes manually and try again."
+        : error instanceof GitWorkspaceError && error.code === "GIT_UNAVAILABLE"
+          ? "Git is not available on this server. The review cannot prepare the worktree. Contact the server administrator."
+          : `An unexpected git error occurred: ${error instanceof Error ? error.message : "Unknown error"}`;
+      const preflightMessage = error instanceof GitWorkspaceError && error.code === "AUTO_COMMIT_FAILED"
+        ? "Review preflight failed: The worktree could not be auto-committed. Commit or stash changes manually and try again."
+        : error instanceof GitWorkspaceError && error.code === "GIT_UNAVAILABLE"
+          ? "Review preflight failed: Git is not available on this server. Contact the server administrator."
+          : `Review preflight failed: ${error instanceof Error ? error.message : "Unknown git error"}`;
+      await reviewThread.send(`**Auto-commit failed** — ${detail}`);
+      await interaction.editReply(preflightMessage);
+      return;
+    }
+
+    if (autoCommitted) {
+      await reviewThread.send("Uncommitted changes in the worktree were auto-committed for review.");
+    }
 
     try {
       const runners = this.buildReviewRunners(interaction.guildId);
@@ -2745,7 +3133,7 @@ Output the result of the command or the link to the created issue.`;
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      if (await hasUncommittedChanges(latestRequest.worktree_path)) {
+      if (await hasUncommittedChangesExcluding(latestRequest.worktree_path, ["docs/reviews/"])) {
         await interaction.editReply(
           "The worktree has uncommitted changes. `/review` includes working-tree changes, but `/pr` can only push commits. Commit the reviewed changes, then run `/review` again before `/pr`."
         );
@@ -3665,6 +4053,12 @@ Output the result of the command or the link to the created issue.`;
     }
 
     if (error instanceof GitWorkspaceError) {
+      if (error.code === "AUTO_COMMIT_FAILED") {
+        return `Auto-commit failed: ${error.message}. The worktree has changes that could not be committed; resolve conflicts manually and try again.`;
+      }
+      if (error.code === "GIT_UNAVAILABLE") {
+        return "Git is not available on this server. Contact the server administrator.";
+      }
       return `Repository sync failed: ${error.message}`;
     }
 

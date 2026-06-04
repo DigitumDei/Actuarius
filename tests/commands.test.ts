@@ -27,7 +27,14 @@ describe("command registration", () => {
           choices: [
             { name: "Default (/ask, /bug, /issue)", value: "default" },
             { name: "Planner (/plan stage A)", value: "planner" },
-            { name: "Implementer (/plan stage B)", value: "implementer" }
+            { name: "Implementer (/plan stage B)", value: "implementer" },
+            { name: "Reviewer Slot 1", value: "reviewer-1" },
+            { name: "Reviewer Slot 2", value: "reviewer-2" },
+            { name: "Reviewer Slot 3", value: "reviewer-3" },
+            { name: "Reviewer Slot 4", value: "reviewer-4" },
+            { name: "Reviewer Analyzer", value: "reviewer-analyzer" },
+            { name: "Reviewer Judge", value: "reviewer-judge" },
+            { name: "Reviewer Summarizer", value: "reviewer-summarizer" }
           ]
         })
       ])

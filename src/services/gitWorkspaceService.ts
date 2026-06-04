@@ -24,7 +24,8 @@ export class GitWorkspaceError extends Error {
     | "CHECKOUT_FAILED"
     | "CLEANUP_FAILED"
     | "DIFF_FAILED"
-    | "PUSH_FAILED";
+    | "PUSH_FAILED"
+    | "AUTO_COMMIT_FAILED";
 
   public constructor(
     code:
@@ -34,7 +35,8 @@ export class GitWorkspaceError extends Error {
       | "CHECKOUT_FAILED"
       | "CLEANUP_FAILED"
       | "DIFF_FAILED"
-      | "PUSH_FAILED",
+      | "PUSH_FAILED"
+      | "AUTO_COMMIT_FAILED",
     message: string
   ) {
     super(message);
@@ -422,9 +424,53 @@ export async function hasUncommittedChanges(worktreePath: string): Promise<boole
   return !(await isWorktreeClean(worktreePath));
 }
 
-export async function autoCommitAll(worktreePath: string, message: string): Promise<void> {
+export async function hasUncommittedChangesExcluding(worktreePath: string, excludePaths: string[]): Promise<boolean> {
+  const excludeArgs = getExcludePathspecArgs(excludePaths);
+  const pathspecArgs = excludeArgs.length > 0 ? ["--", ".", ...excludeArgs] : [];
+  const result = await runGitWithOutput(["status", "--porcelain", ...pathspecArgs], { cwd: worktreePath });
+  return result.stdout.trim().length > 0;
+}
+
+export async function autoCommitAll(worktreePath: string, message: string, excludePaths?: string[]): Promise<boolean> {
   await runGitWithOutput(["add", "-A"], { cwd: worktreePath });
-  await runGitWithOutput(["commit", "-m", message], { cwd: worktreePath });
+
+  if (excludePaths && excludePaths.length > 0) {
+    for (const path of excludePaths) {
+      await runGitWithOutput(["reset", "--", path], { cwd: worktreePath });
+    }
+  }
+
+  try {
+    await runGitWithOutput(["diff", "--cached", "--quiet"], { cwd: worktreePath });
+    return false;
+  } catch (error) {
+    const spawnError = error as { stderr?: string };
+    if (spawnError.stderr) {
+      throw error;
+    }
+    await runGitWithOutput(["commit", "-m", message], { cwd: worktreePath });
+    return true;
+  }
+}
+
+const AUTO_COMMIT_MESSAGE = "review: auto-commit working tree changes";
+const ARTIFACT_EXCLUDE_PATHS = ["docs/reviews/"];
+
+export async function autoCommitDirtyWorktree(worktreePath: string): Promise<boolean> {
+  try {
+    if (!(await hasUncommittedChanges(worktreePath))) {
+      return false;
+    }
+
+    return await autoCommitAll(worktreePath, AUTO_COMMIT_MESSAGE, ARTIFACT_EXCLUDE_PATHS);
+  } catch (error) {
+    if (error instanceof GitWorkspaceError) {
+      throw error;
+    }
+
+    const message = error instanceof Error ? error.message : "Could not auto-commit dirty worktree.";
+    throw new GitWorkspaceError("AUTO_COMMIT_FAILED", message);
+  }
 }
 
 export async function detectDefaultBranch(repoPath: string): Promise<{ branchName: string; remoteRef: string }> {

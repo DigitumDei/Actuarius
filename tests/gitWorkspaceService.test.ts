@@ -11,6 +11,8 @@ const { spawnCollect } = await import("../src/utils/spawnCollect.js");
 const mockSpawnCollect = vi.mocked(spawnCollect);
 
 const {
+  autoCommitAll,
+  autoCommitDirtyWorktree,
   buildRepoCheckoutPath,
   cleanupDeletedRemoteBranches,
   detectDefaultBranch,
@@ -423,5 +425,176 @@ describe("gitWorkspaceService", () => {
       ],
       expect.any(Object)
     );
+  });
+
+  it("autoCommitDirtyWorktree returns false for a clean worktree", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    await expect(autoCommitDirtyWorktree("/tmp/repo")).resolves.toBe(false);
+
+    expect(mockSpawnCollect).toHaveBeenCalledTimes(1);
+  });
+
+  it("autoCommitDirtyWorktree runs add, reset, and commit for a dirty worktree", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: " M src/index.ts\n", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockRejectedValueOnce(Object.assign(new Error("Process exited with code 1"), { stdout: "", stderr: "" }))
+      .mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    await expect(autoCommitDirtyWorktree("/tmp/repo")).resolves.toBe(true);
+
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(
+      2,
+      "git",
+      ["add", "-A"],
+      expect.objectContaining({ cwd: "/tmp/repo" })
+    );
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(
+      3,
+      "git",
+      ["reset", "--", "docs/reviews/"],
+      expect.objectContaining({ cwd: "/tmp/repo" })
+    );
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(
+      4,
+      "git",
+      ["diff", "--cached", "--quiet"],
+      expect.objectContaining({ cwd: "/tmp/repo" })
+    );
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(
+      5,
+      "git",
+      ["commit", "-m", "review: auto-commit working tree changes"],
+      expect.objectContaining({ cwd: "/tmp/repo" })
+    );
+  });
+
+  it("autoCommitDirtyWorktree skips commit when only review artifacts are dirty", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: " M docs/reviews/ask-1-123/2026-01-01T00-00-00.000Z-review.md\n", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    await expect(autoCommitDirtyWorktree("/tmp/repo")).resolves.toBe(false);
+
+    expect(mockSpawnCollect).toHaveBeenCalledTimes(4);
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(
+      2,
+      "git",
+      ["add", "-A"],
+      expect.objectContaining({ cwd: "/tmp/repo" })
+    );
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(
+      3,
+      "git",
+      ["reset", "--", "docs/reviews/"],
+      expect.objectContaining({ cwd: "/tmp/repo" })
+    );
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(
+      4,
+      "git",
+      ["diff", "--cached", "--quiet"],
+      expect.objectContaining({ cwd: "/tmp/repo" })
+    );
+  });
+
+  it("autoCommitDirtyWorktree skips commit when only review artifacts and gitignore artifacts are dirty", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: " M docs/reviews/ask-1-123/2026-01-01T00-00-00.000Z-review.md\n", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    await expect(autoCommitDirtyWorktree("/tmp/repo")).resolves.toBe(false);
+  });
+
+  it("autoCommitDirtyWorktree wraps generic git errors as AUTO_COMMIT_FAILED", async () => {
+    mockSpawnCollect.mockRejectedValueOnce(new Error("fatal: could not read index"));
+
+    await expect(autoCommitDirtyWorktree("/tmp/repo")).rejects.toMatchObject({
+      code: "AUTO_COMMIT_FAILED",
+      name: "GitWorkspaceError"
+    } satisfies Partial<GitWorkspaceError>);
+  });
+
+  it("autoCommitDirtyWorktree propagates GIT_UNAVAILABLE from hasUncommittedChanges", async () => {
+    const enoentError = Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" });
+    mockSpawnCollect.mockRejectedValueOnce(enoentError);
+
+    await expect(autoCommitDirtyWorktree("/tmp/repo")).rejects.toMatchObject({
+      code: "GIT_UNAVAILABLE",
+      name: "GitWorkspaceError"
+    } satisfies Partial<GitWorkspaceError>);
+  });
+
+  it("autoCommitAll with excludePaths resets excluded paths before committing", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockRejectedValueOnce(Object.assign(new Error("Process exited with code 1"), { stdout: "", stderr: "" }))
+      .mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    const result = await autoCommitAll("/tmp/repo", "test commit", ["docs/reviews/"]);
+
+    expect(result).toBe(true);
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(1, "git", ["add", "-A"], expect.any(Object));
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(2, "git", ["reset", "--", "docs/reviews/"], expect.any(Object));
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(3, "git", ["diff", "--cached", "--quiet"], expect.any(Object));
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(4, "git", ["commit", "-m", "test commit"], expect.any(Object));
+  });
+
+  it("autoCommitAll with excludePaths returns false when only excluded files are staged", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    const result = await autoCommitAll("/tmp/repo", "test commit", ["docs/reviews/"]);
+
+    expect(result).toBe(false);
+    expect(mockSpawnCollect).toHaveBeenCalledTimes(3);
+  });
+
+  it("autoCommitAll with no excludePaths commits all changes", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockRejectedValueOnce(Object.assign(new Error("Process exited with code 1"), { stdout: "", stderr: "" }))
+      .mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    const result = await autoCommitAll("/tmp/repo", "test commit");
+
+    expect(result).toBe(true);
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(1, "git", ["add", "-A"], expect.any(Object));
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(2, "git", ["diff", "--cached", "--quiet"], expect.any(Object));
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(3, "git", ["commit", "-m", "test commit"], expect.any(Object));
+  });
+
+  it("autoCommitAll with empty excludePaths commits all changes", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockRejectedValueOnce(Object.assign(new Error("Process exited with code 1"), { stdout: "", stderr: "" }))
+      .mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    const result = await autoCommitAll("/tmp/repo", "test commit", []);
+
+    expect(result).toBe(true);
+    expect(mockSpawnCollect).toHaveBeenCalledTimes(3);
+  });
+
+  it("autoCommitAll rethrows genuine git errors from diff --cached --quiet", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockRejectedValueOnce(Object.assign(
+        new Error("Process exited with code 128"),
+        { stdout: "", stderr: "fatal: index corrupted" }
+      ));
+
+    await expect(autoCommitAll("/tmp/repo", "test commit", ["docs/reviews/"])).rejects.toThrow();
+    expect(mockSpawnCollect).toHaveBeenCalledTimes(3);
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(3, "git", ["diff", "--cached", "--quiet"], expect.any(Object));
   });
 });

@@ -111,12 +111,12 @@ export const commandBuilders = [
     .addStringOption((option) => option.setName("prompt").setDescription("Issue details or description.").setRequired(true)),
   new SlashCommandBuilder()
     .setName("model-select")
-    .setDescription("Set the AI provider and model for /ask in this server. Requires Manage Server permission.")
+    .setDescription("Set the AI provider and model for /ask, /plan, and review roles. Requires Manage Server permission.")
     .addStringOption((option) =>
       option
         .setName("provider")
-        .setDescription("AI provider to use")
-        .setRequired(true)
+        .setDescription("AI provider to use (optional when clearing)")
+        .setRequired(false)
         .addChoices(
           { name: "Claude", value: "claude" },
           { name: "Codex", value: "codex" },
@@ -139,12 +139,25 @@ export const commandBuilders = [
         .addChoices(
           { name: "Default (/ask, /bug, /issue)", value: "default" },
           { name: "Planner (/plan stage A)", value: "planner" },
-          { name: "Implementer (/plan stage B)", value: "implementer" }
+          { name: "Implementer (/plan stage B)", value: "implementer" },
+          { name: "Reviewer Slot 1", value: "reviewer-1" },
+          { name: "Reviewer Slot 2", value: "reviewer-2" },
+          { name: "Reviewer Slot 3", value: "reviewer-3" },
+          { name: "Reviewer Slot 4", value: "reviewer-4" },
+          { name: "Reviewer Analyzer", value: "reviewer-analyzer" },
+          { name: "Reviewer Judge", value: "reviewer-judge" },
+          { name: "Reviewer Summarizer", value: "reviewer-summarizer" }
         )
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName("clear")
+        .setDescription("Clear a reviewer slot or reviewer role override instead of setting it.")
+        .setRequired(false)
     ),
   new SlashCommandBuilder()
     .setName("model-current")
-    .setDescription("Show the active AI provider and model for /ask in this server."),
+    .setDescription("Show the active AI provider, model, reviewer slots, and review role overrides for this server."),
   new SlashCommandBuilder()
     .setName("review-rounds")
     .setDescription("Show or set the maximum adversarial review consensus rounds for this server.")
@@ -216,7 +229,7 @@ export const commandBuilders = [
     .setDescription("Delete the worktree branch associated with this request thread."),
   new SlashCommandBuilder()
     .setName("review")
-    .setDescription("Run adversarial code review for the current request thread."),
+    .setDescription("Run adversarial code review (auto-commits pending work before diffing)."),
   new SlashCommandBuilder()
     .setName("revise")
     .setDescription("Revise the existing request branch in the current request thread.")

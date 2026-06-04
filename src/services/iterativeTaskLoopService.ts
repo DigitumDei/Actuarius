@@ -39,7 +39,7 @@ export interface IterativeTaskLoopInput {
   getHeadSha: (repoPath: string, ref?: string) => Promise<string>;
   getDiffSinceRef: (repoPath: string, baseRef: string) => Promise<string>;
   hasUncommittedChanges: (repoPath: string) => Promise<boolean>;
-  autoCommitAll: (repoPath: string, message: string) => Promise<void>;
+  autoCommitAll: (repoPath: string, message: string) => Promise<boolean>;
 }
 
 const MAX_TWEAKS_PER_TASK = 3;
