@@ -1732,7 +1732,7 @@ describe("ActuariusBot review command", () => {
     });
     await (bot as any).handleReview(interaction);
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Insufficient reviewers configured** — at least 2 available AI providers are required for `/review`. Use `/model-select` to configure a second provider or ask the server administrator to enable or configure additional providers.",
+      content: '**Provider unavailable** — saved default provider `gemini` is not available. Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.',
       ephemeral: true
     });
     expect(runAdversarialReview).not.toHaveBeenCalled();

@@ -2433,6 +2433,25 @@ Output the result of the command or the link to the created issue.`;
 
     const modelConfig = this.db.getGuildModelConfig(guildId);
     const preferredProvider: AiProvider = modelConfig?.provider ?? "claude";
+
+    const preferredUnavail = await this.getProviderUnavailableMessage(preferredProvider);
+    if (preferredUnavail) {
+      return `**Provider unavailable** — saved default provider \`${preferredProvider}\` is not available. ${preferredUnavail}`;
+    }
+
+    const roles: ReviewModelRole[] = ["analyzer", "judge", "summarizer"];
+    for (const role of roles) {
+      const overrideProvider = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] as AiProvider | undefined
+        ?? (modelConfig as unknown as Record<string, unknown>)?.[`${role}_provider`] as AiProvider | undefined;
+      if (overrideProvider) {
+        const unavailMsg = await this.getProviderUnavailableMessage(overrideProvider);
+        if (unavailMsg) {
+          const source = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] ? "`/model-select`" : "legacy configuration";
+          return `**Provider unavailable** — the \`${role}\` role override uses \`${overrideProvider}\` (from ${source}) which is not available. ${unavailMsg}`;
+        }
+      }
+    }
+
     const providers: AiProvider[] = [preferredProvider];
     for (const candidate of ["claude", "codex", "gemini", "opencode"] satisfies AiProvider[]) {
       if (!providers.includes(candidate)) {
@@ -2450,19 +2469,6 @@ Output the result of the command or the link to the created issue.`;
 
     if (available.length < 2) {
       return "**Insufficient reviewers configured** — at least 2 available AI providers are required for `/review`. Use `/model-select` to configure a second provider or ask the server administrator to enable or configure additional providers.";
-    }
-
-    const roles: ReviewModelRole[] = ["analyzer", "judge", "summarizer"];
-    for (const role of roles) {
-      const overrideProvider = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] as AiProvider | undefined
-        ?? (modelConfig as unknown as Record<string, unknown>)?.[`${role}_provider`] as AiProvider | undefined;
-      if (overrideProvider) {
-        const unavailMsg = await this.getProviderUnavailableMessage(overrideProvider);
-        if (unavailMsg) {
-          const source = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] ? "`/model-select`" : "legacy configuration";
-          return `**Provider unavailable** — the \`${role}\` role override uses \`${overrideProvider}\` (from ${source}) which is not available. ${unavailMsg}`;
-        }
-      }
     }
 
     return null;
