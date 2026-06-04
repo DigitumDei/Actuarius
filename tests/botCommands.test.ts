@@ -1222,6 +1222,24 @@ describe("ActuariusBot review runner selection", () => {
     expect(runners.summarizer.provider).toBe("claude");
     expect(runners.summarizer.model).toBe("claude-sonnet-4");
   });
+
+  it("selects summarizer as first slot differing from slot 1 when slots 1 and 2 are identical", () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "claude", model: null },
+        { slot_index: 3, provider: "gemini", model: "gemini-2.5-pro" }
+      ])
+    });
+
+    const runners = (bot as any).buildReviewRunners("guild-1");
+
+    expect(runners.reviewers).toHaveLength(3);
+    expect(runners.analyzer.provider).toBe("claude");
+    expect(runners.judge.provider).toBe("claude");
+    expect(runners.summarizer.provider).toBe("gemini");
+    expect(runners.summarizer.model).toBe("gemini-2.5-pro");
+  });
 });
 
 describe("ActuariusBot review-rounds command", () => {
@@ -2314,6 +2332,42 @@ describe("ActuariusBot model-select command", () => {
     });
     expect(interaction.reply).toHaveBeenCalledWith({
       content: expect.stringContaining("**Review mode:** Using explicit reviewer slots."),
+      ephemeral: true
+    });
+  });
+
+  it("shows summarizer falling back to first differing slot when slots 1 and 2 are identical but slot 3 differs", async () => {
+    const bot = createBot({
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        planner_provider: null,
+        planner_model: null,
+        implementer_provider: null,
+        implementer_model: null,
+        updated_at: "2026-05-29T00:00:00.000Z"
+      }),
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "claude", model: null },
+        { slot_index: 3, provider: "gemini", model: "gemini-2.5-pro" }
+      ])
+    });
+    const interaction = createInteraction();
+
+    await (bot as any).handleModelCurrent(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Analyzer**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Judge**: falls back to **Slot 1** (**Claude**)"),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("**Summarizer**: falls back to **Slot 3** (**Gemini**)"),
       ephemeral: true
     });
   });

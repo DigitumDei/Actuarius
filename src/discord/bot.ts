@@ -2506,7 +2506,9 @@ Output the result of the command or the link to the created issue.`;
         );
       }
 
-      const defaultSummarizer = reviewers[1] ?? reviewers[0]!;
+      const defaultSummarizer = reviewers.find(
+        (r) => r.provider !== reviewers[0]!.provider || r.model !== reviewers[0]!.model
+      ) ?? reviewers[0]!;
       const analyzer = hasSlotOverride("analyzer") && this.isProviderEnabled(reviewConfig!.analyzer_provider!)
         ? buildRunner(reviewConfig!.analyzer_provider!, reviewConfig!.analyzer_model)
         : reviewers[0]!;
