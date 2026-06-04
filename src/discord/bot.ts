@@ -1501,10 +1501,12 @@ export class ActuariusBot {
 
       if (overrideModel) {
         const modelDisplay = overrideModelValue ? `\`${overrideModelValue}\`` : "CLI default model";
-        roleLines.push(`  **${label}**: **${AI_PROVIDER_LABELS[overrideModel]}**, model: ${modelDisplay} (set via \`/model-select\`)`);
+        const disabledSuffix = !this.isProviderEnabled(overrideModel) ? " ⚠️ *disabled by server*" : "";
+        roleLines.push(`  **${label}**: **${AI_PROVIDER_LABELS[overrideModel]}**, model: ${modelDisplay} (set via \`/model-select\`)${disabledSuffix}`);
       } else if (legacyOverride) {
         const modelDisplay = legacyModel ? `\`${legacyModel}\`` : "CLI default model";
-        roleLines.push(`  **${label}**: **${AI_PROVIDER_LABELS[legacyOverride]}**, model: ${modelDisplay} (legacy override)`);
+        const disabledSuffix = !this.isProviderEnabled(legacyOverride) ? " ⚠️ *disabled by server*" : "";
+        roleLines.push(`  **${label}**: **${AI_PROVIDER_LABELS[legacyOverride]}**, model: ${modelDisplay} (legacy override)${disabledSuffix}`);
       } else if (slots.length > 0) {
         const fallbackSlot = key === "summarizer"
           ? (slots.find((s) => s.provider !== slots[0]!.provider || s.model !== slots[0]!.model) ?? slots[0]!)
@@ -2446,9 +2448,11 @@ Output the result of the command or the link to the created issue.`;
 
     const roles: ReviewModelRole[] = ["analyzer", "judge", "summarizer"];
     for (const role of roles) {
-      const overrideProvider = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] as AiProvider | undefined;
+      const overrideProvider = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] as AiProvider | undefined
+        ?? (modelConfig as unknown as Record<string, unknown>)?.[`${role}_provider`] as AiProvider | undefined;
       if (overrideProvider && !this.isProviderEnabled(overrideProvider)) {
-        return `**Provider disabled** — the \`${role}\` role override uses \`${overrideProvider}\` which is not enabled. Use \`/model-select reviewer-${role} clear\` to remove the override or select an enabled provider.`;
+        const source = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] ? "`/model-select`" : "legacy configuration";
+        return `**Provider disabled** — the \`${role}\` role override uses \`${overrideProvider}\` (from ${source}) which is not enabled. Use \`/model-select reviewer-${role} clear\` to remove the override or select an enabled provider.`;
       }
     }
 
@@ -2547,18 +2551,18 @@ Output the result of the command or the link to the created issue.`;
 
     const hasRoleOverride = (role: ReviewModelRole): boolean =>
       !!reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] ||
-      !!(modelConfig as Record<string, unknown>)?.[`${role}_provider`];
+      !!(modelConfig as unknown as Record<string, unknown>)?.[`${role}_provider`];
 
     const resolveRoleRunner = (
       role: ReviewModelRole,
       defaultRunner: ReviewModelRunner
     ): ReviewModelRunner => {
       const overrideProvider = reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig] as AiProvider | null
-        ?? (modelConfig as Record<string, unknown>)?.[`${role}_provider`] as AiProvider | null;
+        ?? (modelConfig as unknown as Record<string, unknown>)?.[`${role}_provider`] as AiProvider | null;
       if (!overrideProvider) return defaultRunner;
       if (!this.isProviderEnabled(overrideProvider)) return defaultRunner;
       const overrideModel = reviewConfig?.[`${role}_model` as keyof typeof reviewConfig] as string | null
-        ?? (modelConfig as Record<string, unknown>)?.[`${role}_model`] as string | null;
+        ?? (modelConfig as unknown as Record<string, unknown>)?.[`${role}_model`] as string | null;
       return buildRunner(overrideProvider, overrideModel);
     };
 
@@ -3995,7 +3999,7 @@ Output the result of the command or the link to the created issue.`;
         return `Auto-commit failed: ${error.message}. The worktree has changes that could not be committed; resolve conflicts manually and try again.`;
       }
       if (error.code === "GIT_UNAVAILABLE") {
-        return "Git is not available on this server. The review cannot prepare the worktree. Contact the server administrator.";
+        return "Git is not available on this server. Contact the server administrator.";
       }
       return `Repository sync failed: ${error.message}`;
     }
