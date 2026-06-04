@@ -1540,7 +1540,7 @@ describe("ActuariusBot review command", () => {
     await (bot as any).handleReview(interaction);
     expect(send).toHaveBeenCalledWith(expect.stringContaining("**Auto-commit failed**"));
     expect(send).toHaveBeenCalledWith(expect.stringContaining("stash changes manually"));
-    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("auto-commit error"));
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("could not be auto-committed"));
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1572,7 +1572,7 @@ describe("ActuariusBot review command", () => {
     await (bot as any).handleReview(interaction);
     expect(send).toHaveBeenCalledWith(expect.stringContaining("**Auto-commit failed**"));
     expect(send).toHaveBeenCalledWith(expect.stringContaining("Git is not available"));
-    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("auto-commit error"));
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Git is not available"));
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 });

@@ -2763,8 +2763,13 @@ Output the result of the command or the link to the created issue.`;
         : error instanceof GitWorkspaceError && error.code === "GIT_UNAVAILABLE"
           ? "Git is not available on this server. The review cannot prepare the worktree. Contact the server administrator."
           : `An unexpected git error occurred: ${error instanceof Error ? error.message : "Unknown error"}`;
+      const preflightMessage = error instanceof GitWorkspaceError && error.code === "AUTO_COMMIT_FAILED"
+        ? "Review preflight failed: The worktree could not be auto-committed. Commit or stash changes manually and try again."
+        : error instanceof GitWorkspaceError && error.code === "GIT_UNAVAILABLE"
+          ? "Review preflight failed: Git is not available on this server. Contact the server administrator."
+          : `Review preflight failed: ${error instanceof Error ? error.message : "Unknown git error"}`;
       await reviewThread.send(`**Auto-commit failed** — ${detail}`);
-      await interaction.editReply(`Review preflight failed: auto-commit error.`);
+      await interaction.editReply(preflightMessage);
       return;
     }
 
