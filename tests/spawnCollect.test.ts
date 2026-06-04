@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { spawnCollect, spawnCollectWithTransport } from "../src/utils/spawnCollect.js";
+import { spawnCollect, spawnCollectWithTransport, decidePromptTransport } from "../src/utils/spawnCollect.js";
 
 // Use the current node binary so these tests work without assuming PATH contents.
 const node = process.execPath;
@@ -148,6 +148,33 @@ describe("spawnCollectWithTransport — argv transport", () => {
         maxBuffer: 100,
       })
     ).rejects.toMatchObject({ code: "EMSGSIZE" });
+  });
+
+  it("rejects with E2BIG when oversized but promptArgIndices is empty", async () => {
+    const hugeArg = "x".repeat(2 * 1024 * 1024);
+    await expect(
+      spawnCollectWithTransport({
+        file: node,
+        args: ["-e", `process.stdout.write("ok");`, "--", hugeArg],
+        promptArgIndices: [],
+        cwd,
+        timeoutMs,
+        maxBuffer: 1024,
+      })
+    ).rejects.toMatchObject({ code: "E2BIG" });
+  });
+});
+
+describe("decidePromptTransport — oversized with empty indices", () => {
+  it("returns argv transport when payload exceeds limit and promptArgIndices is empty", () => {
+    const hugeArg = "y".repeat(2 * 1024 * 1024);
+    const decision = decidePromptTransport(
+      ["-e", "script", "--", hugeArg],
+      [],
+    );
+    expect(decision.transport).toBe("argv");
+    expect(decision.args).toEqual(["-e", "script", "--", hugeArg]);
+    expect(decision.totalBytes).toBeGreaterThan(1024 * 1024);
   });
 });
 

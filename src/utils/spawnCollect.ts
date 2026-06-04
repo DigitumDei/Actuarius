@@ -181,6 +181,11 @@ export function decidePromptTransport(
     return { transport: "argv", args, totalBytes };
   }
 
+  // If no prompt indices are provided, we can't extract anything to move.
+  if (promptArgIndices.length === 0) {
+    return { transport: "argv", args, totalBytes };
+  }
+
   // Remove prompt-related args (descending order to keep indices stable)
   const sortedIdx = [...promptArgIndices].sort((a, b) => b - a);
   const adjustedArgs = [...args];
@@ -244,6 +249,29 @@ export interface SpawnCollectTransportOptions {
 }
 
 /**
+ * Build a spawnCollect options object, only including optional fields that are
+ * actually defined so the type system doesn't see explicit `undefined` values.
+ */
+function buildOptions(base: {
+  cwd: string;
+  timeoutMs: number;
+  maxBuffer: number;
+  maxStderrBuffer?: number;
+  env?: NodeJS.ProcessEnv;
+  stdin?: string;
+}) {
+  const opts: Parameters<typeof spawnCollect>[2] = {
+    cwd: base.cwd,
+    timeoutMs: base.timeoutMs,
+    maxBuffer: base.maxBuffer,
+  };
+  if (base.maxStderrBuffer !== undefined) opts.maxStderrBuffer = base.maxStderrBuffer;
+  if (base.env !== undefined) opts.env = base.env;
+  if (base.stdin !== undefined) opts.stdin = base.stdin;
+  return opts;
+}
+
+/**
  * High-level wrapper that combines `decidePromptTransport` + `spawnCollect`
  * + temp-file lifecycle management.
  *
@@ -288,23 +316,19 @@ export async function spawnCollectWithTransport(
       const fileArgs = decision.args.map(
         (a) => (a === TEMP_FILE_PATH_PLACEHOLDER ? tempFileInfo!.filePath : a),
       );
-      return await spawnCollect(file, fileArgs, {
-        cwd,
-        timeoutMs,
-        maxBuffer,
-        maxStderrBuffer,
-        env,
-      });
+      return await spawnCollect(file, fileArgs, buildOptions({
+        cwd, timeoutMs, maxBuffer,
+        ...(maxStderrBuffer !== undefined ? { maxStderrBuffer } : {}),
+        ...(env !== undefined ? { env } : {}),
+      }));
     }
 
-    return await spawnCollect(file, decision.args, {
-      cwd,
-      timeoutMs,
-      maxBuffer,
-      maxStderrBuffer,
-      env,
-      stdin: decision.stdinPayload,
-    });
+    return await spawnCollect(file, decision.args, buildOptions({
+      cwd, timeoutMs, maxBuffer,
+      ...(maxStderrBuffer !== undefined ? { maxStderrBuffer } : {}),
+      ...(env !== undefined ? { env } : {}),
+      ...(decision.stdinPayload !== undefined ? { stdin: decision.stdinPayload } : {}),
+    }));
   } finally {
     if (tempFileInfo) {
       await cleanupTempPromptFile(tempFileInfo.tempDir);
