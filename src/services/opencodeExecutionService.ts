@@ -59,6 +59,7 @@ export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: 
       positionalPrompt: true,
       cwdFlag: "--dir",
       extraArgs: ["--dangerously-skip-permissions"],
+      supportsStdinFallback: false,
       logLabel: "OpenCode",
       makeError: (code, message) => new OpencodeExecutionError(code as OpencodeExecutionError["code"], message),
       unavailableCode: "OPENCODE_UNAVAILABLE",

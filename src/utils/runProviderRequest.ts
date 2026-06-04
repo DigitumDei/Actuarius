@@ -1,5 +1,5 @@
 import type { Logger } from "pino";
-import { spawnCollect } from "./spawnCollect.js";
+import { spawnCollectWithTransport, estimateSpawnPayloadBytes, DEFAULT_ARGV_TOTAL_LIMIT } from "./spawnCollect.js";
 
 export interface ProviderRequestInput {
   prompt: string;
@@ -43,12 +43,34 @@ export interface ProviderRunnerConfig {
   timeoutCode: string;
   failedCode: string;
   emptyOutputCode: string;
+  /**
+   * Whether the CLI accepts prompt input via stdin when the payload
+   * exceeds `DEFAULT_ARGV_TOTAL_LIMIT`.  Defaults to `true` (stdin is
+   * attempted) when not set; set to `false` for providers that haven't
+   * confirmed stdin compatibility or whose CLI rejects piped input.
+   */
+  supportsStdinFallback?: boolean;
+  /**
+   * Flag args for file-based input when stdin is unavailable
+   * (e.g. `["--prompt-file", "<path>"]`). Any arg equal to
+   * `TEMP_FILE_PATH_PLACEHOLDER` is replaced with the real temp-file path
+   * by `spawnCollectWithTransport`.
+   */
+  tempfileFlag?: string[];
+  /**
+   * Optional output transformation applied to stdout before returning.
+   * Used for CLIs that return structured output (e.g., JSON) instead of
+   * plain text. Applied after auth-pattern checks on the raw output.
+   */
+  transformOutput?: (stdout: string) => string;
 }
 
 /**
  * Generic CLI runner shared by Codex and Gemini execution services.
  * Spawns the binary, handles timeout/ENOENT/empty-output errors, and returns
- * trimmed stdout.
+ * trimmed stdout.  Uses transport-aware spawning to move oversized prompts
+ * from argv to stdin or a temp file when the payload exceeds
+ * `DEFAULT_ARGV_TOTAL_LIMIT`.
  */
 export async function runProviderRequest(
   input: ProviderRequestInput,
@@ -66,15 +88,52 @@ export async function runProviderRequest(
 
   logger.debug({ args, cwd: input.cwd, timeoutMs: input.timeoutMs }, `${config.logLabel} subprocess args`);
 
+  // Calculate which indices in `args` contain the prompt text (and its flag)
+  const promptStartIdx = prefix.length + (config.cwdFlag ? 2 : 0);
+  const promptArgIndices: number[] = config.positionalPrompt
+    ? [promptStartIdx]
+    : [promptStartIdx, promptStartIdx + 1];
+
+  // Log a warning when the payload exceeds the safety threshold and no
+  // fallback transport is available (the subprocess may fail with E2BIG).
+  const totalBytes = estimateSpawnPayloadBytes(args, input.env);
+  if (totalBytes > DEFAULT_ARGV_TOTAL_LIMIT) {
+    const hasFallback = config.supportsStdinFallback !== false || config.tempfileFlag !== undefined;
+    if (!hasFallback) {
+      logger.warn(
+        {
+          totalBytes,
+          limitBytes: DEFAULT_ARGV_TOTAL_LIMIT,
+          logLabel: config.logLabel,
+        },
+        `${config.logLabel} prompt payload (${Math.round(totalBytes / 1024)} KB) exceeds safety threshold (${Math.round(DEFAULT_ARGV_TOTAL_LIMIT / 1024)} KB) and no fallback transport is configured — the subprocess may fail with E2BIG`
+      );
+    } else {
+      logger.debug(
+        {
+          totalBytes,
+          limitBytes: DEFAULT_ARGV_TOTAL_LIMIT,
+          transport: config.supportsStdinFallback !== false ? "stdin" : "tempfile",
+        },
+        `${config.logLabel} prompt payload (${Math.round(totalBytes / 1024)} KB) exceeds threshold — using fallback transport`
+      );
+    }
+  }
+
   let stdout: string;
   let stderr: string;
 
   try {
-    ({ stdout, stderr } = await spawnCollect(config.binary, args, {
+    ({ stdout, stderr } = await spawnCollectWithTransport({
+      file: config.binary,
+      args,
+      promptArgIndices,
       cwd: input.cwd,
-      ...(input.env ? { env: input.env } : {}),
       timeoutMs: input.timeoutMs,
       maxBuffer: 4 * 1024 * 1024,
+      ...(input.env ? { env: input.env } : {}),
+      ...(config.supportsStdinFallback !== undefined ? { supportsStdinFallback: config.supportsStdinFallback } : {}),
+      ...(config.tempfileFlag !== undefined ? { tempfileFlag: config.tempfileFlag } : {}),
     }));
   } catch (error) {
     const message = error instanceof Error ? error.message : `${config.logLabel} execution failed.`;
@@ -149,6 +208,11 @@ export async function runProviderRequest(
       logger.warn({ stdout: stdout.slice(0, 1000), stderr }, `${config.logLabel} auth failure pattern matched on clean exit — logging output to assist diagnosis`);
       throw config.makeError(config.notAuthenticatedCode, `${config.logLabel} is not authenticated.${hint}`);
     }
+  }
+
+  // Apply optional output transformation (e.g. JSON parsing for Claude)
+  if (config.transformOutput) {
+    stdout = config.transformOutput(stdout);
   }
 
   const text = stdout.trim();

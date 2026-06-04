@@ -3,8 +3,8 @@ import pino from "pino";
 
 vi.mock("../src/utils/spawnCollect.js");
 
-const { spawnCollect } = await import("../src/utils/spawnCollect.js");
-const mockSpawnCollect = vi.mocked(spawnCollect);
+const { spawnCollectWithTransport } = await import("../src/utils/spawnCollect.js");
+const mockSpawnCollectWithTransport = vi.mocked(spawnCollectWithTransport);
 
 const { GeminiExecutionError, runGeminiRequest } = await import("../src/services/geminiExecutionService.js");
 
@@ -54,29 +54,35 @@ describe("runGeminiRequest", () => {
       name: "GeminiExecutionError",
       message: "Gemini requires `GEMINI_API_KEY` to be set for API-key-based authentication."
     });
-    expect(mockSpawnCollect).not.toHaveBeenCalled();
+    expect(mockSpawnCollectWithTransport).not.toHaveBeenCalled();
   });
 
   it("passes the prompt to the Gemini CLI when GEMINI_API_KEY is set", async () => {
     vi.stubEnv("GEMINI_API_KEY", "test-key");
-    mockSpawnCollect.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
 
     await runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
 
-    expect(mockSpawnCollect).toHaveBeenCalledWith("gemini", ["-p", "hello", "--yolo"], expect.any(Object));
+    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        file: "gemini",
+        args: ["-p", "hello", "--yolo"],
+        cwd: "/tmp",
+      })
+    );
   });
 
   it("passes scoped env vars to the Gemini CLI", async () => {
     vi.stubEnv("GEMINI_API_KEY", "test-key");
-    mockSpawnCollect.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
 
     await runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, env: { PATH: "/scoped/bin" } }, logger);
 
-    expect(mockSpawnCollect).toHaveBeenCalledWith(
-      "gemini",
-      ["-p", "hello", "--yolo"],
+    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
       expect.objectContaining({
-        env: { PATH: "/scoped/bin" }
+        file: "gemini",
+        args: ["-p", "hello", "--yolo"],
+        env: { PATH: "/scoped/bin" },
       })
     );
   });
