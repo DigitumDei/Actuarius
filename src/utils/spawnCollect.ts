@@ -1,5 +1,140 @@
 import { spawn } from "node:child_process";
 
+// ── Byte estimation helpers ──────────────────────────────────────────────
+
+/**
+ * Estimate total byte size of an argv array as the kernel would sum it
+ * for ARG_MAX accounting. Each string is counted as its UTF-8 byte length
+ * plus one byte for the null terminator.
+ */
+export function estimateArgvBytes(args: string[]): number {
+  let total = 0;
+  for (const arg of args) {
+    total += Buffer.byteLength(arg, "utf-8") + 1;
+  }
+  return total;
+}
+
+/**
+ * Estimate total byte size of an environment block as the kernel would sum it
+ * for ARG_MAX accounting. Each entry is counted as `key=value` in UTF-8 bytes
+ * plus one byte for the null terminator. Undefined values are skipped.
+ */
+export function estimateEnvBytes(env?: NodeJS.ProcessEnv): number {
+  if (!env) return 0;
+  let total = 0;
+  for (const key of Object.keys(env)) {
+    const value = env[key];
+    if (value !== undefined) {
+      total += Buffer.byteLength(key, "utf-8") + 1; // key + '='
+      total += Buffer.byteLength(value, "utf-8") + 1; // value + null
+    }
+  }
+  return total;
+}
+
+/**
+ * Combined byte size of argv + environment for spawn payload estimation.
+ */
+export function estimateSpawnPayloadBytes(args: string[], env?: NodeJS.ProcessEnv): number {
+  return estimateArgvBytes(args) + estimateEnvBytes(env);
+}
+
+// ── Shared safety threshold ──────────────────────────────────────────────
+
+/**
+ * Safety threshold for total spawn payload (argv + env bytes).
+ * Set at 1.5 MB to leave headroom below typical Linux ARG_MAX (2 MB).
+ */
+export const DEFAULT_ARGV_TOTAL_LIMIT = 1.5 * 1024 * 1024; // 1.5 MB
+
+// ── Prompt transport primitives ──────────────────────────────────────────
+
+/** How a prompt is delivered to a spawned process. */
+export type PromptTransport = "argv" | "stdin" | "tempfile";
+
+export interface PromptTransportDecision {
+  /** The chosen transport method. */
+  transport: PromptTransport;
+  /** Final argument list (prompt removed for stdin/tempfile transports). */
+  args: string[];
+  /**
+   * For "stdin" transport: the prompt text to pipe via stdin.
+   * For "tempfile" transport: the prompt text to write to a temp file.
+   * Undefined for "argv" transport.
+   */
+  stdinPayload?: string;
+  /** Total estimated bytes of the original argv + env. */
+  totalBytes: number;
+}
+
+/**
+ * Decide how to transport a prompt to a child process based on total
+ * spawn payload size (argv + env bytes).
+ *
+ * - **"argv"**: total bytes are at or below `DEFAULT_ARGV_TOTAL_LIMIT`.
+ *   The original args are returned unmodified.
+ * - **"stdin"**: total bytes exceed the threshold and `supportsStdinFallback`
+ *   is true (default). The prompt-related args are removed from `args`
+ *   and the extracted prompt text is returned in `stdinPayload`.
+ * - **"tempfile"**: total bytes exceed, stdin is not available, and
+ *   `tempfileFlag` is provided. Prompt args are removed and the flag
+ *   array is appended to args. The prompt text is returned in `stdinPayload`
+ *   for the caller to write to a file.
+ * - **"argv" (fallback)**: total bytes exceed but no fallback is configured.
+ *   The original args are returned unmodified; callers SHOULD log a warning
+ *   when this case is detected.
+ *
+ * @param args             Full argument list including any prompt args.
+ * @param promptArgIndices Indices of args that constitute the prompt
+ *   (e.g. `[1]` for a positional prompt at index 1, or `[0, 1]` for
+ *   `["-p", "prompt"]` at indices 0 and 1). Provided in any order.
+ * @param env              Optional environment block for size estimation.
+ * @param supportsStdinFallback  Whether the CLI accepts input via stdin
+ *   (default `true`).
+ * @param tempfileFlag     Optional flag args for file-based input
+ *   (e.g. `["--prompt-file", "<path>"]`). Ignored unless stdin fallback
+ *   is also unavailable.
+ */
+export function decidePromptTransport(
+  args: string[],
+  promptArgIndices: number[],
+  env?: NodeJS.ProcessEnv,
+  supportsStdinFallback?: boolean,
+  tempfileFlag?: string[],
+): PromptTransportDecision {
+  const totalBytes = estimateSpawnPayloadBytes(args, env);
+
+  if (totalBytes <= DEFAULT_ARGV_TOTAL_LIMIT) {
+    return { transport: "argv", args, totalBytes };
+  }
+
+  // Remove prompt-related args (descending order to keep indices stable)
+  const sortedIdx = [...promptArgIndices].sort((a, b) => b - a);
+  const adjustedArgs = [...args];
+  const removed: string[] = [];
+  for (const idx of sortedIdx) {
+    removed.unshift(adjustedArgs.splice(idx, 1)[0]!);
+  }
+  const promptText = removed[removed.length - 1]!;
+
+  if (supportsStdinFallback !== false) {
+    return { transport: "stdin", args: adjustedArgs, stdinPayload: promptText, totalBytes };
+  }
+
+  if (tempfileFlag) {
+    return {
+      transport: "tempfile",
+      args: [...adjustedArgs, ...tempfileFlag],
+      stdinPayload: promptText,
+      totalBytes,
+    };
+  }
+
+  // No fallback available — keep argv (caller should log warning)
+  return { transport: "argv", args, totalBytes };
+}
+
 export interface SpawnResult {
   stdout: string;
   stderr: string;
