@@ -3335,7 +3335,6 @@ Output the result of the command or the link to the created issue.`;
       getHeadSha,
       getDiffSinceRef,
       hasUncommittedChanges,
-      hasUncommittedChangesExcluding,
       autoCommitAll
     })).taskResults;
 
