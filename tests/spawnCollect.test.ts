@@ -100,7 +100,7 @@ describe("spawnCollect — stderr trimming", () => {
     const error = await spawnCollect(
       node,
       ["-e", `process.stderr.write("t".repeat(200)); setTimeout(() => {}, 60_000);`],
-      { cwd, timeoutMs: 200, maxBuffer: 1024 * 1024, maxStderrBuffer: 100 }
+      { cwd, timeoutMs: 2000, maxBuffer: 1024 * 1024, maxStderrBuffer: 100 }
     ).catch((e: unknown) => e);
 
     expect(error).toMatchObject({

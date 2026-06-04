@@ -366,7 +366,7 @@ export function spawnCollect(
     });
 
     if (options.stdin !== undefined && child.stdin) {
-      child.stdin.on("error", () => {});
+      child.stdin.on("error", () => { child.stdin?.destroy(); });
       child.stdin.write(options.stdin);
       child.stdin.end();
     }
@@ -394,7 +394,7 @@ export function spawnCollect(
     });
 
     child.stderr!.on("data", (chunk: Buffer) => {
-      if (bufferOverflow || timedOut) return;
+      if (bufferOverflow) return;
       const combined = stderr + chunk.toString();
       if (combined.length > effectiveStderrMax) {
         stderrTruncated = true;
@@ -420,6 +420,12 @@ export function spawnCollect(
         return;
       }
       if (timedOut) {
+        if (code !== null) {
+          reject(Object.assign(new Error(`Process exited with code ${String(code)}`), {
+            killed: false, signal, stdout, stderr: finalStderr,
+          }));
+          return;
+        }
         reject(Object.assign(new Error(`Process timed out after ${options.timeoutMs}ms`), {
           code: "ETIMEDOUT", killed: true, signal, stdout, stderr: finalStderr,
         }));
