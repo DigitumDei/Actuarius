@@ -891,7 +891,7 @@ export class AppDatabase {
              ${modelColumn},
              updated_by_user_id
            )
-           VALUES (?, 1, ?, ?, ?)
+           VALUES (?, 2, ?, ?, ?)
            ON CONFLICT(guild_id) DO UPDATE
            SET ${providerColumn} = excluded.${providerColumn},
                ${modelColumn} = excluded.${modelColumn},
@@ -926,16 +926,6 @@ export class AppDatabase {
          WHERE guild_id = ?`
       )
       .run(updatedByUserId, guildId);
-
-    this.db
-      .prepare(
-        `DELETE FROM guild_review_config
-         WHERE guild_id = ?
-           AND analyzer_provider IS NULL
-           AND judge_provider IS NULL
-           AND summarizer_provider IS NULL`
-      )
-      .run(guildId);
   }
 
   public addModelToHistory(provider: AiProvider, model: string): void {

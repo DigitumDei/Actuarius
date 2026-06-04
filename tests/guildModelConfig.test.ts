@@ -300,12 +300,12 @@ describe("AppDatabase review role config on guild_review_config", () => {
 
     expect(result.judge_provider).toBe("opencode");
     expect(result.judge_model).toBe("deepseek/deepseek-v4-pro");
-    expect(result.rounds).toBe(1);
+    expect(result.rounds).toBe(2);
 
     const config = db.getGuildReviewConfig("guild-1");
     expect(config!.judge_provider).toBe("opencode");
     expect(config!.judge_model).toBe("deepseek/deepseek-v4-pro");
-    expect(config!.rounds).toBe(1);
+    expect(config!.rounds).toBe(2);
   });
 
   it("sets summarizer override without clobbering other roles", () => {
@@ -322,11 +322,15 @@ describe("AppDatabase review role config on guild_review_config", () => {
     expect(config!.summarizer_model).toBe("deepseek/deepseek-v4-pro");
   });
 
-  it("can clear a review role override by removing the stored config", () => {
+  it("can clear a review role override while preserving rounds", () => {
     db.setGuildReviewRoleConfig("guild-1", "judge", "claude", "claude-sonnet-4-5", "user-1");
     db.clearGuildReviewRoleConfig("guild-1", "judge", "user-2");
 
-    expect(db.getGuildReviewConfig("guild-1")).toBeUndefined();
+    const config = db.getGuildReviewConfig("guild-1");
+    expect(config).toBeDefined();
+    expect(config!.judge_provider).toBeNull();
+    expect(config!.judge_model).toBeNull();
+    expect(config!.rounds).toBe(2);
   });
 
   it("updates existing override on second call", () => {
