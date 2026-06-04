@@ -424,12 +424,26 @@ export async function hasUncommittedChanges(worktreePath: string): Promise<boole
   return !(await isWorktreeClean(worktreePath));
 }
 
-export async function autoCommitAll(worktreePath: string, message: string): Promise<void> {
+export async function autoCommitAll(worktreePath: string, message: string, excludePaths?: string[]): Promise<boolean> {
   await runGitWithOutput(["add", "-A"], { cwd: worktreePath });
-  await runGitWithOutput(["commit", "-m", message], { cwd: worktreePath });
+
+  if (excludePaths && excludePaths.length > 0) {
+    for (const path of excludePaths) {
+      await runGitWithOutput(["reset", "--", path], { cwd: worktreePath });
+    }
+  }
+
+  try {
+    await runGitWithOutput(["diff", "--cached", "--quiet"], { cwd: worktreePath });
+    return false;
+  } catch {
+    await runGitWithOutput(["commit", "-m", message], { cwd: worktreePath });
+    return true;
+  }
 }
 
 const AUTO_COMMIT_MESSAGE = "review: auto-commit working tree changes";
+const ARTIFACT_EXCLUDE_PATHS = ["docs/reviews/"];
 
 export async function autoCommitDirtyWorktree(worktreePath: string): Promise<boolean> {
   try {
@@ -437,8 +451,7 @@ export async function autoCommitDirtyWorktree(worktreePath: string): Promise<boo
       return false;
     }
 
-    await autoCommitAll(worktreePath, AUTO_COMMIT_MESSAGE);
-    return true;
+    return await autoCommitAll(worktreePath, AUTO_COMMIT_MESSAGE, ARTIFACT_EXCLUDE_PATHS);
   } catch (error) {
     if (error instanceof GitWorkspaceError) {
       throw error;
