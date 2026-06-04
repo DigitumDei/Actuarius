@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { spawnCollect } from "../src/utils/spawnCollect.js";
+import { spawnCollect, spawnCollectWithTransport } from "../src/utils/spawnCollect.js";
 
 // Use the current node binary so these tests work without assuming PATH contents.
 const node = process.execPath;
@@ -107,5 +107,166 @@ describe("spawnCollect — stderr trimming", () => {
       code: "ETIMEDOUT",
       stderr: expect.stringMatching(/^\[stderr truncated\]\n/),
     });
+  });
+});
+
+describe("spawnCollectWithTransport — argv transport", () => {
+  it("passes through when payload fits under the limit", async () => {
+    const result = await spawnCollectWithTransport({
+      file: node,
+      args: ["-e", `process.stdout.write("hello from argv");`],
+      promptArgIndices: [],
+      cwd,
+      timeoutMs,
+      maxBuffer: 1024,
+    });
+    expect(result.stdout).toBe("hello from argv");
+  });
+
+  it("preserves stderr truncation behavior through the wrapper", async () => {
+    const result = await spawnCollectWithTransport({
+      file: node,
+      args: ["-e", `process.stderr.write("x".repeat(200)); process.stdout.write("ok");`],
+      promptArgIndices: [],
+      cwd,
+      timeoutMs,
+      maxBuffer: 1024 * 1024,
+      maxStderrBuffer: 100,
+    });
+    expect(result.stdout).toBe("ok");
+    expect(result.stderr.startsWith("[stderr truncated]\n")).toBe(true);
+  });
+
+  it("rejects with EMSGSIZE when stdout exceeds maxBuffer", async () => {
+    await expect(
+      spawnCollectWithTransport({
+        file: node,
+        args: ["-e", `process.stdout.write("x".repeat(200));`],
+        promptArgIndices: [],
+        cwd,
+        timeoutMs,
+        maxBuffer: 100,
+      })
+    ).rejects.toMatchObject({ code: "EMSGSIZE" });
+  });
+});
+
+describe("spawnCollectWithTransport — stdin transport", () => {
+  it("pipes large prompt via stdin when argv exceeds threshold", async () => {
+    const bigPrompt = "x".repeat(2 * 1024 * 1024);
+    const script = `
+      let data = "";
+      process.stdin.setEncoding("utf-8");
+      process.stdin.on("data", (chunk) => { data += chunk; });
+      process.stdin.on("end", () => {
+        process.stdout.write("received " + data.length + " bytes");
+      });
+    `;
+    const result = await spawnCollectWithTransport({
+      file: node,
+      args: ["-e", script, bigPrompt],
+      promptArgIndices: [2],
+      cwd,
+      timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    expect(result.stdout).toBe(`received ${bigPrompt.length} bytes`);
+  });
+
+  it("preserves non-prompt args when using stdin transport", async () => {
+    const bigPrompt = "y".repeat(2 * 1024 * 1024);
+    // Use "--" separator so Node doesn't parse extra args as its own flags
+    const result = await spawnCollectWithTransport({
+      file: node,
+      args: ["-e", `process.stdout.write(JSON.stringify(process.argv.slice(1)));`, "--", bigPrompt, "--extra-flag"],
+      // bigPrompt is at index 3 (after -e, script, --)
+      promptArgIndices: [3],
+      cwd,
+      timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    // The big prompt is removed from argv, but --extra-flag remains
+    expect(result.stdout).not.toContain(bigPrompt);
+    expect(result.stdout).toContain("--extra-flag");
+  });
+
+  it("rejects on non-zero exit with stdin transport", async () => {
+    const bigPrompt = "z".repeat(2 * 1024 * 1024);
+    await expect(
+      spawnCollectWithTransport({
+        file: node,
+        args: ["-e", `process.exit(1);`, bigPrompt],
+        promptArgIndices: [2],
+        cwd,
+        timeoutMs: 500,
+        maxBuffer: 1024,
+      })
+    ).rejects.toMatchObject({ killed: false });
+  });
+});
+
+describe("spawnCollectWithTransport — tempfile transport", () => {
+  it("writes prompt to temp file and passes path via flag", async () => {
+    const bigPrompt = "w".repeat(2 * 1024 * 1024);
+    // Use "--" separator so Node does not parse --prompt-file as its own flag
+    // process.argv[2] is the file path (after node, --prompt-file)
+    const result = await spawnCollectWithTransport({
+      file: node,
+      args: ["-e", `process.stdout.write(process.argv[2] || "none");`, "--", bigPrompt],
+      // bigPrompt is at index 3 (after -e, script, --)
+      promptArgIndices: [3],
+      cwd,
+      timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+      supportsStdinFallback: false,
+      tempfileFlag: ["--prompt-file", "<path>"],
+    });
+    // The output should be the temp file path (placeholder was replaced)
+    expect(result.stdout).toContain("prompt.txt");
+  });
+
+  it("cleans up temp dir after successful spawn", async () => {
+    const bigPrompt = "v".repeat(2 * 1024 * 1024);
+    await spawnCollectWithTransport({
+      file: node,
+      args: ["-e", `process.stdout.write("ok");`, "--", bigPrompt],
+      promptArgIndices: [3],
+      cwd,
+      timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+      supportsStdinFallback: false,
+      tempfileFlag: ["--prompt-file", "<path>"],
+    });
+
+    const { tmpdir } = await import("node:os");
+    const { readdirSync } = await import("node:fs");
+    const leftovers = readdirSync(tmpdir()).filter((n: string) =>
+      n.startsWith("actuarius-prompt-")
+    );
+    expect(leftovers).toEqual([]);
+  });
+
+  it("cleans up temp dir on non-zero exit", async () => {
+    const bigPrompt = "u".repeat(2 * 1024 * 1024);
+    const { tmpdir } = await import("node:os");
+    const { readdirSync } = await import("node:fs");
+
+    await expect(
+      spawnCollectWithTransport({
+        file: node,
+        args: ["-e", `process.exit(1);`, "--", bigPrompt],
+        promptArgIndices: [3],
+        cwd,
+        timeoutMs: 500,
+        maxBuffer: 1024,
+        supportsStdinFallback: false,
+        tempfileFlag: ["--prompt-file", "<path>"],
+      })
+    ).rejects.toBeTruthy();
+
+    const leftovers = readdirSync(tmpdir()).filter((n: string) =>
+      n.startsWith("actuarius-prompt-")
+    );
+    expect(leftovers).toEqual([]);
   });
 });

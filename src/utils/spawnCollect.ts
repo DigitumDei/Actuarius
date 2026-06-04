@@ -210,6 +210,108 @@ export function decidePromptTransport(
   return { transport: "argv", args, totalBytes };
 }
 
+/**
+ * Placeholder string used in `tempfileFlag` arrays; replaced with the real
+ * temp-file path by `spawnCollectWithTransport`.
+ */
+export const TEMP_FILE_PATH_PLACEHOLDER = "<path>";
+
+export interface SpawnCollectTransportOptions {
+  /** Path to the binary to spawn. */
+  file: string;
+  /** Full argument list including any prompt args. */
+  args: string[];
+  /** Indices of args that constitute the prompt (see `decidePromptTransport`). */
+  promptArgIndices: number[];
+  /** Working directory for the child process. */
+  cwd: string;
+  /** Kill the process after this many milliseconds. */
+  timeoutMs: number;
+  /** Hard limit for stdout in bytes. */
+  maxBuffer: number;
+  /** Soft limit for stderr in bytes (default 64 KB). */
+  maxStderrBuffer?: number;
+  /** Environment variables for the child process. */
+  env?: NodeJS.ProcessEnv;
+  /** Whether the CLI accepts prompt input via stdin (default `true`). */
+  supportsStdinFallback?: boolean;
+  /**
+   * Flag args for file-based input when stdin is unavailable
+   * (e.g. `["--prompt-file", "<path>"]`). Any arg equal to
+   * `TEMP_FILE_PATH_PLACEHOLDER` is replaced with the real temp-file path.
+   */
+  tempfileFlag?: string[];
+}
+
+/**
+ * High-level wrapper that combines `decidePromptTransport` + `spawnCollect`
+ * + temp-file lifecycle management.
+ *
+ * 1. Calls `decidePromptTransport` to pick the optimal transport.
+ * 2. If "stdin": passes `stdinPayload` via `spawnCollect`'s stdin option.
+ * 3. If "tempfile": creates a temp file, replaces placeholder args,
+ *    spawns, and cleans up the temp file on completion (success or error).
+ * 4. If "argv": spawns with the original args unmodified.
+ *
+ * Preserves the existing non-interactive stdin default (stdio: "ignore")
+ * when no stdin content is needed.
+ */
+export async function spawnCollectWithTransport(
+  options: SpawnCollectTransportOptions,
+): Promise<SpawnResult> {
+  const {
+    file,
+    args,
+    promptArgIndices,
+    cwd,
+    timeoutMs,
+    maxBuffer,
+    maxStderrBuffer,
+    env,
+    supportsStdinFallback,
+    tempfileFlag,
+  } = options;
+
+  const decision = decidePromptTransport(
+    args,
+    promptArgIndices,
+    env,
+    supportsStdinFallback,
+    tempfileFlag,
+  );
+
+  let tempFileInfo: TempPromptFile | undefined;
+
+  try {
+    if (decision.transport === "tempfile") {
+      tempFileInfo = await writeTempPromptFile(decision.stdinPayload!);
+      const fileArgs = decision.args.map(
+        (a) => (a === TEMP_FILE_PATH_PLACEHOLDER ? tempFileInfo!.filePath : a),
+      );
+      return await spawnCollect(file, fileArgs, {
+        cwd,
+        timeoutMs,
+        maxBuffer,
+        maxStderrBuffer,
+        env,
+      });
+    }
+
+    return await spawnCollect(file, decision.args, {
+      cwd,
+      timeoutMs,
+      maxBuffer,
+      maxStderrBuffer,
+      env,
+      stdin: decision.stdinPayload,
+    });
+  } finally {
+    if (tempFileInfo) {
+      await cleanupTempPromptFile(tempFileInfo.tempDir);
+    }
+  }
+}
+
 export interface SpawnResult {
   stdout: string;
   stderr: string;
