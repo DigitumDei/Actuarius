@@ -841,37 +841,6 @@ export class AppDatabase {
       .run(guildId, slotIndex);
   }
 
-  public setGuildReviewRoleModelConfig(
-    guildId: string,
-    role: ReviewModelRole,
-    provider: AiProvider | null,
-    model: string | null,
-    updatedByUserId: string
-  ): GuildModelConfigRow {
-    const providerColumn = `${role}_provider` as const;
-    const modelColumn = `${role}_model` as const;
-
-    return guildModelConfigRowSchema.parse(
-      this.db
-        .prepare(
-          `INSERT INTO guild_model_config (
-             guild_id, provider, model,
-             ${providerColumn},
-             ${modelColumn},
-             updated_by_user_id
-           )
-           VALUES (?, 'claude', NULL, ?, ?, ?)
-           ON CONFLICT(guild_id) DO UPDATE
-           SET ${providerColumn} = excluded.${providerColumn},
-               ${modelColumn} = excluded.${modelColumn},
-               updated_by_user_id = excluded.updated_by_user_id,
-               updated_at = CURRENT_TIMESTAMP
-           RETURNING *`
-        )
-        .get(guildId, provider, model, updatedByUserId)
-    );
-  }
-
   public setGuildReviewRoleConfig(
     guildId: string,
     role: ReviewModelRole,
