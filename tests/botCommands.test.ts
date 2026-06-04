@@ -34,7 +34,8 @@ vi.mock("../src/services/gitWorkspaceService.js", async () => {
     getDiffSinceRef: vi.fn(),
     getReviewDiff: vi.fn(),
     hasUncommittedChanges: vi.fn(),
-    pushBranch: vi.fn()
+    pushBranch: vi.fn(),
+    autoCommitDirtyWorktree: vi.fn()
   };
 });
 
@@ -96,6 +97,7 @@ vi.mock("../src/services/iterativeTaskLoopService.js", async () => {
 
 const { createRequestWorktree, deleteRequestBranch } = await import("../src/services/requestWorktreeService.js");
 const {
+  autoCommitDirtyWorktree,
   detectDefaultBranch,
   ensureRepoCheckedOutToMaster,
   getDiffSinceRef,
@@ -1325,6 +1327,7 @@ describe("ActuariusBot review command", () => {
   });
 
   it("passes review progress into the review service and maps events to Discord messages", async () => {
+    vi.mocked(autoCommitDirtyWorktree).mockResolvedValue(false);
     vi.mocked(runAdversarialReview).mockResolvedValue({
       reviewRunId: 12,
       diffHeadSha: "abc123",
@@ -1387,6 +1390,7 @@ describe("ActuariusBot review command", () => {
 
     await (bot as any).handleReview(interaction);
 
+    expect(autoCommitDirtyWorktree).toHaveBeenCalledWith("/tmp");
     expect(runAdversarialReview).toHaveBeenCalledWith(expect.objectContaining({
       maxConsensusRounds: 4,
       onProgress: expect.any(Function)

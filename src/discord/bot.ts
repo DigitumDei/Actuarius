@@ -41,6 +41,7 @@ import {
 import {
   GitWorkspaceError,
   autoCommitAll,
+  autoCommitDirtyWorktree,
   cleanupDeletedRemoteBranches,
   detectDefaultBranch,
   ensureRepoCheckedOutToMaster,
@@ -2691,6 +2692,11 @@ Output the result of the command or the link to the created issue.`;
     await reviewThread.send("Adversarial review started.");
 
     try {
+      const autoCommitted = await autoCommitDirtyWorktree(latestRequest.worktree_path);
+      if (autoCommitted) {
+        await reviewThread.send("Uncommitted changes in the worktree were auto-committed for review.");
+      }
+
       const runners = this.buildReviewRunners(interaction.guildId);
       const threadHistory = await this.buildThreadHistory(reviewThread);
       const result = await new Promise<Awaited<ReturnType<typeof runAdversarialReview>>>((resolve, reject) => {
