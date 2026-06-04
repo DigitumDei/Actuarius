@@ -333,6 +333,18 @@ describe("AppDatabase review role config on guild_review_config", () => {
     expect(config!.rounds).toBe(2);
   });
 
+  it("clearing last override preserves a prior custom round limit", () => {
+    db.setGuildReviewConfig("guild-1", 3, "user-1");
+    db.setGuildReviewRoleConfig("guild-1", "analyzer", "claude", "claude-sonnet-4-5", "user-2");
+    db.clearGuildReviewRoleConfig("guild-1", "analyzer", "user-3");
+
+    const config = db.getGuildReviewConfig("guild-1");
+    expect(config).toBeDefined();
+    expect(config!.analyzer_provider).toBeNull();
+    expect(config!.analyzer_model).toBeNull();
+    expect(config!.rounds).toBe(3);
+  });
+
   it("updates existing override on second call", () => {
     db.setGuildReviewRoleConfig("guild-1", "analyzer", "claude", "claude-sonnet-4-5", "user-1");
     db.setGuildReviewRoleConfig("guild-1", "analyzer", "gemini", "gemini-2.0-flash", "user-2");
