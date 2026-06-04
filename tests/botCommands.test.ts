@@ -1415,6 +1415,76 @@ describe("ActuariusBot review command", () => {
     expect(send).toHaveBeenNthCalledWith(6, "Synthesizing final verdict…");
   });
 
+  it("does not auto-commit review artifacts when running /review a second time on the same worktree", async () => {
+    vi.mocked(autoCommitDirtyWorktree).mockResolvedValue(false);
+    vi.mocked(runAdversarialReview).mockResolvedValue({
+      reviewRunId: 13,
+      diffHeadSha: "def456",
+      reviewersSucceeded: 2,
+      reviewersAttempted: 2,
+      artifactPath: "docs/reviews/41/review.md",
+      summary: {
+        executiveSummary: "No new issues.",
+        blockingIssues: [],
+        nonBlockingIssues: [],
+        missingTests: [],
+        outstandingConcerns: [],
+        verdict: "ready_for_pr"
+      }
+    });
+
+    const bot = createBot({
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "user-1",
+        worktree_path: "/tmp",
+        branch_name: "ask/41-123",
+        status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      }),
+      getGuildReviewConfig: vi.fn().mockReturnValue({
+        guild_id: "guild-1", rounds: 4, updated_by_user_id: "admin-1", updated_at: "2026-03-24T00:00:00Z"
+      }),
+      getGuildModelConfig: vi.fn().mockReturnValue({
+        provider: "claude", model: "claude-opus", updated_at: "2026-03-18T00:00:00Z"
+      })
+    });
+    (bot as any).config.enableCodexExecution = true;
+    (bot as any).config.enableGeminiExecution = true;
+    vi.spyOn((bot as any), "buildReviewRunners").mockReturnValue({
+      analyzer: { provider: "claude", model: "claude-opus", label: "Claude", run: vi.fn() },
+      reviewers: [
+        { provider: "claude", model: "claude-opus", label: "Claude", run: vi.fn() },
+        { provider: "codex", model: "o4-mini", label: "Codex", run: vi.fn() }
+      ],
+      judge: { provider: "claude", model: "claude-opus", label: "Claude", run: vi.fn() },
+      summarizer: { provider: "codex", model: "o4-mini", label: "Codex", run: vi.fn() }
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      channel: {
+        isThread: () => true,
+        parentId: "channel-1",
+        send,
+        messages: { fetch: vi.fn().mockResolvedValue(new Map()) }
+      }
+    });
+
+    await (bot as any).handleReview(interaction);
+
+    expect(autoCommitDirtyWorktree).toHaveBeenCalledWith("/tmp");
+    expect(send).not.toHaveBeenCalledWith("Uncommitted changes in the worktree were auto-committed for review.");
+    expect(runAdversarialReview).toHaveBeenCalledWith(expect.objectContaining({
+      maxConsensusRounds: 4,
+      onProgress: expect.any(Function)
+    }));
+  });
+
   it("rejects review when fewer than 2 reviewer slots are configured", async () => {
     const bot = createBot({
       getReviewerSlots: vi.fn().mockReturnValue([

@@ -583,4 +583,18 @@ describe("gitWorkspaceService", () => {
     expect(result).toBe(true);
     expect(mockSpawnCollect).toHaveBeenCalledTimes(3);
   });
+
+  it("autoCommitAll rethrows genuine git errors from diff --cached --quiet", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockRejectedValueOnce(Object.assign(
+        new Error("Process exited with code 128"),
+        { stdout: "", stderr: "fatal: index corrupted" }
+      ));
+
+    await expect(autoCommitAll("/tmp/repo", "test commit", ["docs/reviews/"])).rejects.toThrow();
+    expect(mockSpawnCollect).toHaveBeenCalledTimes(3);
+    expect(mockSpawnCollect).toHaveBeenNthCalledWith(3, "git", ["diff", "--cached", "--quiet"], expect.any(Object));
+  });
 });

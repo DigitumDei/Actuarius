@@ -436,7 +436,11 @@ export async function autoCommitAll(worktreePath: string, message: string, exclu
   try {
     await runGitWithOutput(["diff", "--cached", "--quiet"], { cwd: worktreePath });
     return false;
-  } catch {
+  } catch (error) {
+    const spawnError = error as { stderr?: string };
+    if (spawnError.stderr) {
+      throw error;
+    }
     await runGitWithOutput(["commit", "-m", message], { cwd: worktreePath });
     return true;
   }
