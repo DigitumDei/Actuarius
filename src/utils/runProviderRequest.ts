@@ -1,5 +1,5 @@
 import type { Logger } from "pino";
-import { spawnCollectWithTransport, estimateSpawnPayloadBytes, DEFAULT_ARGV_TOTAL_LIMIT } from "./spawnCollect.js";
+import { spawnCollect, spawnCollectWithTransport, estimateSpawnPayloadBytes, DEFAULT_ARGV_TOTAL_LIMIT } from "./spawnCollect.js";
 
 export interface ProviderRequestInput {
   prompt: string;
@@ -130,22 +130,53 @@ export async function runProviderRequest(
     }
   }
 
+  // For providers using the -p <prompt> flag-pair pattern with stdin fallback,
+  // keep the -p flag in args with an empty value and pipe the actual prompt via
+  // stdin (the CLI appends stdin content to the -p value, e.g. Gemini).
+  // This bypasses spawnCollectWithTransport's prompt-removal behavior which
+  // would remove -p entirely, breaking headless mode.
+  const useFlagPairStdin = !config.positionalPrompt
+    && config.supportsStdinFallback !== false
+    && totalBytes > DEFAULT_ARGV_TOTAL_LIMIT;
+
   let stdout: string;
   let stderr: string;
 
   try {
-    ({ stdout, stderr } = await spawnCollectWithTransport({
-      file: config.binary,
-      args,
-      promptArgIndices,
-      cwd: input.cwd,
-      timeoutMs: input.timeoutMs,
-      maxBuffer: 4 * 1024 * 1024,
-      ...(input.env ? { env: input.env } : {}),
-      ...(config.supportsStdinFallback !== undefined ? { supportsStdinFallback: config.supportsStdinFallback } : {}),
-      ...(config.tempfileFlag !== undefined ? { tempfileFlag: config.tempfileFlag } : {}),
-      ...(config.reshapeArgsForTempfile !== undefined ? { reshapeArgsForTempfile: config.reshapeArgsForTempfile } : {}),
-    }));
+    if (useFlagPairStdin) {
+      const stdinArgs = [
+        ...prefix,
+        ...cwdArgs,
+        "-p",
+        "",
+        ...config.extraArgs,
+      ];
+      if (input.model) {
+        stdinArgs.push("--model", input.model);
+      }
+      logger.debug({ args: stdinArgs, stdinLength: input.prompt.length }, `${config.logLabel} oversized prompt via -p "" + stdin`);
+      const result = await spawnCollect(config.binary, stdinArgs, {
+        cwd: input.cwd,
+        timeoutMs: input.timeoutMs,
+        maxBuffer: 4 * 1024 * 1024,
+        ...(input.env ? { env: input.env } : {}),
+        stdin: input.prompt,
+      });
+      ({ stdout, stderr } = result);
+    } else {
+      ({ stdout, stderr } = await spawnCollectWithTransport({
+        file: config.binary,
+        args,
+        promptArgIndices,
+        cwd: input.cwd,
+        timeoutMs: input.timeoutMs,
+        maxBuffer: 4 * 1024 * 1024,
+        ...(input.env ? { env: input.env } : {}),
+        ...(config.supportsStdinFallback !== undefined ? { supportsStdinFallback: config.supportsStdinFallback } : {}),
+        ...(config.tempfileFlag !== undefined ? { tempfileFlag: config.tempfileFlag } : {}),
+        ...(config.reshapeArgsForTempfile !== undefined ? { reshapeArgsForTempfile: config.reshapeArgsForTempfile } : {}),
+      }));
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : `${config.logLabel} execution failed.`;
     const nodeError = error as NodeJS.ErrnoException & {
