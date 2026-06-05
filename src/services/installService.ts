@@ -17,6 +17,25 @@ import { spawnCollect } from "../utils/spawnCollect.js";
 
 const INSTALL_BUFFER_LIMIT = 4 * 1024 * 1024;
 
+const ESSENTIAL_ENV_VARS = new Set([
+  "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ", "PWD", "TERM", "PATH"
+]);
+
+const PROVIDER_AUTH_VARS = new Set([
+  "GEMINI_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "GH_TOKEN",
+  "GITHUB_TOKEN"
+]);
+
+const GITHUB_CLI_VARS = new Set([
+  "GH_TOKEN",
+  "GH_PROMPT_DISABLED",
+  "GH_CONFIG_DIR",
+  "GIT_TERMINAL_PROMPT"
+]);
+
 export class InstallServiceError extends Error {
   public readonly code:
     | "UNKNOWN_PACKAGE"
@@ -301,6 +320,80 @@ export class InstallService {
     const orderedPathEntries = [...pathEntries];
     if (orderedPathEntries.length > 0) {
       env.PATH = `${orderedPathEntries.join(":")}:${process.env.PATH ?? ""}`;
+    }
+
+    return {
+      env,
+      pathEntries: orderedPathEntries,
+      packages
+    };
+  }
+
+  public static deduplicatePath(pathValue: string | undefined): string {
+    if (!pathValue) return "";
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const entry of pathValue.split(":")) {
+      if (entry && !seen.has(entry)) {
+        seen.add(entry);
+        result.push(entry);
+      }
+    }
+    return result.join(":");
+  }
+
+  public buildMinimalExecutionEnvironment(input: {
+    repoId: number;
+    threadId?: string | null;
+  }): InstallExecutionEnvironment {
+    const installs = this.db.listSuccessfulInstallRequestsForScope(input);
+    const pathEntries = new Set<string>();
+    const packages: string[] = [];
+    const env: NodeJS.ProcessEnv = {};
+
+    const allowedAuthVars = new Set([...PROVIDER_AUTH_VARS, ...GITHUB_CLI_VARS]);
+
+    for (const key of ESSENTIAL_ENV_VARS) {
+      if (process.env[key] !== undefined) {
+        env[key] = process.env[key];
+      }
+    }
+
+    for (const key of allowedAuthVars) {
+      if (process.env[key] !== undefined) {
+        env[key] = process.env[key];
+      }
+    }
+
+    for (const install of installs) {
+      packages.push(install.package_id);
+      if (install.bin_path) {
+        pathEntries.add(install.bin_path);
+      }
+
+      if (install.env_json) {
+        try {
+          const parsed = JSON.parse(install.env_json) as Record<string, string>;
+          for (const [key, value] of Object.entries(parsed)) {
+            env[key] = value;
+          }
+        } catch (error) {
+          this.logger.warn({ error, installRequestId: install.id }, "Failed to parse install request env_json");
+        }
+      }
+    }
+
+    const orderedPathEntries = [...pathEntries];
+    if (orderedPathEntries.length > 0) {
+      const existingPath = env.PATH ?? "";
+      const dedupedBase = InstallService.deduplicatePath(existingPath);
+      const allEntries = [...orderedPathEntries];
+      if (dedupedBase) {
+        for (const entry of dedupedBase.split(":")) {
+          allEntries.push(entry);
+        }
+      }
+      env.PATH = InstallService.deduplicatePath(allEntries.join(":"));
     }
 
     return {
