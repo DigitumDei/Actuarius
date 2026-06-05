@@ -108,7 +108,7 @@ export async function runProviderRequest(
   // fallback transport is available (the subprocess may fail with E2BIG).
   const totalBytes = estimateSpawnPayloadBytes(args, input.env);
   if (totalBytes > DEFAULT_ARGV_TOTAL_LIMIT) {
-    const hasFallback = config.supportsStdinFallback !== false || config.tempfileFlag !== undefined;
+    const hasFallback = config.supportsStdinFallback !== false || config.tempfileFlag !== undefined || config.reshapeArgsForTempfile !== undefined;
     if (!hasFallback) {
       logger.warn(
         {

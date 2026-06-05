@@ -386,4 +386,65 @@ describe("spawnCollectWithTransport — tempfile transport", () => {
     );
     expect(leftovers).toEqual([]);
   });
+
+  it("inserts --file flag via reshapeArgsForTempfile matching OpenCode CLI shape", async () => {
+    const bigPrompt = "m".repeat(2 * 1024 * 1024);
+    const reshapeFn = (promptText: string, adjustedArgs: string[], filePath: string) => {
+      const skipIdx = adjustedArgs.indexOf("--dangerously-skip-permissions");
+      if (skipIdx === -1) return [...adjustedArgs, "--file", filePath];
+      return [
+        ...adjustedArgs.slice(0, skipIdx),
+        "--file", filePath,
+        ...adjustedArgs.slice(skipIdx),
+      ];
+    };
+    const result = await spawnCollectWithTransport({
+      file: node,
+      // Simulate opencode `run --dir <cwd> <prompt> --dangerously-skip-permissions`
+      args: ["-e", `process.stdout.write(process.argv.slice(1).join(","));`, "--", bigPrompt, "--dangerously-skip-permissions"],
+      promptArgIndices: [3],
+      cwd,
+      timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+      supportsStdinFallback: false,
+      reshapeArgsForTempfile: reshapeFn,
+    });
+    // The output should contain --file and the temp file path
+    expect(result.stdout).toContain("--file");
+    expect(result.stdout).toContain("prompt.txt");
+    // The --dangerously-skip-permissions flag should still be present
+    expect(result.stdout).toContain("--dangerously-skip-permissions");
+    // The prompt text should NOT be in argv
+    expect(result.stdout).not.toContain(bigPrompt);
+  });
+
+  it("reshapes OpenCode-style positional prompt with cwdFlag and extraArgs", async () => {
+    const bigPrompt = "k".repeat(2 * 1024 * 1024);
+    const reshapeFn = (promptText: string, adjustedArgs: string[], filePath: string) => {
+      const skipIdx = adjustedArgs.indexOf("--dangerously-skip-permissions");
+      if (skipIdx === -1) return [...adjustedArgs, "--file", filePath];
+      return [
+        ...adjustedArgs.slice(0, skipIdx),
+        "--file", filePath,
+        ...adjustedArgs.slice(skipIdx),
+      ];
+    };
+    // Simulate opencode with cwdFlag using -- separator so Node doesn't
+    // interpret --dir as a Node flag: node -e <script> -- --dir /work <prompt> --dangerously-skip-permissions
+    const result = await spawnCollectWithTransport({
+      file: node,
+      args: ["-e", `process.stdout.write(process.argv.slice(1).join(","));`, "--", "--dir", "/work", bigPrompt, "--dangerously-skip-permissions"],
+      promptArgIndices: [5],
+      cwd,
+      timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+      supportsStdinFallback: false,
+      reshapeArgsForTempfile: reshapeFn,
+    });
+    expect(result.stdout).toContain("--dir");
+    expect(result.stdout).toContain("/work");
+    expect(result.stdout).toContain("--file");
+    expect(result.stdout).toContain("prompt.txt");
+    expect(result.stdout).toContain("--dangerously-skip-permissions");
+  });
 });
