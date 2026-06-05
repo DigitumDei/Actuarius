@@ -1,82 +1,228 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import pino from "pino";
+
+vi.mock("node:fs", () => ({
+  existsSync: vi.fn(),
+}));
 
 vi.mock("../src/utils/spawnCollect.js");
 
-const { spawnCollect } = await import("../src/utils/spawnCollect.js");
-const mockSpawnCollect = vi.mocked(spawnCollect);
+const { spawnCollectWithTransport } = await import("../src/utils/spawnCollect.js");
+const mockSpawnCollectWithTransport = vi.mocked(spawnCollectWithTransport);
 
 const { OpencodeExecutionError, runOpencodeRequest } = await import("../src/services/opencodeExecutionService.js");
 
 const logger = pino({ level: "silent" });
 
+describe("OpencodeExecutionError", () => {
+  it("constructs with OPENCODE_UNAVAILABLE code", () => {
+    const error = new OpencodeExecutionError("OPENCODE_UNAVAILABLE", "not found");
+    expect(error.code).toBe("OPENCODE_UNAVAILABLE");
+    expect(error.message).toBe("not found");
+    expect(error.name).toBe("OpencodeExecutionError");
+    expect(error).toBeInstanceOf(Error);
+  });
+
+  it("constructs with OPENCODE_DISABLED code", () => {
+    const error = new OpencodeExecutionError("OPENCODE_DISABLED", "disabled");
+    expect(error.code).toBe("OPENCODE_DISABLED");
+  });
+
+  it("constructs with NOT_AUTHENTICATED code", () => {
+    const error = new OpencodeExecutionError("NOT_AUTHENTICATED", "no auth");
+    expect(error.code).toBe("NOT_AUTHENTICATED");
+  });
+
+  it("constructs with TIMEOUT code", () => {
+    const error = new OpencodeExecutionError("TIMEOUT", "timed out");
+    expect(error.code).toBe("TIMEOUT");
+  });
+
+  it("constructs with FAILED code", () => {
+    const error = new OpencodeExecutionError("FAILED", "failed");
+    expect(error.code).toBe("FAILED");
+  });
+
+  it("constructs with EMPTY_OUTPUT code", () => {
+    const error = new OpencodeExecutionError("EMPTY_OUTPUT", "empty");
+    expect(error.code).toBe("EMPTY_OUTPUT");
+  });
+});
+
 describe("runOpencodeRequest", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    // Bypass the pre-spawn auth check by providing an API key.
-    vi.stubEnv("DEEPSEEK_API_KEY", "test-key");
+    process.env.DEEPSEEK_API_KEY = "test-key";
   });
 
   afterEach(() => {
-    vi.unstubAllEnvs();
+    delete process.env.DEEPSEEK_API_KEY;
   });
 
-  it("returns result text on clean exit", async () => {
-    mockSpawnCollect.mockResolvedValueOnce({ stdout: "task completed", stderr: "" });
-    const result = await runOpencodeRequest({ prompt: "do something", cwd: "/tmp", timeoutMs: 5000 }, logger);
-    expect(result.text).toBe("task completed");
+  it("returns trimmed text from stdout on success", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "  opencode output\n", stderr: "" });
+    const result = await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    expect(result.text).toBe("opencode output");
   });
 
-  it("does NOT throw NOT_AUTHENTICATED when auth failure text appears only in stdout (subprocess output, not OpenCode's own error)", async () => {
-    // OpenCode ran `gemini` as part of a task; gemini printed "not authenticated" which
-    // ended up in OpenCode's stdout. With authCheckOnlyStderr=true this must not be flagged.
-    mockSpawnCollect.mockResolvedValueOnce({
-      stdout: "I ran gemini and got: not authenticated\nset an Auth method in gemini config",
-      stderr: "",
-    });
-    const result = await runOpencodeRequest({ prompt: "investigate gemini", cwd: "/tmp", timeoutMs: 5000 }, logger);
-    expect(result.text).toContain("not authenticated");
-  });
-
-  it("throws NOT_AUTHENTICATED when auth failure pattern appears in stderr", async () => {
-    // OpenCode itself emitted the auth error to stderr — this is a real failure.
-    mockSpawnCollect.mockResolvedValueOnce({
-      stdout: "some partial output",
-      stderr: "Error: set an Auth method for opencode",
-    });
-    await expect(
-      runOpencodeRequest({ prompt: "do something", cwd: "/tmp", timeoutMs: 5000 }, logger)
-    ).rejects.toMatchObject({ code: "NOT_AUTHENTICATED", name: "OpencodeExecutionError" });
-  });
-
-  it("does NOT throw NOT_AUTHENTICATED on non-zero exit when auth failure text appears only in stdout", async () => {
-    // A subprocess OpenCode ran printed auth-failure text to its stdout, which ended up in
-    // OpenCode's stdout. The process then exited non-zero (e.g. subprocess returned error).
-    // With authCheckOnlyStderr=true, stdout must be excluded from the auth pattern check
-    // in the catch block as well as the clean-exit path.
-    mockSpawnCollect.mockRejectedValueOnce(
-      Object.assign(new Error("Process exited with code 1"), {
-        killed: false,
-        stdout: "I ran gemini and got: not authenticated",
-        stderr: "some other error from opencode",
+  it("passes run subcommand, positional prompt, --dir, and --dangerously-skip-permissions", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    await runOpencodeRequest({ prompt: "my prompt", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        file: "opencode",
+        args: ["run", "--dir", "/tmp", "my prompt", "--dangerously-skip-permissions"],
+        cwd: "/tmp",
+        timeoutMs: 5000,
+        maxBuffer: 4 * 1024 * 1024,
       })
     );
-    await expect(
-      runOpencodeRequest({ prompt: "do something", cwd: "/tmp", timeoutMs: 5000 }, logger)
-    ).rejects.not.toMatchObject({ code: "NOT_AUTHENTICATED" });
   });
 
-  it("throws OPENCODE_UNAVAILABLE when binary is not found", async () => {
-    mockSpawnCollect.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
-    await expect(
-      runOpencodeRequest({ prompt: "do something", cwd: "/tmp", timeoutMs: 5000 }, logger)
-    ).rejects.toMatchObject({ code: "OPENCODE_UNAVAILABLE", name: "OpencodeExecutionError" });
+  it("appends --model flag when model is provided", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, model: "o4-mini" }, logger);
+    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        file: "opencode",
+        args: ["run", "--dir", "/tmp", "hello", "--dangerously-skip-permissions", "--model", "o4-mini"],
+        cwd: "/tmp",
+      })
+    );
   });
 
-  it("throws TIMEOUT when execution times out", async () => {
-    mockSpawnCollect.mockRejectedValueOnce(Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }));
-    await expect(
-      runOpencodeRequest({ prompt: "do something", cwd: "/tmp", timeoutMs: 5000 }, logger)
-    ).rejects.toMatchObject({ code: "TIMEOUT", name: "OpencodeExecutionError" });
+  it("passes scoped env vars to the opencode CLI", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, env: { PATH: "/scoped/bin" } }, logger);
+    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        file: "opencode",
+        env: { PATH: "/scoped/bin" },
+      })
+    );
+  });
+
+  it("passes supportsStdinFallback false for tempfile transport", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        supportsStdinFallback: false,
+      })
+    );
+  });
+
+  it("passes reshapeArgsForTempfile callback for oversized prompt fallback", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reshapeArgsForTempfile: expect.any(Function),
+      })
+    );
+  });
+
+  it("reshapeArgsForTempfile inserts --file before --dangerously-skip-permissions", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    const { reshapeArgsForTempfile } = mockSpawnCollectWithTransport.mock.calls[0]![0] as { reshapeArgsForTempfile: (promptText: string, adjustedArgs: string[], tempFilePath: string) => string[] };
+
+    const adjusted = ["run", "--dir", "/work", "--dangerously-skip-permissions", "--model", "o4-mini"];
+    const result = reshapeArgsForTempfile("big prompt", adjusted, "/tmp/prompt.txt");
+    expect(result).toEqual([
+      "run", "--dir", "/work",
+      "--file", "/tmp/prompt.txt",
+      "--dangerously-skip-permissions",
+      "--model", "o4-mini",
+    ]);
+  });
+
+  it("reshapeArgsForTempfile appends --file and path when --dangerously-skip-permissions is absent", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    const { reshapeArgsForTempfile } = mockSpawnCollectWithTransport.mock.calls[0]![0] as { reshapeArgsForTempfile: (promptText: string, adjustedArgs: string[], tempFilePath: string) => string[] };
+
+    const adjusted = ["run", "--dir", "/work", "--model", "o4-mini"];
+    const result = reshapeArgsForTempfile("big prompt", adjusted, "/tmp/prompt.txt");
+    expect(result).toEqual([
+      "run", "--dir", "/work", "--model", "o4-mini",
+      "--file", "/tmp/prompt.txt",
+    ]);
+  });
+
+  it("throws NOT_AUTHENTICATED when no auth is configured", async () => {
+    delete process.env.DEEPSEEK_API_KEY;
+    await expect(runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
+      code: "NOT_AUTHENTICATED",
+      name: "OpencodeExecutionError",
+    });
+  });
+
+  it("throws OPENCODE_UNAVAILABLE when binary is not found (ENOENT)", async () => {
+    const err = Object.assign(new Error("spawn opencode ENOENT"), { code: "ENOENT" });
+    mockSpawnCollectWithTransport.mockRejectedValueOnce(err);
+    await expect(runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
+      code: "OPENCODE_UNAVAILABLE",
+      name: "OpencodeExecutionError",
+    });
+  });
+
+  it("throws NOT_AUTHENTICATED when auth failure pattern matches on process error", async () => {
+    const err = Object.assign(
+      new Error("not authenticated"),
+      { stderr: "not authenticated: set an Auth method", stdout: "" },
+    );
+    mockSpawnCollectWithTransport.mockRejectedValueOnce(err);
+    await expect(runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
+      code: "NOT_AUTHENTICATED",
+      name: "OpencodeExecutionError",
+    });
+  });
+
+  it("throws NOT_AUTHENTICATED when auth failure pattern matches on clean exit stdout", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "API key not found. Use /opencode-auth to set one.", stderr: "" });
+    await expect(runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
+      code: "NOT_AUTHENTICATED",
+      name: "OpencodeExecutionError",
+    });
+  });
+
+  it("throws TIMEOUT when process times out (ETIMEDOUT)", async () => {
+    const err = Object.assign(new Error("timed out"), { code: "ETIMEDOUT", killed: true, signal: "SIGTERM" });
+    mockSpawnCollectWithTransport.mockRejectedValueOnce(err);
+    await expect(runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
+      code: "TIMEOUT",
+      name: "OpencodeExecutionError",
+    });
+  });
+
+  it("throws FAILED when process exits non-zero", async () => {
+    const err = Object.assign(new Error("Process exited with code 1"), { killed: false, signal: null });
+    mockSpawnCollectWithTransport.mockRejectedValueOnce(err);
+    await expect(runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
+      code: "FAILED",
+      name: "OpencodeExecutionError",
+    });
+  });
+
+  it("throws EMPTY_OUTPUT when stdout is blank", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "  \n  ", stderr: "" });
+    await expect(runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
+      code: "EMPTY_OUTPUT",
+      name: "OpencodeExecutionError",
+    });
+  });
+
+  it("prompt is not in argv when tempfile transport is used (reshape callback removes it)", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    await runOpencodeRequest({ prompt: "my prompt", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    const callArgs = mockSpawnCollectWithTransport.mock.calls[0]![0];
+    const reshapeFn = callArgs.reshapeArgsForTempfile as (promptText: string, adjustedArgs: string[], tempFilePath: string) => string[];
+    const promptText = "some oversized prompt that would not fit in argv";
+    const adjustedArgs = ["run", "--dir", "/work", "--dangerously-skip-permissions"];
+    const reshaped = reshapeFn(promptText, adjustedArgs, "/tmp/actuarius-prompt-xxx/prompt.txt");
+    expect(reshaped).not.toContain(promptText);
+    expect(reshaped).toContain("--file");
+    expect(reshaped).toContain("/tmp/actuarius-prompt-xxx/prompt.txt");
   });
 });
