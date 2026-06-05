@@ -679,7 +679,7 @@ describe("InstallService", () => {
     const originalEnv: Record<string, string | undefined> = {};
 
     beforeAll(() => {
-      for (const key of ["HOME", "USER", "SHELL", "LANG", "PATH", "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "GH_TOKEN", "GH_PROMPT_DISABLED", "NON_ESSENTIAL_VAR"]) {
+      for (const key of ["HOME", "USER", "SHELL", "LANG", "PATH", "GEMINI_API_KEY", "GOOGLE_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "XAI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "TOGETHER_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN", "GH_PROMPT_DISABLED", "NON_ESSENTIAL_VAR"]) {
         originalEnv[key] = process.env[key];
       }
     });
@@ -706,13 +706,27 @@ describe("InstallService", () => {
     });
 
     it("preserves provider auth vars when set in process.env", () => {
-      process.env.GEMINI_API_KEY = "gemini-test-key";
-      process.env.DEEPSEEK_API_KEY = "deepseek-test-key";
+      const authVars: Record<string, string> = {
+        GEMINI_API_KEY: "gemini-test-key",
+        GOOGLE_API_KEY: "google-test-key",
+        DEEPSEEK_API_KEY: "deepseek-test-key",
+        OPENAI_API_KEY: "openai-test-key",
+        ANTHROPIC_API_KEY: "anthropic-test-key",
+        XAI_API_KEY: "xai-test-key",
+        GROQ_API_KEY: "groq-test-key",
+        OPENROUTER_API_KEY: "openrouter-test-key",
+        TOGETHER_API_KEY: "together-test-key",
+        CLAUDE_CODE_OAUTH_TOKEN: "claude-code-test-token",
+      };
+      for (const [key, value] of Object.entries(authVars)) {
+        process.env[key] = value;
+      }
 
       const result = service.buildMinimalExecutionEnvironment({ repoId: 1, threadId: "thread-1" });
 
-      expect(result.env.GEMINI_API_KEY).toBe("gemini-test-key");
-      expect(result.env.DEEPSEEK_API_KEY).toBe("deepseek-test-key");
+      for (const key of Object.keys(authVars)) {
+        expect(result.env[key]).toBe(authVars[key]);
+      }
     });
 
     it("preserves GitHub CLI vars when set in process.env", () => {
