@@ -1,22 +1,71 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeAll, beforeEach } from "vitest";
+import { EventEmitter } from "node:events";
 import pino from "pino";
 
-vi.mock("../src/utils/spawnCollect.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/utils/spawnCollect.js")>();
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal();
   return {
     ...actual,
-    spawnCollectWithTransport: vi.fn().mockResolvedValue({ stdout: "ok", stderr: "" }),
+    spawn: vi.fn(),
   };
 });
 
-const { spawnCollectWithTransport } = await import("../src/utils/spawnCollect.js");
-const mockSpawnCollectWithTransport = vi.mocked(spawnCollectWithTransport);
-
-const { decidePromptTransport, DEFAULT_ARGV_TOTAL_LIMIT } = await import("../src/utils/spawnCollect.js");
+const logger = pino({ level: "silent" });
 
 const { CodexExecutionError, runCodexRequest } = await import("../src/services/codexExecutionService.js");
+const { spawn } = await import("node:child_process");
+const { DEFAULT_ARGV_TOTAL_LIMIT } = await import("../src/utils/spawnCollect.js");
 
-const logger = pino({ level: "silent" });
+const mockSpawn = vi.mocked(spawn);
+
+function createMockChild(opts: {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number;
+  error?: Error;
+}): EventEmitter {
+  const stdoutEE = new EventEmitter() as EventEmitter & { destroy?: () => void };
+  stdoutEE.destroy = () => {};
+  const stderrEE = new EventEmitter() as EventEmitter & { destroy?: () => void };
+  stderrEE.destroy = () => {};
+  const stdinEE = new EventEmitter() as EventEmitter & {
+    write?: ReturnType<typeof vi.fn>;
+    end?: ReturnType<typeof vi.fn>;
+    destroy?: () => void;
+  };
+  stdinEE.write = vi.fn();
+  stdinEE.end = vi.fn();
+  stdinEE.destroy = () => {};
+
+  const child = new EventEmitter() as EventEmitter & {
+    stdout: EventEmitter & { destroy?: () => void };
+    stderr: EventEmitter & { destroy?: () => void };
+    stdin: EventEmitter & { write?: ReturnType<typeof vi.fn>; end?: ReturnType<typeof vi.fn>; destroy?: () => void };
+    pid: number;
+    kill: ReturnType<typeof vi.fn>;
+  };
+  child.stdout = stdoutEE;
+  child.stderr = stderrEE;
+  child.stdin = stdinEE;
+  child.pid = 99999;
+  child.kill = vi.fn();
+
+  setTimeout(() => {
+    if (opts.error) {
+      child.emit("error", opts.error);
+      return;
+    }
+    if (opts.stdout) {
+      stdoutEE.emit("data", Buffer.from(opts.stdout));
+    }
+    if (opts.stderr) {
+      stderrEE.emit("data", Buffer.from(opts.stderr));
+    }
+    child.emit("close", opts.exitCode ?? 0, null);
+  }, 5);
+
+  return child;
+}
 
 describe("CodexExecutionError", () => {
   it("constructs with CODEX_UNAVAILABLE code", () => {
@@ -49,76 +98,105 @@ describe("CodexExecutionError", () => {
   });
 });
 
-describe("runCodexRequest", () => {
+describe("runCodexRequest — integration (real transport)", () => {
   beforeEach(() => {
-    vi.resetAllMocks();
+    vi.clearAllMocks();
   });
 
-  it("returns trimmed text from stdout on success", async () => {
-    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "  codex output\n", stderr: "" });
+  it("uses argv transport for a small prompt (prompt stays in args, stdin not written)", async () => {
+    mockSpawn.mockImplementation(() =>
+      createMockChild({ stdout: "codex result", exitCode: 0 }),
+    );
+
     const result = await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
-    expect(result.text).toBe("codex output");
+
+    expect(result.text).toBe("codex result");
+
+    const [file, args] = mockSpawn.mock.calls[0]!;
+    expect(file).toBe("codex");
+    expect(args).toEqual(["exec", "hello", "--dangerously-bypass-approvals-and-sandbox"]);
+
+    const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
+    expect(stdinWrite).not.toHaveBeenCalled();
   });
 
-  it("passes exec subcommand, positional prompt, and --dangerously-bypass-approvals-and-sandbox", async () => {
-    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
-    await runCodexRequest({ prompt: "my prompt", cwd: "/tmp", timeoutMs: 5000 }, logger);
-    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
-      expect.objectContaining({
-        file: "codex",
-        args: ["exec", "my prompt", "--dangerously-bypass-approvals-and-sandbox"],
-        cwd: "/tmp",
-      })
+  it("uses stdin transport for an oversized prompt (prompt removed from args, written to stdin)", async () => {
+    const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
+
+    mockSpawn.mockImplementation(() =>
+      createMockChild({ stdout: "codex result", exitCode: 0 }),
     );
+
+    const result = await runCodexRequest({ prompt: hugePrompt, cwd: "/tmp", timeoutMs: 5000 }, logger);
+
+    expect(result.text).toBe("codex result");
+
+    const [file, args] = mockSpawn.mock.calls[0]!;
+    expect(file).toBe("codex");
+    expect(args).not.toContain(hugePrompt);
+    expect(args).toEqual(["exec", "--dangerously-bypass-approvals-and-sandbox"]);
+
+    const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
+    expect(stdinWrite).toHaveBeenCalled();
+    const writtenText = stdinWrite.mock.calls[0]?.[0];
+    expect(typeof writtenText).toBe("string");
+    expect(writtenText).toBe(hugePrompt);
   });
 
-  it("appends --model flag when model is provided", async () => {
-    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+  it("preserves --model flag in correct position for oversized prompt with stdin transport", async () => {
+    const hugePrompt = "y".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
+
+    mockSpawn.mockImplementation(() =>
+      createMockChild({ stdout: "ok", exitCode: 0 }),
+    );
+
+    await runCodexRequest({ prompt: hugePrompt, cwd: "/tmp", timeoutMs: 5000, model: "o4-mini" }, logger);
+
+    const [, args] = mockSpawn.mock.calls[0]!;
+    expect(args).toEqual(["exec", "--dangerously-bypass-approvals-and-sandbox", "--model", "o4-mini"]);
+    expect(args).not.toContain(hugePrompt);
+
+    const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
+    expect(stdinWrite).toHaveBeenCalled();
+  });
+
+  it("uses argv transport for small prompt with --model", async () => {
+    mockSpawn.mockImplementation(() =>
+      createMockChild({ stdout: "ok", exitCode: 0 }),
+    );
+
     await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, model: "o4-mini" }, logger);
-    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
-      expect.objectContaining({
-        file: "codex",
-        args: ["exec", "hello", "--dangerously-bypass-approvals-and-sandbox", "--model", "o4-mini"],
-        cwd: "/tmp",
-      })
-    );
+
+    const [, args] = mockSpawn.mock.calls[0]!;
+    expect(args).toEqual(["exec", "hello", "--dangerously-bypass-approvals-and-sandbox", "--model", "o4-mini"]);
   });
 
   it("passes a scoped environment through to the subprocess", async () => {
-    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
-    await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, env: { PATH: "/scoped/bin" } }, logger);
-    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
-      expect.objectContaining({
-        file: "codex",
-        args: ["exec", "hello", "--dangerously-bypass-approvals-and-sandbox"],
-        env: { PATH: "/scoped/bin" },
-      })
+    mockSpawn.mockImplementation(() =>
+      createMockChild({ stdout: "ok", exitCode: 0 }),
     );
-  });
 
-  it("passes supportsStdinFallback true and promptArgIndices [1] for fallback", async () => {
-    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
-    await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
-    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
-      expect.objectContaining({
-        supportsStdinFallback: true,
-        promptArgIndices: [1],
-      })
-    );
+    await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, env: { PATH: "/scoped/bin" } }, logger);
+
+    const [, args, opts] = mockSpawn.mock.calls[0]!;
+    expect(args).toEqual(["exec", "hello", "--dangerously-bypass-approvals-and-sandbox"]);
+    expect(opts).toMatchObject({ env: { PATH: "/scoped/bin" } });
   });
 
   it("throws CODEX_UNAVAILABLE when binary is not found (ENOENT)", async () => {
     const err = Object.assign(new Error("spawn codex ENOENT"), { code: "ENOENT" });
-    mockSpawnCollectWithTransport.mockRejectedValueOnce(err);
+    mockSpawn.mockImplementation(() => { throw err; });
+
     await expect(runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
       code: "CODEX_UNAVAILABLE",
       name: "CodexExecutionError",
     });
   });
 
-  it("throws TIMEOUT when process times out (ETIMEDOUT)", async () => {
+  it("throws TIMEOUT when process times out", async () => {
     const err = Object.assign(new Error("timed out"), { code: "ETIMEDOUT", killed: true, signal: "SIGTERM" });
-    mockSpawnCollectWithTransport.mockRejectedValueOnce(err);
+    mockSpawn.mockImplementation(() => { throw err; });
+
     await expect(runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
       code: "TIMEOUT",
       name: "CodexExecutionError",
@@ -126,8 +204,10 @@ describe("runCodexRequest", () => {
   });
 
   it("throws FAILED when process exits non-zero", async () => {
-    const err = Object.assign(new Error("Process exited with code 1"), { killed: false, signal: null });
-    mockSpawnCollectWithTransport.mockRejectedValueOnce(err);
+    mockSpawn.mockImplementation(() =>
+      createMockChild({ stderr: "something broke", exitCode: 1 }),
+    );
+
     await expect(runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
       code: "FAILED",
       name: "CodexExecutionError",
@@ -135,66 +215,13 @@ describe("runCodexRequest", () => {
   });
 
   it("throws EMPTY_OUTPUT when stdout is blank", async () => {
-    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "  \n  ", stderr: "" });
+    mockSpawn.mockImplementation(() =>
+      createMockChild({ stdout: "  \n  ", exitCode: 0 }),
+    );
+
     await expect(runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
       code: "EMPTY_OUTPUT",
       name: "CodexExecutionError",
     });
-  });
-});
-
-describe("codex prompt transport decision", () => {
-  it("uses argv transport for a small prompt (prompt stays in args)", () => {
-    const args = ["exec", "hello", "--dangerously-bypass-approvals-and-sandbox"];
-    const decision = decidePromptTransport(args, [1]);
-    expect(decision.transport).toBe("argv");
-    expect(decision.args).toBe(args);
-    expect(decision.stdinPayload).toBeUndefined();
-  });
-
-  it("uses stdin transport for an oversized prompt (prompt removed from args)", () => {
-    const bigPrompt = "x".repeat(2_000_000);
-    const args = ["exec", bigPrompt, "--dangerously-bypass-approvals-and-sandbox"];
-    const decision = decidePromptTransport(args, [1]);
-    expect(decision.transport).toBe("stdin");
-    expect(decision.args).toEqual(["exec", "--dangerously-bypass-approvals-and-sandbox"]);
-    expect(decision.args).not.toContain(bigPrompt);
-    expect(decision.stdinPayload).toBe(bigPrompt);
-  });
-
-  it("preserves --model flag in correct position for oversized prompt with stdin", () => {
-    const bigPrompt = "y".repeat(2_000_000);
-    const args = ["exec", bigPrompt, "--dangerously-bypass-approvals-and-sandbox", "--model", "o4-mini"];
-    const decision = decidePromptTransport(args, [1]);
-    expect(decision.transport).toBe("stdin");
-    expect(decision.args).toEqual([
-      "exec",
-      "--dangerously-bypass-approvals-and-sandbox",
-      "--model",
-      "o4-mini",
-    ]);
-    expect(decision.args).not.toContain(bigPrompt);
-    expect(decision.stdinPayload).toBe(bigPrompt);
-  });
-
-  it("uses argv transport for a small prompt with --model (normal argv path)", () => {
-    const args = ["exec", "hello", "--dangerously-bypass-approvals-and-sandbox", "--model", "o4-mini"];
-    const decision = decidePromptTransport(args, [1]);
-    expect(decision.transport).toBe("argv");
-    expect(decision.args).toBe(args);
-    expect(decision.stdinPayload).toBeUndefined();
-  });
-
-  it("reports totalBytes exceeding the limit for oversized prompts", () => {
-    const bigPrompt = "z".repeat(2_000_000);
-    const args = ["exec", bigPrompt];
-    const decision = decidePromptTransport(args, [1]);
-    expect(decision.totalBytes).toBeGreaterThan(DEFAULT_ARGV_TOTAL_LIMIT);
-  });
-
-  it("reports totalBytes within the limit for small prompts", () => {
-    const args = ["exec", "hello", "--dangerously-bypass-approvals-and-sandbox"];
-    const decision = decidePromptTransport(args, [1]);
-    expect(decision.totalBytes).toBeLessThanOrEqual(DEFAULT_ARGV_TOTAL_LIMIT);
   });
 });
