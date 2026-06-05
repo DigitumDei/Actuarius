@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -236,6 +236,30 @@ describe("decidePromptTransport", () => {
     expect(decision.transport).toBe("tempfile");
     // Flags inserted at index 1 (the prompt position), not appended at end
     expect(decision.args).toEqual(["run", "--prompt-file", "/tmp/p.txt", "--model", "claude"]);
+    expect(decision.stdinPayload).toBe(bigPrompt);
+  });
+
+  it("returns tempfile transport when reshapeArgsForTempfile is provided without tempfileFlag", () => {
+    const bigPrompt = "r".repeat(2 * 1024 * 1024);
+    const args = ["run", bigPrompt, "--flag"];
+    const reshapeFn = (promptText: string, adjustedArgs: string[], filePath: string) =>
+      [adjustedArgs[0]!, "--file", filePath, ...adjustedArgs.slice(1)];
+    const decision = decidePromptTransport(args, [1], undefined, false, undefined, reshapeFn);
+    expect(decision.transport).toBe("tempfile");
+    // No tempfileFlag inserted — reshape callback will handle arg generation
+    expect(decision.args).toEqual(["run", "--flag"]);
+    expect(decision.stdinPayload).toBe(bigPrompt);
+  });
+
+  it("preserves extra args in tempfile transport with reshapeArgsForTempfile", () => {
+    const bigPrompt = "q".repeat(2 * 1024 * 1024);
+    const args = ["-p", bigPrompt, "--output-format", "json", "--model", "claude-sonnet-4"];
+    const reshapeFn = vi.fn((_promptText: string, adjustedArgs: string[], _filePath: string) =>
+      adjustedArgs,
+    );
+    const decision = decidePromptTransport(args, [0, 1], undefined, false, undefined, reshapeFn);
+    expect(decision.transport).toBe("tempfile");
+    expect(decision.args).toEqual(["--output-format", "json", "--model", "claude-sonnet-4"]);
     expect(decision.stdinPayload).toBe(bigPrompt);
   });
 });

@@ -133,9 +133,10 @@ export interface PromptTransportDecision {
  *   is true (default). The prompt-related args are removed from `args`
  *   and the extracted prompt text is returned in `stdinPayload`.
  * - **"tempfile"**: total bytes exceed, stdin is not available, and
- *   `tempfileFlag` is provided. Prompt args are removed and the flag
- *   array is appended to args. The prompt text is returned in `stdinPayload`
- *   for the caller to write to a file.
+ *   `tempfileFlag` or `reshapeArgsForTempfile` is provided. Prompt args are
+ *   removed and, when `tempfileFlag` is given and no reshape callback is
+ *   present, the flag array is inserted at the prompt position. The prompt
+ *   text is returned in `stdinPayload` for the caller to write to a file.
  * - **"argv" (fallback)**: total bytes exceed but no fallback is configured.
  *   The original args are returned unmodified; callers SHOULD log a warning
  *   when this case is detected.
@@ -149,7 +150,15 @@ export interface PromptTransportDecision {
  *   (default `true`).
  * @param tempfileFlag     Optional flag args for file-based input
  *   (e.g. `["--prompt-file", "<path>"]`). Ignored unless stdin fallback
- *   is also unavailable.
+ *   is also unavailable. When `reshapeArgsForTempfile` is provided,
+ *   the flags are still inserted into the returned args but the
+ *   reshape callback takes priority in `spawnCollectWithTransport`.
+ * @param reshapeArgsForTempfile  Optional callback for provider-specific
+ *   argument reshaping when using tempfile transport. Called by
+ *   `spawnCollectWithTransport` after the temp file is written, with
+ *   the prompt text, adjusted args, and resolved temp file path.
+ *   When provided, `spawnCollectWithTransport` uses this callback
+ *   instead of `TEMP_FILE_PATH_PLACEHOLDER` replacement.
  */
 export function decidePromptTransport(
   args: string[],
@@ -157,6 +166,7 @@ export function decidePromptTransport(
   env?: NodeJS.ProcessEnv,
   supportsStdinFallback?: boolean,
   tempfileFlag?: string[],
+  reshapeArgsForTempfile?: (promptText: string, adjustedArgs: string[], tempFilePath: string) => string[],
 ): PromptTransportDecision {
   // ── Validate promptArgIndices ─────────────────────────────────────
   const seen = new Set<number>();
@@ -199,10 +209,12 @@ export function decidePromptTransport(
     return { transport: "stdin", args: adjustedArgs, stdinPayload: promptText, totalBytes };
   }
 
-  if (tempfileFlag) {
+  if (tempfileFlag || reshapeArgsForTempfile) {
     // Insert tempfile flags at the position of the first (lowest) removed prompt arg
     const insertAt = Math.min(...promptArgIndices);
-    adjustedArgs.splice(insertAt, 0, ...tempfileFlag);
+    if (tempfileFlag) {
+      adjustedArgs.splice(insertAt, 0, ...tempfileFlag);
+    }
     return {
       transport: "tempfile",
       args: adjustedArgs,
@@ -246,6 +258,14 @@ export interface SpawnCollectTransportOptions {
    * `TEMP_FILE_PATH_PLACEHOLDER` is replaced with the real temp-file path.
    */
   tempfileFlag?: string[];
+  /**
+   * Optional callback for provider-specific argument reshaping when using
+   * tempfile transport. Called after the temp file has been written, with
+   * the prompt text, the adjusted args (prompt removed), and the resolved
+   * temp file path. When provided, this takes priority over
+   * `tempfileFlag` placeholder replacement for argument generation.
+   */
+  reshapeArgsForTempfile?: (promptText: string, adjustedArgs: string[], tempFilePath: string) => string[];
 }
 
 /**
@@ -298,6 +318,7 @@ export async function spawnCollectWithTransport(
     env,
     supportsStdinFallback,
     tempfileFlag,
+    reshapeArgsForTempfile,
   } = options;
 
   const decision = decidePromptTransport(
@@ -306,6 +327,7 @@ export async function spawnCollectWithTransport(
     env,
     supportsStdinFallback,
     tempfileFlag,
+    reshapeArgsForTempfile,
   );
 
   let tempFileInfo: TempPromptFile | undefined;
@@ -313,9 +335,11 @@ export async function spawnCollectWithTransport(
   try {
     if (decision.transport === "tempfile") {
       tempFileInfo = await writeTempPromptFile(decision.stdinPayload!);
-      const fileArgs = decision.args.map(
-        (a) => (a === TEMP_FILE_PATH_PLACEHOLDER ? tempFileInfo!.filePath : a),
-      );
+      const fileArgs = reshapeArgsForTempfile
+        ? reshapeArgsForTempfile(decision.stdinPayload!, decision.args, tempFileInfo!.filePath)
+        : decision.args.map(
+            (a) => (a === TEMP_FILE_PATH_PLACEHOLDER ? tempFileInfo!.filePath : a),
+          );
       return await spawnCollect(file, fileArgs, buildOptions({
         cwd, timeoutMs, maxBuffer,
         ...(maxStderrBuffer !== undefined ? { maxStderrBuffer } : {}),

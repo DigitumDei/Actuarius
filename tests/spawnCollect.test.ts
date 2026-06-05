@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { spawnCollect, spawnCollectWithTransport, decidePromptTransport } from "../src/utils/spawnCollect.js";
 
 // Use the current node binary so these tests work without assuming PATH contents.
@@ -291,6 +291,96 @@ describe("spawnCollectWithTransport — tempfile transport", () => {
       })
     ).rejects.toBeTruthy();
 
+    const leftovers = readdirSync(tmpdir()).filter((n: string) =>
+      n.startsWith("actuarius-prompt-")
+    );
+    expect(leftovers).toEqual([]);
+  });
+
+  it("calls reshapeArgsForTempfile callback with prompt text, adjusted args, and file path", async () => {
+    const bigPrompt = "t".repeat(2 * 1024 * 1024);
+    const reshapeFn = vi.fn(
+      (_promptText: string, adjustedArgs: string[], filePath: string) =>
+        [...adjustedArgs, filePath],
+    );
+    const result = await spawnCollectWithTransport({
+      file: node,
+      args: ["-e", `process.stdout.write(process.argv.slice(1).join(","));`, "--", bigPrompt],
+      promptArgIndices: [3],
+      cwd,
+      timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+      supportsStdinFallback: false,
+      reshapeArgsForTempfile: reshapeFn,
+    });
+    expect(result.stdout).toContain("prompt.txt");
+    expect(reshapeFn).toHaveBeenCalledTimes(1);
+    const callArgs = reshapeFn.mock.calls[0]!;
+    expect(callArgs[0]).toBe(bigPrompt);
+    // adjustedArgs: no tempfileFlag insertion, just prompt removed
+    expect(callArgs[1]).toEqual(["-e", `process.stdout.write(process.argv.slice(1).join(","));`, "--"]);
+    expect(callArgs[2]).toContain("prompt.txt");
+  });
+
+  it("calls reshapeArgsForTempfile callback for positional prompt and preserves extra args", async () => {
+    const bigPrompt = "p".repeat(2 * 1024 * 1024);
+    const reshapeFn = vi.fn(
+      (_promptText: string, adjustedArgs: string[], filePath: string) =>
+        [...adjustedArgs, filePath],
+    );
+    const result = await spawnCollectWithTransport({
+      file: node,
+      args: ["-e", `process.stdout.write(process.argv.slice(1).join(","));`, "--", bigPrompt, "--extra"],
+      promptArgIndices: [3],
+      cwd,
+      timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+      supportsStdinFallback: false,
+      reshapeArgsForTempfile: reshapeFn,
+    });
+    expect(result.stdout).toContain("prompt.txt");
+    expect(result.stdout).toContain("--extra");
+    expect(reshapeFn).toHaveBeenCalledTimes(1);
+    const callArgs = reshapeFn.mock.calls[0]!;
+    expect(callArgs[0]).toBe(bigPrompt);
+    expect(callArgs[1]).toEqual(["-e", `process.stdout.write(process.argv.slice(1).join(","));`, "--", "--extra"]);
+  });
+
+  it("preserves non-prompt args with reshapeArgsForTempfile tempfile transport", async () => {
+    const bigPrompt = "o".repeat(2 * 1024 * 1024);
+    const reshapeFn = (_promptText: string, adjustedArgs: string[], filePath: string) =>
+      [...adjustedArgs, filePath];
+    const result = await spawnCollectWithTransport({
+      file: node,
+      args: ["-e", `process.stdout.write(JSON.stringify(process.argv.slice(1)));`, "--", bigPrompt, "--keep-me"],
+      promptArgIndices: [3],
+      cwd,
+      timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+      supportsStdinFallback: false,
+      reshapeArgsForTempfile: reshapeFn,
+    });
+    expect(result.stdout).not.toContain(bigPrompt);
+    expect(result.stdout).toContain("--keep-me");
+  });
+
+  it("cleans up temp dir when using reshapeArgsForTempfile", async () => {
+    const bigPrompt = "n".repeat(2 * 1024 * 1024);
+    const reshapeFn = (_promptText: string, adjustedArgs: string[], filePath: string) =>
+      [...adjustedArgs, filePath];
+    await spawnCollectWithTransport({
+      file: node,
+      args: ["-e", `process.stdout.write("ok");`, "--", bigPrompt],
+      promptArgIndices: [3],
+      cwd,
+      timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+      supportsStdinFallback: false,
+      reshapeArgsForTempfile: reshapeFn,
+    });
+
+    const { tmpdir } = await import("node:os");
+    const { readdirSync } = await import("node:fs");
     const leftovers = readdirSync(tmpdir()).filter((n: string) =>
       n.startsWith("actuarius-prompt-")
     );

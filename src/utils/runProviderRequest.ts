@@ -58,6 +58,16 @@ export interface ProviderRunnerConfig {
    */
   tempfileFlag?: string[];
   /**
+   * Optional callback for provider-specific argument reshaping when using
+   * tempfile transport. Called after the temp file has been written, with
+   * the prompt text, the adjusted args (prompt removed), and the resolved
+   * temp file path. When provided, this takes priority over `tempfileFlag`
+   * placeholder replacement in `spawnCollectWithTransport`. Use this when
+   * the provider needs to attach the file via existing CLI flags in a
+   * way the simple placeholder mechanism cannot express.
+   */
+  reshapeArgsForTempfile?: (promptText: string, adjustedArgs: string[], tempFilePath: string) => string[];
+  /**
    * Optional output transformation applied to stdout before returning.
    * Used for CLIs that return structured output (e.g., JSON) instead of
    * plain text. Applied after auth-pattern checks on the raw output.
@@ -134,6 +144,7 @@ export async function runProviderRequest(
       ...(input.env ? { env: input.env } : {}),
       ...(config.supportsStdinFallback !== undefined ? { supportsStdinFallback: config.supportsStdinFallback } : {}),
       ...(config.tempfileFlag !== undefined ? { tempfileFlag: config.tempfileFlag } : {}),
+      ...(config.reshapeArgsForTempfile !== undefined ? { reshapeArgsForTempfile: config.reshapeArgsForTempfile } : {}),
     }));
   } catch (error) {
     const message = error instanceof Error ? error.message : `${config.logLabel} execution failed.`;
