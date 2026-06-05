@@ -154,7 +154,7 @@ export async function runProviderRequest(
       if (input.model) {
         stdinArgs.push("--model", input.model);
       }
-      logger.debug({ args: stdinArgs, stdinLength: input.prompt.length }, `${config.logLabel} oversized prompt via -p "" + stdin`);
+      logger.debug({ args: stdinArgs, stdinLength: input.prompt.length, transport: "stdin" as const, totalBytes, limitBytes: DEFAULT_ARGV_TOTAL_LIMIT, useFlagPairStdin: true }, `${config.logLabel} oversized prompt via -p "" + stdin`);
       const result = await spawnCollect(config.binary, stdinArgs, {
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,
@@ -171,6 +171,7 @@ export async function runProviderRequest(
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,
         maxBuffer: 4 * 1024 * 1024,
+        logger,
         ...(input.env ? { env: input.env } : {}),
         ...(config.supportsStdinFallback !== undefined ? { supportsStdinFallback: config.supportsStdinFallback } : {}),
         ...(config.tempfileFlag !== undefined ? { tempfileFlag: config.tempfileFlag } : {}),

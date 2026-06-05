@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
+import type { Logger } from "pino";
 
 // ── Byte estimation helpers ──────────────────────────────────────────────
 
@@ -266,6 +267,12 @@ export interface SpawnCollectTransportOptions {
    * `tempfileFlag` placeholder replacement for argument generation.
    */
   reshapeArgsForTempfile?: (promptText: string, adjustedArgs: string[], tempFilePath: string) => string[];
+  /**
+   * Optional logger for transport decision observability.
+   * When provided, the transport decision (argv/stdin/tempfile) is logged
+   * with structured fields: transport, totalBytes, limitBytes.
+   */
+  logger?: Logger;
 }
 
 /**
@@ -319,6 +326,7 @@ export async function spawnCollectWithTransport(
     supportsStdinFallback,
     tempfileFlag,
     reshapeArgsForTempfile,
+    logger: decisionLogger,
   } = options;
 
   const decision = decidePromptTransport(
@@ -329,6 +337,18 @@ export async function spawnCollectWithTransport(
     tempfileFlag,
     reshapeArgsForTempfile,
   );
+
+  if (decisionLogger) {
+    const level = decision.transport === "argv" && decision.totalBytes <= DEFAULT_ARGV_TOTAL_LIMIT ? "debug" : "info";
+    decisionLogger[level](
+      {
+        transport: decision.transport,
+        totalBytes: decision.totalBytes,
+        limitBytes: DEFAULT_ARGV_TOTAL_LIMIT,
+      },
+      `spawnCollectWithTransport: ${decision.transport} transport (${Math.round(decision.totalBytes / 1024)} KB of ${Math.round(DEFAULT_ARGV_TOTAL_LIMIT / 1024)} KB threshold)`,
+    );
+  }
 
   let tempFileInfo: TempPromptFile | undefined;
 
