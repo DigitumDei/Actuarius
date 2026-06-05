@@ -358,6 +358,69 @@ describe("Bot entrypoint transport acceptance", () => {
     expect(transportLog!).toMatchObject({ logLabel: "Gemini" });
   });
 
+  it("queued ask with opencode oversized prompt through real bot dispatch uses --file tempfile transport", async () => {
+    const hugePrompt = "z".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
+    mockSpawn.mockImplementation(() =>
+      createMockChild({ stdout: "opencode result", exitCode: 0 }),
+    );
+    ensureRepoCheckedOutToMaster.mockResolvedValue({ localPath: "/tmp/repo" });
+    createRequestWorktreeMock.mockResolvedValue({
+      path: "/tmp/worktree-opencode",
+      branchName: "ask/4-abc",
+    });
+
+    const thread = {
+      isThread: () => true,
+      send: vi.fn().mockResolvedValue(undefined),
+      messages: { fetch: vi.fn().mockResolvedValue(new Map()) },
+    };
+
+    const { writer, records } = createLogCapture();
+    const logger = pino(writer);
+
+    const bot = createBot(logger, {
+      updateRequestStatus: vi.fn(),
+      updateRequestWorkspace: vi.fn(),
+    });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue(thread);
+
+    await (bot as any).runQueuedRequest({
+      requestId: 4,
+      threadId: "thread-4",
+      repoId: 1,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: hugePrompt,
+      provider: "opencode",
+      model: "o4-mini",
+    });
+
+    const [, args] = mockSpawn.mock.calls[0]!;
+    expect(args).not.toContain(hugePrompt);
+    expect(args).toContain("--file");
+
+    const fileFlagIdx = args!.indexOf("--file");
+    const tempFilePath = args![fileFlagIdx + 1]!;
+    expect(tempFilePath).toMatch(/prompt\.txt$/);
+
+    const skipIdx = args!.indexOf("--dangerously-skip-permissions");
+    expect(fileFlagIdx).toBeLessThan(skipIdx);
+
+    expect(args).toContain("--model");
+    expect(args).toContain("o4-mini");
+
+    const transportLog = records.find(
+      (r) => (r as Record<string, unknown>).transportReason === "oversized_tempfile_fallback",
+    ) as Record<string, unknown> | undefined;
+    expect(transportLog).toBeDefined();
+    expect(transportLog!).toMatchObject({
+      transport: "tempfile",
+      logLabel: "OpenCode",
+      totalBytes: expect.any(Number),
+      limitBytes: DEFAULT_ARGV_TOTAL_LIMIT,
+    });
+    expect(transportLog!.level).toBe(pino.levels.values.info);
+  });
+
   // ── Direct runProviderText calls (still through real provider dispatch) ─
 
   it("codex small prompt through bot runProviderText logs argv transport under_limit", async () => {
