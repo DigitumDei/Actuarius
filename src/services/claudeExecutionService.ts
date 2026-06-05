@@ -1,5 +1,5 @@
 import type { Logger } from "pino";
-import { spawnCollect } from "../utils/spawnCollect.js";
+import { runProviderRequest } from "../utils/runProviderRequest.js";
 
 export interface ClaudeExecutionInput {
   prompt: string;
@@ -60,75 +60,37 @@ export function extractTextFromClaudeJson(payload: unknown): string | null {
   return null;
 }
 
-export async function runClaudeRequest(input: ClaudeExecutionInput, logger: Logger): Promise<ClaudeExecutionResult> {
-  // --add-dir omitted: cwd is already set to the worktree root
-  const args = ["-p", input.prompt, "--output-format", "json", "--permission-mode", "bypassPermissions"];
-  if (input.model) {
-    args.push("--model", input.model);
-  }
-
-  logger.debug({ args, cwd: input.cwd, timeoutMs: input.timeoutMs }, "Claude subprocess args");
-
-  try {
-    const { stdout, stderr } = await spawnCollect("claude", args, {
-      cwd: input.cwd,
-      ...(input.env ? { env: input.env } : {}),
-      timeoutMs: input.timeoutMs,
-      maxBuffer: 4 * 1024 * 1024,
-    });
-
-    if (stderr) {
-      logger.debug({ stderr }, "Claude subprocess stderr");
-    }
-    logger.debug({ stdoutLength: stdout.length }, "Claude subprocess exited cleanly");
-
-    let text: string | null = null;
+export function makeClaudeTransformOutput(): (stdout: string) => string {
+  return (stdout: string): string => {
     try {
       const parsed = JSON.parse(stdout) as unknown;
-      text = extractTextFromClaudeJson(parsed);
+      const extracted = extractTextFromClaudeJson(parsed);
+      if (extracted !== null) {
+        return extracted;
+      }
     } catch {
-      text = stdout.trim() || null;
+      // Not JSON — fall through to raw stdout
     }
+    return stdout;
+  };
+}
 
-    if (!text) {
-      throw new ClaudeExecutionError("EMPTY_OUTPUT", "Claude returned empty output.");
-    }
-
-    return { text };
-  } catch (error) {
-    if (error instanceof ClaudeExecutionError) {
-      throw error;
-    }
-
-    const message = error instanceof Error ? error.message : "Claude execution failed.";
-    const nodeError = error as NodeJS.ErrnoException & {
-      killed?: boolean;
-      signal?: string | null;
-      stdout?: string;
-      stderr?: string;
-    };
-
-    logger.error({
-      errorCode: nodeError.code,
-      signal: nodeError.signal,
-      killed: nodeError.killed,
-      stderr: nodeError.stderr,
-      stdoutPartial: nodeError.stdout?.slice(0, 500),
-      message,
-    }, "Claude subprocess failed");
-
-    if (nodeError.code === "ENOENT") {
-      throw new ClaudeExecutionError("CLAUDE_UNAVAILABLE", "Claude CLI is not installed or not available in PATH.");
-    }
-
-    if (
-      nodeError.code === "ETIMEDOUT" ||
-      (nodeError.killed === true && nodeError.signal === "SIGTERM") ||
-      message.toLowerCase().includes("timed out")
-    ) {
-      throw new ClaudeExecutionError("TIMEOUT", `Claude execution timed out after ${input.timeoutMs}ms.`);
-    }
-
-    throw new ClaudeExecutionError("FAILED", message);
-  }
+export async function runClaudeRequest(input: ClaudeExecutionInput, logger: Logger): Promise<ClaudeExecutionResult> {
+  const text = await runProviderRequest(
+    input,
+    {
+      binary: "claude",
+      extraArgs: ["--output-format", "json", "--permission-mode", "bypassPermissions"],
+      supportsStdinFallback: true,
+      logLabel: "Claude",
+      makeError: (code, message) => new ClaudeExecutionError(code as ClaudeExecutionError["code"], message),
+      unavailableCode: "CLAUDE_UNAVAILABLE",
+      timeoutCode: "TIMEOUT",
+      failedCode: "FAILED",
+      emptyOutputCode: "EMPTY_OUTPUT",
+      transformOutput: makeClaudeTransformOutput(),
+    },
+    logger
+  );
+  return { text };
 }
