@@ -834,5 +834,24 @@ describe("InstallService", () => {
 
       process.env.PATH = originalPath;
     });
+
+    it("buildMinimalExecutionEnvironment excludes arbitrary env vars that buildExecutionEnvironment includes", () => {
+      process.env.ARBITRARY_VAR = "should-be-in-full-not-minimal";
+
+      const fullResult = service.buildExecutionEnvironment({ repoId: 1, threadId: "thread-1" });
+      const minimalResult = service.buildMinimalExecutionEnvironment({ repoId: 1, threadId: "thread-1" });
+
+      expect(fullResult.env.ARBITRARY_VAR).toBe("should-be-in-full-not-minimal");
+      expect(minimalResult.env.ARBITRARY_VAR).toBeUndefined();
+      expect(Object.keys(minimalResult.env)).not.toContain("ARBITRARY_VAR");
+    });
+
+    it("buildExecutionEnvironment carries full process.env that runInstall uses for install steps", () => {
+      process.env.INSTALL_STEP_VAR = "needed-by-install-script";
+
+      const fullResult = service.buildExecutionEnvironment({ repoId: 1, threadId: "thread-1" });
+
+      expect(fullResult.env.INSTALL_STEP_VAR).toBe("needed-by-install-script");
+    });
   });
 });

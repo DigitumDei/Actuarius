@@ -3438,7 +3438,7 @@ Output the result of the command or the link to the created issue.`;
       branchName = worktree.branchName;
       this.db.updateRequestWorkspace(input.requestId, worktreePath, branchName);
 
-      const executionEnvironment = this.installService.buildExecutionEnvironment({
+      const executionEnvironment = this.installService.buildMinimalExecutionEnvironment({
         repoId: input.repoId,
         threadId: input.threadId
       });
@@ -3685,7 +3685,7 @@ Output the result of the command or the link to the created issue.`;
         await threadChannel.send(`Provider fallback: ${fallbackReason}`);
       }
 
-      const executionEnvironment = this.installService.buildExecutionEnvironment({
+      const executionEnvironment = this.installService.buildMinimalExecutionEnvironment({
         repoId: input.repoId,
         threadId: input.threadId
       });
@@ -3968,7 +3968,7 @@ Output the result of the command or the link to the created issue.`;
         "Starting AI execution"
       );
 
-      const executionEnvironment = this.installService.buildExecutionEnvironment({
+      const executionEnvironment = this.installService.buildMinimalExecutionEnvironment({
         repoId: input.repoId,
         threadId: input.threadId
       });

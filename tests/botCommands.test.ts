@@ -2923,7 +2923,7 @@ describe("ActuariusBot plan runner", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -2978,7 +2978,7 @@ describe("ActuariusBot plan runner", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -3022,7 +3022,7 @@ describe("ActuariusBot plan runner", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -3068,7 +3068,7 @@ describe("ActuariusBot plan runner", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -3128,7 +3128,7 @@ describe("ActuariusBot plan runner", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -3170,7 +3170,7 @@ describe("ActuariusBot plan runner", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -3229,7 +3229,7 @@ describe("ActuariusBot plan runner", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -3282,7 +3282,7 @@ describe("ActuariusBot plan runner", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -3327,7 +3327,7 @@ describe("ActuariusBot plan runner", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -3373,7 +3373,7 @@ describe("ActuariusBot plan runner", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -3726,7 +3726,7 @@ describe("ActuariusBot revise command", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -3793,7 +3793,7 @@ describe("ActuariusBot revise command", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -3846,7 +3846,7 @@ describe("ActuariusBot revise command", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -3907,7 +3907,7 @@ describe("ActuariusBot revise command", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -3955,7 +3955,7 @@ describe("ActuariusBot revise command", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -4013,7 +4013,7 @@ describe("ActuariusBot revise command", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -4086,7 +4086,7 @@ describe("ActuariusBot revise command", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -4145,7 +4145,7 @@ describe("ActuariusBot revise command", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
@@ -4177,7 +4177,7 @@ describe("ActuariusBot revise command", () => {
       isThread: () => true,
       send
     });
-    (bot as any).installService.buildExecutionEnvironment = vi.fn().mockReturnValue({
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: {}
     });
