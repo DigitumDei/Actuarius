@@ -122,4 +122,44 @@ describe("runCodexRequest", () => {
       name: "CodexExecutionError",
     });
   });
+
+  it("passes supportsStdinFallback true for oversized prompt fallback", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        supportsStdinFallback: true,
+      })
+    );
+  });
+
+  it("passes promptArgIndices as [1] for positional prompt after exec prefix", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        promptArgIndices: [1],
+      })
+    );
+  });
+
+  it("does not include prompt text in args when promptArgIndices would strip it for fallback", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    const callArgs = mockSpawnCollectWithTransport.mock.calls[0]![0];
+    expect(callArgs.args).toContain("hello");
+    expect(callArgs.promptArgIndices).toEqual([1]);
+  });
+
+  it("still passes model flag after prompt when stdin fallback strips the positional prompt", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, model: "o4-mini" }, logger);
+    const callArgs = mockSpawnCollectWithTransport.mock.calls[0]![0];
+    expect(callArgs.args).toEqual([
+      "exec", "hello",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model", "o4-mini",
+    ]);
+    expect(callArgs.promptArgIndices).toEqual([1]);
+  });
 });
