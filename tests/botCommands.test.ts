@@ -827,6 +827,58 @@ describe("ActuariusBot thread follow-ups", () => {
     expect(sent).toContain("Claude execution started.");
     expect(sent.some((message) => message.includes("done"))).toBe(true);
   });
+
+  it("forwards minimal env to runProviderText even when packages list is empty in queued ask path", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-queued",
+      branchName: "ask/111-123"
+    });
+    const thread = {
+      isThread: () => true,
+      send: vi.fn().mockResolvedValue(undefined),
+      messages: { fetch: vi.fn().mockResolvedValue(new Map()) }
+    };
+    const bot = createBot({
+      updateRequestStatus: vi.fn(),
+      updateRequestWorkspace: vi.fn()
+    });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue(thread);
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {
+        DEEPSEEK_API_KEY: "sk-deep-test",
+        XAI_API_KEY: "xai-test",
+        HOME: "/home/user",
+        PATH: "/custom/node/bin:/usr/bin",
+        GH_TOKEN: "gh-test",
+        GH_PROMPT_DISABLED: "1"
+      }
+    });
+    (bot as any).runProviderText = vi.fn().mockResolvedValue("queued response");
+
+    await (bot as any).runQueuedRequest({
+      requestId: 111,
+      threadId: "thread-1",
+      repoId: 1,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Do the thing",
+      provider: "claude"
+    });
+
+    const runCalls = vi.mocked(bot.runProviderText as any).mock.calls;
+    expect(runCalls).toHaveLength(1);
+    expect(runCalls[0]![0]).toHaveProperty("env");
+    expect(runCalls[0]![0].env).toEqual({
+      DEEPSEEK_API_KEY: "sk-deep-test",
+      XAI_API_KEY: "xai-test",
+      HOME: "/home/user",
+      PATH: "/custom/node/bin:/usr/bin",
+      GH_TOKEN: "gh-test",
+      GH_PROMPT_DISABLED: "1"
+    });
+    expect(runCalls[0]![0].env).not.toHaveProperty("NON_ESSENTIAL_VAR");
+  });
 });
 
 describe("ActuariusBot branches command", () => {
@@ -3313,6 +3365,56 @@ describe("ActuariusBot plan runner", () => {
     expect(addDrawer.mock.calls[0]![0]).toContain("impl output");
   });
 
+  it("forwards minimal env to runProviderText even when packages list is empty", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan",
+      branchName: "ask/96-123"
+    });
+    vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot({ updateRequestStatus: vi.fn() });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {
+        ANTHROPIC_API_KEY: "sk-ant-xxx",
+        HOME: "/root",
+        PATH: "/custom/bin:/usr/bin",
+        GH_TOKEN: "gh-test"
+      }
+    });
+    (bot as any).runProviderText = vi.fn()
+      .mockResolvedValueOnce("plan text")
+      .mockResolvedValueOnce("impl output");
+
+    await (bot as any).runPlanRequest({
+      requestId: 96,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Do the thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" }
+    });
+
+    const runCalls = vi.mocked(bot.runProviderText as any).mock.calls;
+    expect(runCalls).toHaveLength(2);
+    for (const call of runCalls) {
+      expect(call[0]).toHaveProperty("env");
+      expect(call[0].env).toEqual({
+        ANTHROPIC_API_KEY: "sk-ant-xxx",
+        HOME: "/root",
+        PATH: "/custom/bin:/usr/bin",
+        GH_TOKEN: "gh-test"
+      });
+      expect(call[0].env).not.toHaveProperty("NON_ESSENTIAL_VAR");
+    }
+  });
+
   it("more than 20 tasks truncates and warns", async () => {
     vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
     vi.mocked(createRequestWorktree).mockResolvedValue({
@@ -4272,5 +4374,77 @@ describe("ActuariusBot revise command", () => {
     expect(createRequest).toHaveBeenCalledWith(expect.objectContaining({
       userId: "requester-1"
     }));
+  });
+
+  it("forwards minimal env to runProviderText even when packages list is empty in revise path", async () => {
+    const worktreePath = await createTempWorktree("actuarius-revise-env-");
+    vi.mocked(getReviewDiff).mockResolvedValue({
+      baseBranch: "main",
+      baseRef: "origin/main",
+      headRef: "ask/41-123",
+      headSha: "head-sha",
+      changedFiles: [],
+      diffText: "diff"
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const updateRequestStatus = vi.fn();
+    const bot = createBot(createReviseDb({
+      updateRequestStatus,
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "user-1",
+        worktree_path: worktreePath,
+        branch_name: "ask/41-123",
+        status: "succeeded",
+        prompt: "Original request prompt"
+      })
+    }));
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {
+        OPENAI_API_KEY: "sk-openai-test",
+        GEMINI_API_KEY: "gemini-test",
+        HOME: "/home/user",
+        PATH: "/opt/tools/bin:/usr/local/bin:/usr/bin",
+        GH_TOKEN: "gh-test"
+      }
+    });
+    (bot as any).runProviderText = vi.fn().mockResolvedValue(JSON.stringify({
+      overview: "Fix bugs",
+      tasks: [{ title: "Fix bug 1", description: "Fix the first bug" }]
+    }));
+    vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
+
+    await (bot as any).runReviseRequest({
+      requestId: 42,
+      sourceRequestId: 41,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Original request prompt",
+      worktreePath,
+      branchName: "ask/41-123",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      findings: null
+    });
+
+    const runCalls = vi.mocked(bot.runProviderText as any).mock.calls;
+    expect(runCalls.length).toBeGreaterThanOrEqual(1);
+    for (const call of runCalls) {
+      expect(call[0]).toHaveProperty("env");
+      expect(call[0].env).toEqual({
+        OPENAI_API_KEY: "sk-openai-test",
+        GEMINI_API_KEY: "gemini-test",
+        HOME: "/home/user",
+        PATH: "/opt/tools/bin:/usr/local/bin:/usr/bin",
+        GH_TOKEN: "gh-test"
+      });
+      expect(call[0].env).not.toHaveProperty("NON_ESSENTIAL_VAR");
+    }
   });
 });
