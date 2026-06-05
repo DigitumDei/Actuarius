@@ -85,7 +85,7 @@ describe("makeClaudeTransformOutput", () => {
   });
 
   it("returns empty string for JSON with no extractable text", () => {
-    expect(transform('{}')).toBe("{}");
+    expect(transform('{}')).toBe("");
   });
 });
 
@@ -173,6 +173,14 @@ describe("runClaudeRequest", () => {
 
   it("throws EMPTY_OUTPUT when stdout is blank after transformOutput", async () => {
     mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "  \n  ", stderr: "" });
+    await expect(runClaudeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
+      code: "EMPTY_OUTPUT",
+      name: "ClaudeExecutionError",
+    });
+  });
+
+  it("throws EMPTY_OUTPUT when JSON response has no extractable text", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "{}", stderr: "" });
     await expect(runClaudeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
       code: "EMPTY_OUTPUT",
       name: "ClaudeExecutionError",

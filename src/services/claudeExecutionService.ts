@@ -68,6 +68,7 @@ export function makeClaudeTransformOutput(): (stdout: string) => string {
       if (extracted !== null) {
         return extracted;
       }
+      return "";
     } catch {
       // Not JSON — fall through to raw stdout
     }
