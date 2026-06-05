@@ -103,9 +103,21 @@ export async function cleanupTempPromptFile(tempDir: string): Promise<void> {
 /** How a prompt is delivered to a spawned process. */
 export type PromptTransport = "argv" | "stdin" | "tempfile";
 
+/**
+ * Reason why a particular transport was chosen.
+ * - `under_limit`: total payload at or below threshold, argv is safe.
+ * - `oversized_stdin_fallback`: payload exceeded threshold, stdin fallback used.
+ * - `oversized_flag_pair_stdin`: payload exceeded threshold, special `-p ""` + stdin path.
+ * - `oversized_tempfile_fallback`: payload exceeded, stdin unavailable, temp file used.
+ * - `oversized_no_fallback`: payload exceeded but no fallback configured — kept on argv (risks E2BIG).
+ */
+export type TransportReason = "under_limit" | "oversized_stdin_fallback" | "oversized_flag_pair_stdin" | "oversized_tempfile_fallback" | "oversized_no_fallback";
+
 export interface PromptTransportDecision {
   /** The chosen transport method. */
   transport: PromptTransport;
+  /** Reason this transport was chosen. */
+  transportReason: TransportReason;
   /** Final argument list (prompt removed for stdin/tempfile transports). */
   args: string[];
   /**
@@ -189,12 +201,12 @@ export function decidePromptTransport(
   const totalBytes = estimateSpawnPayloadBytes(args, env);
 
   if (totalBytes <= DEFAULT_ARGV_TOTAL_LIMIT) {
-    return { transport: "argv", args, totalBytes };
+    return { transport: "argv", args, totalBytes, transportReason: "under_limit" };
   }
 
   // If no prompt indices are provided, we can't extract anything to move.
   if (promptArgIndices.length === 0) {
-    return { transport: "argv", args, totalBytes };
+    return { transport: "argv", args, totalBytes, transportReason: "under_limit" };
   }
 
   // Remove prompt-related args (descending order to keep indices stable)
@@ -207,7 +219,7 @@ export function decidePromptTransport(
   const promptText = removed[removed.length - 1]!;
 
   if (supportsStdinFallback !== false) {
-    return { transport: "stdin", args: adjustedArgs, stdinPayload: promptText, totalBytes };
+    return { transport: "stdin", args: adjustedArgs, stdinPayload: promptText, totalBytes, transportReason: "oversized_stdin_fallback" };
   }
 
   if (tempfileFlag || reshapeArgsForTempfile) {
@@ -221,11 +233,12 @@ export function decidePromptTransport(
       args: adjustedArgs,
       stdinPayload: promptText,
       totalBytes,
+      transportReason: "oversized_tempfile_fallback",
     };
   }
 
   // No fallback available — keep argv (caller should log warning)
-  return { transport: "argv", args, totalBytes };
+  return { transport: "argv", args, totalBytes, transportReason: "oversized_no_fallback" };
 }
 
 /**
@@ -270,9 +283,15 @@ export interface SpawnCollectTransportOptions {
   /**
    * Optional logger for transport decision observability.
    * When provided, the transport decision (argv/stdin/tempfile) is logged
-   * with structured fields: transport, totalBytes, limitBytes.
+   * with structured fields: transport, transportReason, totalBytes, limitBytes,
+   * useFlagPairStdin, logLabel.
    */
   logger?: Logger;
+  /**
+   * Optional human-readable provider label (e.g. "Codex", "Gemini", "OpenCode").
+   * Included in transport decision log events for cross-provider observability.
+   */
+  logLabel?: string;
 }
 
 /**
@@ -327,6 +346,7 @@ export async function spawnCollectWithTransport(
     tempfileFlag,
     reshapeArgsForTempfile,
     logger: decisionLogger,
+    logLabel,
   } = options;
 
   const decision = decidePromptTransport(
@@ -339,12 +359,22 @@ export async function spawnCollectWithTransport(
   );
 
   if (decisionLogger) {
-    const level = decision.transport === "argv" && decision.totalBytes <= DEFAULT_ARGV_TOTAL_LIMIT ? "debug" : "info";
+    let level: "debug" | "info" | "warn";
+    if (decision.transportReason === "under_limit") {
+      level = "debug";
+    } else if (decision.transportReason === "oversized_no_fallback") {
+      level = "warn";
+    } else {
+      level = "info";
+    }
     decisionLogger[level](
       {
         transport: decision.transport,
+        transportReason: decision.transportReason,
         totalBytes: decision.totalBytes,
         limitBytes: DEFAULT_ARGV_TOTAL_LIMIT,
+        useFlagPairStdin: false,
+        logLabel,
       },
       `spawnCollectWithTransport: ${decision.transport} transport (${Math.round(decision.totalBytes / 1024)} KB of ${Math.round(DEFAULT_ARGV_TOTAL_LIMIT / 1024)} KB threshold)`,
     );

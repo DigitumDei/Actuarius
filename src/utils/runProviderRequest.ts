@@ -104,31 +104,7 @@ export async function runProviderRequest(
     ? [promptStartIdx]
     : [promptStartIdx, promptStartIdx + 1];
 
-  // Log a warning when the payload exceeds the safety threshold and no
-  // fallback transport is available (the subprocess may fail with E2BIG).
   const totalBytes = estimateSpawnPayloadBytes(args, input.env);
-  if (totalBytes > DEFAULT_ARGV_TOTAL_LIMIT) {
-    const hasFallback = config.supportsStdinFallback !== false || config.tempfileFlag !== undefined || config.reshapeArgsForTempfile !== undefined;
-    if (!hasFallback) {
-      logger.warn(
-        {
-          totalBytes,
-          limitBytes: DEFAULT_ARGV_TOTAL_LIMIT,
-          logLabel: config.logLabel,
-        },
-        `${config.logLabel} prompt payload (${Math.round(totalBytes / 1024)} KB) exceeds safety threshold (${Math.round(DEFAULT_ARGV_TOTAL_LIMIT / 1024)} KB) and no fallback transport is configured — the subprocess may fail with E2BIG`
-      );
-    } else {
-      logger.debug(
-        {
-          totalBytes,
-          limitBytes: DEFAULT_ARGV_TOTAL_LIMIT,
-          transport: config.supportsStdinFallback !== false ? "stdin" : "tempfile",
-        },
-        `${config.logLabel} prompt payload (${Math.round(totalBytes / 1024)} KB) exceeds threshold — using fallback transport`
-      );
-    }
-  }
 
   // For providers using the -p <prompt> flag-pair pattern with stdin fallback,
   // keep the -p flag in args with an empty value and pipe the actual prompt via
@@ -154,7 +130,19 @@ export async function runProviderRequest(
       if (input.model) {
         stdinArgs.push("--model", input.model);
       }
-      logger.debug({ args: stdinArgs, stdinLength: input.prompt.length, transport: "stdin" as const, totalBytes, limitBytes: DEFAULT_ARGV_TOTAL_LIMIT, useFlagPairStdin: true }, `${config.logLabel} oversized prompt via -p "" + stdin`);
+      logger.info(
+        {
+          args: stdinArgs,
+          stdinLength: input.prompt.length,
+          transport: "stdin" as const,
+          transportReason: "oversized_flag_pair_stdin" as const,
+          totalBytes,
+          limitBytes: DEFAULT_ARGV_TOTAL_LIMIT,
+          useFlagPairStdin: true,
+          logLabel: config.logLabel,
+        },
+        `${config.logLabel} oversized prompt via -p "" + stdin (${Math.round(totalBytes / 1024)} KB of ${Math.round(DEFAULT_ARGV_TOTAL_LIMIT / 1024)} KB threshold)`,
+      );
       const result = await spawnCollect(config.binary, stdinArgs, {
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,
@@ -172,6 +160,7 @@ export async function runProviderRequest(
         timeoutMs: input.timeoutMs,
         maxBuffer: 4 * 1024 * 1024,
         logger,
+        logLabel: config.logLabel,
         ...(input.env ? { env: input.env } : {}),
         ...(config.supportsStdinFallback !== undefined ? { supportsStdinFallback: config.supportsStdinFallback } : {}),
         ...(config.tempfileFlag !== undefined ? { tempfileFlag: config.tempfileFlag } : {}),
