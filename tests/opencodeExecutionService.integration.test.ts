@@ -138,6 +138,42 @@ describe("runOpencodeRequest — integration (real transport)", () => {
     expect(existsSync(tempDir)).toBe(false);
   });
 
+  it("uses argv transport for small prompts (no --file, no stdin)", async () => {
+    mockSpawn.mockImplementation(() =>
+      createMockChild({ stdout: "normal output", exitCode: 0 }),
+    );
+
+    const result = await runOpencodeRequest({
+      prompt: "hello",
+      cwd: "/tmp",
+      timeoutMs: 5000,
+    }, logger);
+
+    expect(result.text).toBe("normal output");
+
+    const [file, args] = mockSpawn.mock.calls[0]!;
+    expect(file).toBe("opencode");
+    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--dangerously-skip-permissions"]);
+    expect(args).not.toContain("--file");
+  });
+
+  it("uses argv transport with --model for small prompts", async () => {
+    mockSpawn.mockImplementation(() =>
+      createMockChild({ stdout: "ok", exitCode: 0 }),
+    );
+
+    await runOpencodeRequest({
+      prompt: "hello",
+      cwd: "/tmp",
+      timeoutMs: 5000,
+      model: "o4-mini",
+    }, logger);
+
+    const [, args] = mockSpawn.mock.calls[0]!;
+    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--dangerously-skip-permissions", "--model", "o4-mini"]);
+    expect(args).not.toContain("--file");
+  });
+
   it("preserves --dangerously-skip-permissions in tempfile transport", async () => {
     const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
 
