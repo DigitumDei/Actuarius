@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import pino from "pino";
 
 vi.mock("../src/utils/spawnCollect.js");
@@ -15,6 +15,10 @@ describe("runOpencodeRequest", () => {
     vi.resetAllMocks();
     // Bypass the pre-spawn auth check by providing an API key.
     vi.stubEnv("DEEPSEEK_API_KEY", "test-key");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("returns result text on clean exit", async () => {
