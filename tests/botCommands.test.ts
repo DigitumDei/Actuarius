@@ -828,56 +828,213 @@ describe("ActuariusBot thread follow-ups", () => {
     expect(sent.some((message) => message.includes("done"))).toBe(true);
   });
 
-  it("forwards minimal env to runProviderText even when packages list is empty in queued ask path", async () => {
+  it("exercises real buildMinimalExecutionEnvironment in queued ask path — auth vars, bin PATH, no arbitrary env", async () => {
     vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
     vi.mocked(createRequestWorktree).mockResolvedValue({
       path: "/tmp/worktree-queued",
       branchName: "ask/111-123"
     });
-    const thread = {
-      isThread: () => true,
-      send: vi.fn().mockResolvedValue(undefined),
-      messages: { fetch: vi.fn().mockResolvedValue(new Map()) }
+
+    const savedEnv: Record<string, string | undefined> = {
+      DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
+      XAI_API_KEY: process.env.XAI_API_KEY,
+      GH_TOKEN: process.env.GH_TOKEN,
+      GH_PROMPT_DISABLED: process.env.GH_PROMPT_DISABLED,
+      HOME: process.env.HOME,
+      PATH: process.env.PATH,
+      NON_ESSENTIAL_VAR: process.env.NON_ESSENTIAL_VAR
     };
-    const bot = createBot({
-      updateRequestStatus: vi.fn(),
-      updateRequestWorkspace: vi.fn()
-    });
-    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue(thread);
-    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
-      packages: [],
-      env: {
-        DEEPSEEK_API_KEY: "sk-deep-test",
-        XAI_API_KEY: "xai-test",
-        HOME: "/home/user",
-        PATH: "/custom/node/bin:/usr/bin",
-        GH_TOKEN: "gh-test",
-        GH_PROMPT_DISABLED: "1"
+
+    try {
+      process.env.DEEPSEEK_API_KEY = "sk-deep-test";
+      process.env.XAI_API_KEY = "xai-test";
+      process.env.GH_TOKEN = "gh-test";
+      process.env.GH_PROMPT_DISABLED = "1";
+      process.env.HOME = "/home/user";
+      process.env.PATH = "/usr/bin:/bin";
+      process.env.NON_ESSENTIAL_VAR = "should-not-appear";
+
+      const installRecords = [
+        {
+          id: 1,
+          guild_id: "guild-1",
+          repo_id: 1,
+          request_id: null,
+          thread_id: "thread-1",
+          package_id: "npm-prettier",
+          package_version: "3",
+          scope: "request",
+          status: "succeeded" as const,
+          requested_by_user_id: "user-1",
+          approved_by_user_id: "admin-1",
+          install_root: "/data/tool-installs/request/thread-1/npm-prettier",
+          bin_path: "/data/tool-installs/request/thread-1/npm-prettier/bin",
+          env_json: "{}",
+          logs: null,
+          error_message: null,
+          created_at: "2026-03-31T00:00:00.000Z",
+          updated_at: "2026-03-31T00:00:00.000Z",
+          completed_at: "2026-03-31T00:00:00.000Z"
+        }
+      ];
+
+      const thread = {
+        isThread: () => true,
+        send: vi.fn().mockResolvedValue(undefined),
+        messages: { fetch: vi.fn().mockResolvedValue(new Map()) }
+      };
+      const bot = createBot({
+        updateRequestStatus: vi.fn(),
+        updateRequestWorkspace: vi.fn(),
+        listSuccessfulInstallRequestsForScope: vi.fn().mockReturnValue(installRecords)
+      });
+      (bot as any).client.channels.fetch = vi.fn().mockResolvedValue(thread);
+      (bot as any).runProviderText = vi.fn().mockResolvedValue("queued response");
+
+      await (bot as any).runQueuedRequest({
+        requestId: 111,
+        threadId: "thread-1",
+        repoId: 1,
+        repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+        prompt: "Do the thing",
+        provider: "claude"
+      });
+
+      const runCalls = vi.mocked(bot.runProviderText as any).mock.calls;
+      expect(runCalls).toHaveLength(1);
+      const env = runCalls[0]![0].env;
+
+      expect(env.DEEPSEEK_API_KEY).toBe("sk-deep-test");
+      expect(env.XAI_API_KEY).toBe("xai-test");
+      expect(env.GH_TOKEN).toBe("gh-test");
+      expect(env.GH_PROMPT_DISABLED).toBe("1");
+      expect(env.HOME).toBe("/home/user");
+
+      const pathParts = env.PATH!.split(":");
+      expect(pathParts[0]).toBe("/data/tool-installs/request/thread-1/npm-prettier/bin");
+      expect(env.PATH).toContain("/usr/bin");
+
+      expect(env.NON_ESSENTIAL_VAR).toBeUndefined();
+    } finally {
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
       }
-    });
-    (bot as any).runProviderText = vi.fn().mockResolvedValue("queued response");
+    }
+  });
 
-    await (bot as any).runQueuedRequest({
-      requestId: 111,
-      threadId: "thread-1",
-      repoId: 1,
-      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
-      prompt: "Do the thing",
-      provider: "claude"
+  it("exercises real buildMinimalExecutionEnvironment in follow-up queued path with existingWorktreePath", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-queued",
+      branchName: "ask/111-123"
     });
 
-    const runCalls = vi.mocked(bot.runProviderText as any).mock.calls;
-    expect(runCalls).toHaveLength(1);
-    expect(runCalls[0]![0]).toHaveProperty("env");
-    expect(runCalls[0]![0].env).toEqual({
-      DEEPSEEK_API_KEY: "sk-deep-test",
-      XAI_API_KEY: "xai-test",
-      HOME: "/home/user",
-      PATH: "/custom/node/bin:/usr/bin",
-      GH_TOKEN: "gh-test",
-      GH_PROMPT_DISABLED: "1"
-    });
-    expect(runCalls[0]![0].env).not.toHaveProperty("NON_ESSENTIAL_VAR");
+    const savedEnv: Record<string, string | undefined> = {
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+      GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+      GH_TOKEN: process.env.GH_TOKEN,
+      HOME: process.env.HOME,
+      PATH: process.env.PATH,
+      NON_ESSENTIAL_VAR: process.env.NON_ESSENTIAL_VAR
+    };
+
+    try {
+      process.env.ANTHROPIC_API_KEY = "sk-ant-followup";
+      process.env.GEMINI_API_KEY = "gemini-followup";
+      process.env.GH_TOKEN = "gh-followup";
+      process.env.HOME = "/home/followup";
+      process.env.PATH = "/usr/local/bin:/usr/bin";
+      process.env.NON_ESSENTIAL_VAR = "should-not-appear";
+
+      const installRecords = [
+        {
+          id: 2,
+          guild_id: "guild-1",
+          repo_id: 1,
+          request_id: null,
+          thread_id: "thread-followup",
+          package_id: "java-temurin",
+          package_version: "21",
+          scope: "request",
+          status: "succeeded" as const,
+          requested_by_user_id: "user-1",
+          approved_by_user_id: "admin-1",
+          install_root: "/data/tool-installs/request/thread-followup/java-temurin",
+          bin_path: "/data/tool-installs/request/thread-followup/java-temurin/bin",
+          env_json: "{}",
+          logs: null,
+          error_message: null,
+          created_at: "2026-03-31T00:00:00.000Z",
+          updated_at: "2026-03-31T00:00:00.000Z",
+          completed_at: "2026-03-31T00:00:00.000Z"
+        }
+      ];
+
+      const messages = new Map([
+        ["1", {
+          createdTimestamp: 1000,
+          author: { id: "user-1" },
+          content: "previous message"
+        }],
+        ["2", {
+          createdTimestamp: 2000,
+          author: { id: "bot-1" },
+          content: "previous response"
+        }]
+      ]);
+
+      const thread = {
+        isThread: () => true,
+        send: vi.fn().mockResolvedValue(undefined),
+        messages: { fetch: vi.fn().mockResolvedValue(messages) }
+      };
+      const bot = createBot({
+        updateRequestStatus: vi.fn(),
+        updateRequestWorkspace: vi.fn(),
+        listSuccessfulInstallRequestsForScope: vi.fn().mockReturnValue(installRecords)
+      });
+      (bot as any).client.user = { id: "bot-1" };
+      (bot as any).client.channels.fetch = vi.fn().mockResolvedValue(thread);
+      (bot as any).runProviderText = vi.fn().mockResolvedValue("follow-up response");
+
+      await (bot as any).runQueuedRequest({
+        requestId: 112,
+        threadId: "thread-followup",
+        repoId: 1,
+        repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+        prompt: "follow-up prompt",
+        provider: "claude",
+        existingWorktreePath: "/tmp/worktree-existing",
+        existingBranchName: "ask/111-123"
+      });
+
+      const runCalls = vi.mocked(bot.runProviderText as any).mock.calls;
+      expect(runCalls).toHaveLength(1);
+      const env = runCalls[0]![0].env;
+
+      expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-followup");
+      expect(env.GEMINI_API_KEY).toBe("gemini-followup");
+      expect(env.GH_TOKEN).toBe("gh-followup");
+      expect(env.HOME).toBe("/home/followup");
+
+      const pathParts = env.PATH!.split(":");
+      expect(pathParts[0]).toBe("/data/tool-installs/request/thread-followup/java-temurin/bin");
+      expect(env.PATH).toContain("/usr/local/bin");
+
+      expect(env.NON_ESSENTIAL_VAR).toBeUndefined();
+    } finally {
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    }
   });
 });
 
@@ -3365,53 +3522,99 @@ describe("ActuariusBot plan runner", () => {
     expect(addDrawer.mock.calls[0]![0]).toContain("impl output");
   });
 
-  it("forwards minimal env to runProviderText even when packages list is empty", async () => {
+  it("exercises real buildMinimalExecutionEnvironment in plan path — auth vars, bin PATH, no arbitrary env", async () => {
     vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
     vi.mocked(createRequestWorktree).mockResolvedValue({
       path: "/tmp/worktree-plan",
       branchName: "ask/96-123"
     });
     vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
-    const send = vi.fn().mockResolvedValue(undefined);
-    const bot = createBot({ updateRequestStatus: vi.fn() });
-    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
-      isThread: () => true,
-      send
-    });
-    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
-      packages: [],
-      env: {
-        ANTHROPIC_API_KEY: "sk-ant-xxx",
-        HOME: "/root",
-        PATH: "/custom/bin:/usr/bin",
-        GH_TOKEN: "gh-test"
-      }
-    });
-    (bot as any).runProviderText = vi.fn()
-      .mockResolvedValueOnce("plan text")
-      .mockResolvedValueOnce("impl output");
 
-    await (bot as any).runPlanRequest({
-      requestId: 96,
-      threadId: "thread-1",
-      repoId: 5,
-      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
-      prompt: "Do the thing",
-      planner: { provider: "claude" },
-      implementer: { provider: "claude" }
-    });
+    const savedEnv: Record<string, string | undefined> = {
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+      HOME: process.env.HOME,
+      PATH: process.env.PATH,
+      GH_TOKEN: process.env.GH_TOKEN,
+      NON_ESSENTIAL_VAR: process.env.NON_ESSENTIAL_VAR
+    };
 
-    const runCalls = vi.mocked(bot.runProviderText as any).mock.calls;
-    expect(runCalls).toHaveLength(2);
-    for (const call of runCalls) {
-      expect(call[0]).toHaveProperty("env");
-      expect(call[0].env).toEqual({
-        ANTHROPIC_API_KEY: "sk-ant-xxx",
-        HOME: "/root",
-        PATH: "/custom/bin:/usr/bin",
-        GH_TOKEN: "gh-test"
+    try {
+      process.env.ANTHROPIC_API_KEY = "sk-ant-xxx";
+      process.env.HOME = "/root";
+      process.env.PATH = "/custom/bin:/usr/bin";
+      process.env.GH_TOKEN = "gh-test";
+      process.env.NON_ESSENTIAL_VAR = "should-not-appear";
+
+      const installRecords = [
+        {
+          id: 10,
+          guild_id: "guild-1",
+          repo_id: 5,
+          request_id: null,
+          thread_id: "thread-1",
+          package_id: "npm-prettier",
+          package_version: "3",
+          scope: "request",
+          status: "succeeded" as const,
+          requested_by_user_id: "user-1",
+          approved_by_user_id: "admin-1",
+          install_root: "/data/tool-installs/request/thread-1/npm-prettier",
+          bin_path: "/data/tool-installs/request/thread-1/npm-prettier/bin",
+          env_json: "{}",
+          logs: null,
+          error_message: null,
+          created_at: "2026-03-31T00:00:00.000Z",
+          updated_at: "2026-03-31T00:00:00.000Z",
+          completed_at: "2026-03-31T00:00:00.000Z"
+        }
+      ];
+
+      const send = vi.fn().mockResolvedValue(undefined);
+      const bot = createBot({
+        updateRequestStatus: vi.fn(),
+        listSuccessfulInstallRequestsForScope: vi.fn().mockReturnValue(installRecords)
       });
-      expect(call[0].env).not.toHaveProperty("NON_ESSENTIAL_VAR");
+      (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+        isThread: () => true,
+        send
+      });
+      (bot as any).runProviderText = vi.fn()
+        .mockResolvedValueOnce("plan text")
+        .mockResolvedValueOnce("impl output");
+
+      await (bot as any).runPlanRequest({
+        requestId: 96,
+        threadId: "thread-1",
+        repoId: 5,
+        repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+        prompt: "Do the thing",
+        planner: { provider: "claude" },
+        implementer: { provider: "claude" }
+      });
+
+      const runCalls = vi.mocked(bot.runProviderText as any).mock.calls;
+      expect(runCalls).toHaveLength(2);
+      for (const call of runCalls) {
+        expect(call[0]).toHaveProperty("env");
+        const env = call[0].env;
+        expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-xxx");
+        expect(env.HOME).toBe("/root");
+        expect(env.GH_TOKEN).toBe("gh-test");
+
+        const pathParts = env.PATH!.split(":");
+        expect(pathParts[0]).toBe("/data/tool-installs/request/thread-1/npm-prettier/bin");
+        expect(env.PATH).toContain("/custom/bin");
+
+        expect(env.NON_ESSENTIAL_VAR).toBeUndefined();
+      }
+    } finally {
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
     }
   });
 
@@ -4376,7 +4579,7 @@ describe("ActuariusBot revise command", () => {
     }));
   });
 
-  it("forwards minimal env to runProviderText even when packages list is empty in revise path", async () => {
+  it("exercises real buildMinimalExecutionEnvironment in revise path — auth vars, bin PATH, no arbitrary env", async () => {
     const worktreePath = await createTempWorktree("actuarius-revise-env-");
     vi.mocked(getReviewDiff).mockResolvedValue({
       baseBranch: "main",
@@ -4386,65 +4589,110 @@ describe("ActuariusBot revise command", () => {
       changedFiles: [],
       diffText: "diff"
     });
-    const send = vi.fn().mockResolvedValue(undefined);
-    const updateRequestStatus = vi.fn();
-    const bot = createBot(createReviseDb({
-      updateRequestStatus,
-      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
-        id: 41,
-        user_id: "user-1",
-        worktree_path: worktreePath,
-        branch_name: "ask/41-123",
-        status: "succeeded",
-        prompt: "Original request prompt"
-      })
-    }));
-    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
-      isThread: () => true,
-      send
-    });
-    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
-      packages: [],
-      env: {
-        OPENAI_API_KEY: "sk-openai-test",
-        GEMINI_API_KEY: "gemini-test",
-        HOME: "/home/user",
-        PATH: "/opt/tools/bin:/usr/local/bin:/usr/bin",
-        GH_TOKEN: "gh-test"
-      }
-    });
-    (bot as any).runProviderText = vi.fn().mockResolvedValue(JSON.stringify({
-      overview: "Fix bugs",
-      tasks: [{ title: "Fix bug 1", description: "Fix the first bug" }]
-    }));
-    vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
 
-    await (bot as any).runReviseRequest({
-      requestId: 42,
-      sourceRequestId: 41,
-      threadId: "thread-1",
-      repoId: 5,
-      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
-      prompt: "Original request prompt",
-      worktreePath,
-      branchName: "ask/41-123",
-      planner: { provider: "claude" },
-      implementer: { provider: "claude" },
-      findings: null
-    });
+    const savedEnv: Record<string, string | undefined> = {
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+      GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+      HOME: process.env.HOME,
+      PATH: process.env.PATH,
+      GH_TOKEN: process.env.GH_TOKEN,
+      NON_ESSENTIAL_VAR: process.env.NON_ESSENTIAL_VAR
+    };
 
-    const runCalls = vi.mocked(bot.runProviderText as any).mock.calls;
-    expect(runCalls.length).toBeGreaterThanOrEqual(1);
-    for (const call of runCalls) {
-      expect(call[0]).toHaveProperty("env");
-      expect(call[0].env).toEqual({
-        OPENAI_API_KEY: "sk-openai-test",
-        GEMINI_API_KEY: "gemini-test",
-        HOME: "/home/user",
-        PATH: "/opt/tools/bin:/usr/local/bin:/usr/bin",
-        GH_TOKEN: "gh-test"
+    try {
+      process.env.OPENAI_API_KEY = "sk-openai-test";
+      process.env.GEMINI_API_KEY = "gemini-test";
+      process.env.HOME = "/home/user";
+      process.env.PATH = "/usr/local/bin:/usr/bin";
+      process.env.GH_TOKEN = "gh-test";
+      process.env.NON_ESSENTIAL_VAR = "should-not-appear";
+
+      const installRecords = [
+        {
+          id: 20,
+          guild_id: "guild-1",
+          repo_id: 5,
+          request_id: null,
+          thread_id: "thread-1",
+          package_id: "npm-prettier",
+          package_version: "3",
+          scope: "request",
+          status: "succeeded" as const,
+          requested_by_user_id: "user-1",
+          approved_by_user_id: "admin-1",
+          install_root: "/data/tool-installs/request/thread-1/npm-prettier",
+          bin_path: "/data/tool-installs/request/thread-1/npm-prettier/bin",
+          env_json: "{}",
+          logs: null,
+          error_message: null,
+          created_at: "2026-03-31T00:00:00.000Z",
+          updated_at: "2026-03-31T00:00:00.000Z",
+          completed_at: "2026-03-31T00:00:00.000Z"
+        }
+      ];
+
+      const send = vi.fn().mockResolvedValue(undefined);
+      const updateRequestStatus = vi.fn();
+      const bot = createBot(createReviseDb({
+        updateRequestStatus,
+        getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+          id: 41,
+          user_id: "user-1",
+          worktree_path: worktreePath,
+          branch_name: "ask/41-123",
+          status: "succeeded",
+          prompt: "Original request prompt"
+        }),
+        listSuccessfulInstallRequestsForScope: vi.fn().mockReturnValue(installRecords)
+      }));
+      (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+        isThread: () => true,
+        send
       });
-      expect(call[0].env).not.toHaveProperty("NON_ESSENTIAL_VAR");
+      (bot as any).runProviderText = vi.fn().mockResolvedValue(JSON.stringify({
+        overview: "Fix bugs",
+        tasks: [{ title: "Fix bug 1", description: "Fix the first bug" }]
+      }));
+      vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
+
+      await (bot as any).runReviseRequest({
+        requestId: 42,
+        sourceRequestId: 41,
+        threadId: "thread-1",
+        repoId: 5,
+        repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+        prompt: "Original request prompt",
+        worktreePath,
+        branchName: "ask/41-123",
+        planner: { provider: "claude" },
+        implementer: { provider: "claude" },
+        findings: null
+      });
+
+      const runCalls = vi.mocked(bot.runProviderText as any).mock.calls;
+      expect(runCalls.length).toBeGreaterThanOrEqual(1);
+      for (const call of runCalls) {
+        expect(call[0]).toHaveProperty("env");
+        const env = call[0].env;
+        expect(env.OPENAI_API_KEY).toBe("sk-openai-test");
+        expect(env.GEMINI_API_KEY).toBe("gemini-test");
+        expect(env.HOME).toBe("/home/user");
+        expect(env.GH_TOKEN).toBe("gh-test");
+
+        const pathParts = env.PATH!.split(":");
+        expect(pathParts[0]).toBe("/data/tool-installs/request/thread-1/npm-prettier/bin");
+        expect(env.PATH).toContain("/usr/local/bin");
+
+        expect(env.NON_ESSENTIAL_VAR).toBeUndefined();
+      }
+    } finally {
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
     }
   });
 });
