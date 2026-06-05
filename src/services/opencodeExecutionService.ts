@@ -8,6 +8,15 @@ import { runProviderRequest } from "../utils/runProviderRequest.js";
 export const ALLOWED_OPENCODE_PROVIDERS = ["deepseek", "openai", "anthropic", "google", "xai", "groq", "openrouter", "together"] as const;
 export const OPENCODE_AUTH_PATH = join(homedir(), ".local", "share", "opencode", "auth.json");
 
+// opencode's `-f/--file` flag "attaches file(s) to the message" rather than
+// replacing the message — so an oversized prompt delivered purely via --file
+// with an empty message has undefined behavior (opencode may reject an empty
+// message). We keep a short, explicit directive message that points at the
+// attached file, which holds the full prompt. Robust regardless of whether
+// opencode treats the file as the prompt or as attached context.
+export const OPENCODE_TEMPFILE_DIRECTIVE =
+  "Read the attached file and follow its full contents as your prompt.";
+
 export interface OpencodeExecutionInput {
   prompt: string;
   cwd: string;
@@ -61,14 +70,22 @@ export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: 
       extraArgs: ["--dangerously-skip-permissions"],
       supportsStdinFallback: false,
       reshapeArgsForTempfile: (_promptText: string, adjustedArgs: string[], tempFilePath: string) => {
-        const skipIdx = adjustedArgs.indexOf("--dangerously-skip-permissions");
+        // Re-insert a short directive message (the full prompt lives in the
+        // attached file) right after the `run` subcommand so opencode always
+        // has a non-empty, unambiguous instruction; then attach the file with
+        // `--file` before `--dangerously-skip-permissions` (order preserved).
+        const runIdx = adjustedArgs.indexOf("run");
+        const withMessage = [...adjustedArgs];
+        withMessage.splice(runIdx >= 0 ? runIdx + 1 : 0, 0, OPENCODE_TEMPFILE_DIRECTIVE);
+
+        const skipIdx = withMessage.indexOf("--dangerously-skip-permissions");
         if (skipIdx === -1) {
-          return [...adjustedArgs, "--file", tempFilePath];
+          return [...withMessage, "--file", tempFilePath];
         }
         return [
-          ...adjustedArgs.slice(0, skipIdx),
+          ...withMessage.slice(0, skipIdx),
           "--file", tempFilePath,
-          ...adjustedArgs.slice(skipIdx),
+          ...withMessage.slice(skipIdx),
         ];
       },
       logLabel: "OpenCode",

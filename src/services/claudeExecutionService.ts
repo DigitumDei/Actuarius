@@ -81,6 +81,14 @@ export async function runClaudeRequest(input: ClaudeExecutionInput, logger: Logg
     input,
     {
       binary: "claude",
+      // `claude`'s -p/--print is a BOOLEAN flag (non-interactive print mode), not
+      // a value-taking flag — the prompt is a positional argument. Modeling it as
+      // `prefixArgs: ["-p"]` + positional keeps the normal invocation byte-identical
+      // (`claude -p <prompt> ...`) while making the oversized path correct: the
+      // positional prompt is removed and piped via stdin (`claude -p ...` reads the
+      // prompt from stdin in print mode), instead of the fragile `-p "" + stdin`.
+      prefixArgs: ["-p"],
+      positionalPrompt: true,
       extraArgs: ["--output-format", "json", "--permission-mode", "bypassPermissions"],
       supportsStdinFallback: true,
       logLabel: "Claude",

@@ -43,6 +43,42 @@ const GITHUB_CLI_VARS = new Set([
   "GIT_TERMINAL_PROMPT"
 ]);
 
+// Outbound proxy + custom TLS/CA configuration. A VM that routes egress through
+// a proxy or pins a private CA bundle needs these, or every provider/`gh` HTTPS
+// call fails under the minimal env. Both upper- and lower-case proxy spellings
+// are honored because different HTTP stacks read different cases.
+const NETWORK_TLS_VARS = new Set([
+  "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+  "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+  "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR",
+  "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE"
+]);
+
+// Runtime/config locators that redirect where a CLI finds its config/cache or
+// which API endpoint it talks to. Dropping these silently changes behavior
+// (wrong endpoint, missing config dir) instead of failing loudly, so they must
+// survive the minimal env when the deployment sets them.
+const RUNTIME_CONFIG_VARS = new Set([
+  "NODE_OPTIONS",
+  "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+  "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
+  "OPENAI_BASE_URL", "OPENAI_API_BASE",
+  "GEMINI_BASE_URL", "GOOGLE_GEMINI_BASE_URL",
+  "OPENCODE_CONFIG"
+]);
+
+// Operator escape hatch: a comma/whitespace-separated list of additional env
+// var NAMES to pass through to provider subprocesses. Lets a deployment add
+// site-specific variables (e.g. an internal proxy or bespoke auth var) without
+// a code change. Only names are listed here; values still come from process.env.
+const EXTRA_ENV_ALLOWLIST_VAR = "EXTRA_EXECUTION_ENV_VARS";
+
+function parseExtraEnvAllowlist(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw.split(/[,\s]+/).map((entry) => entry.trim()).filter(Boolean);
+}
+
 export class InstallServiceError extends Error {
   public readonly code:
     | "UNKNOWN_PACKAGE"
@@ -360,15 +396,16 @@ export class InstallService {
     const packages: string[] = [];
     const env: NodeJS.ProcessEnv = {};
 
-    const allowedAuthVars = new Set([...PROVIDER_AUTH_VARS, ...GITHUB_CLI_VARS]);
+    const allowedVars = new Set<string>([
+      ...ESSENTIAL_ENV_VARS,
+      ...PROVIDER_AUTH_VARS,
+      ...GITHUB_CLI_VARS,
+      ...NETWORK_TLS_VARS,
+      ...RUNTIME_CONFIG_VARS,
+      ...parseExtraEnvAllowlist(sourceEnv[EXTRA_ENV_ALLOWLIST_VAR])
+    ]);
 
-    for (const key of ESSENTIAL_ENV_VARS) {
-      if (sourceEnv[key] !== undefined) {
-        env[key] = sourceEnv[key];
-      }
-    }
-
-    for (const key of allowedAuthVars) {
+    for (const key of allowedVars) {
       if (sourceEnv[key] !== undefined) {
         env[key] = sourceEnv[key];
       }

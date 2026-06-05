@@ -31,6 +31,9 @@ export async function runCodexRequest(input: CodexExecutionInput, logger: Logger
       prefixArgs: ["exec"],
       positionalPrompt: true,
       extraArgs: ["--dangerously-bypass-approvals-and-sandbox"],
+      // Verified contract (`codex exec --help`): "if not provided as an argument
+      // … instructions are read from stdin". The oversized path removes the
+      // positional prompt and pipes it via stdin — exactly this contract.
       supportsStdinFallback: true,
       logLabel: "Codex",
       makeError: (code, message) => new CodexExecutionError(code as CodexExecutionError["code"], message),

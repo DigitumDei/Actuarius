@@ -20,7 +20,7 @@ vi.mock("../src/utils/spawnCollect.js", async (importActual) => {
 const { spawnCollectWithTransport } = await import("../src/utils/spawnCollect.js");
 const mockSpawnCollectWithTransport = vi.mocked(spawnCollectWithTransport);
 
-const { OpencodeExecutionError, runOpencodeRequest } = await import("../src/services/opencodeExecutionService.js");
+const { OpencodeExecutionError, runOpencodeRequest, OPENCODE_TEMPFILE_DIRECTIVE } = await import("../src/services/opencodeExecutionService.js");
 
 const logger = pino({ level: "silent" });
 
@@ -140,7 +140,7 @@ describe("runOpencodeRequest", () => {
     const adjusted = ["run", "--dir", "/work", "--dangerously-skip-permissions", "--model", "o4-mini"];
     const result = reshapeArgsForTempfile("big prompt", adjusted, "/tmp/prompt.txt");
     expect(result).toEqual([
-      "run", "--dir", "/work",
+      "run", OPENCODE_TEMPFILE_DIRECTIVE, "--dir", "/work",
       "--file", "/tmp/prompt.txt",
       "--dangerously-skip-permissions",
       "--model", "o4-mini",
@@ -155,7 +155,7 @@ describe("runOpencodeRequest", () => {
     const adjusted = ["run", "--dir", "/work", "--model", "o4-mini"];
     const result = reshapeArgsForTempfile("big prompt", adjusted, "/tmp/prompt.txt");
     expect(result).toEqual([
-      "run", "--dir", "/work", "--model", "o4-mini",
+      "run", OPENCODE_TEMPFILE_DIRECTIVE, "--dir", "/work", "--model", "o4-mini",
       "--file", "/tmp/prompt.txt",
     ]);
   });

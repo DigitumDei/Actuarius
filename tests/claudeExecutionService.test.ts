@@ -118,7 +118,7 @@ describe("runClaudeRequest", () => {
         file: "claude",
         args: ["-p", "my prompt", "--output-format", "json", "--permission-mode", "bypassPermissions"],
         cwd: "/tmp",
-        promptArgIndices: [0, 1],
+        promptArgIndices: [1],
       })
     );
   });
