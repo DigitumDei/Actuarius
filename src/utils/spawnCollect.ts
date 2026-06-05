@@ -206,7 +206,7 @@ export function decidePromptTransport(
 
   // If no prompt indices are provided, we can't extract anything to move.
   if (promptArgIndices.length === 0) {
-    return { transport: "argv", args, totalBytes, transportReason: "under_limit" };
+    return { transport: "argv", args, totalBytes, transportReason: "oversized_no_fallback" };
   }
 
   // Remove prompt-related args (descending order to keep indices stable)

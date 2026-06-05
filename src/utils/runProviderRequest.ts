@@ -96,7 +96,7 @@ export async function runProviderRequest(
     args.push("--model", input.model);
   }
 
-  logger.debug({ args, cwd: input.cwd, timeoutMs: input.timeoutMs }, `${config.logLabel} subprocess args`);
+  logger.debug({ argCount: args.length, totalBytes: estimateSpawnPayloadBytes(args, input.env), limitBytes: DEFAULT_ARGV_TOTAL_LIMIT, cwd: input.cwd, timeoutMs: input.timeoutMs }, `${config.logLabel} subprocess args`);
 
   // Calculate which indices in `args` contain the prompt text (and its flag)
   const promptStartIdx = prefix.length + (config.cwdFlag ? 2 : 0);
