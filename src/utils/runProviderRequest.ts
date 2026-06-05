@@ -102,7 +102,11 @@ export async function runProviderRequest(
     }
 
     if (config.authFailurePattern && config.notAuthenticatedCode) {
-      const combined = [nodeError.stderr, nodeError.stdout, message].filter(Boolean).join("\n");
+      const combined = [
+        nodeError.stderr,
+        ...(config.authCheckOnlyStderr ? [] : [nodeError.stdout]),
+        message,
+      ].filter(Boolean).join("\n");
       if (config.authFailurePattern.test(combined)) {
         const hint = config.authHint ? ` ${config.authHint}` : "";
         logger.warn({ stderr: nodeError.stderr, stdout: nodeError.stdout?.slice(0, 1000) }, `${config.logLabel} auth failure pattern matched on process error — logging output to assist diagnosis`);

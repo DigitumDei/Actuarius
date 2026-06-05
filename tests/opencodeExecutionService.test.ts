@@ -45,6 +45,23 @@ describe("runOpencodeRequest", () => {
     ).rejects.toMatchObject({ code: "NOT_AUTHENTICATED", name: "OpencodeExecutionError" });
   });
 
+  it("does NOT throw NOT_AUTHENTICATED on non-zero exit when auth failure text appears only in stdout", async () => {
+    // A subprocess OpenCode ran printed auth-failure text to its stdout, which ended up in
+    // OpenCode's stdout. The process then exited non-zero (e.g. subprocess returned error).
+    // With authCheckOnlyStderr=true, stdout must be excluded from the auth pattern check
+    // in the catch block as well as the clean-exit path.
+    mockSpawnCollect.mockRejectedValueOnce(
+      Object.assign(new Error("Process exited with code 1"), {
+        killed: false,
+        stdout: "I ran gemini and got: not authenticated",
+        stderr: "some other error from opencode",
+      })
+    );
+    await expect(
+      runOpencodeRequest({ prompt: "do something", cwd: "/tmp", timeoutMs: 5000 }, logger)
+    ).rejects.not.toMatchObject({ code: "NOT_AUTHENTICATED" });
+  });
+
   it("throws OPENCODE_UNAVAILABLE when binary is not found", async () => {
     mockSpawnCollect.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
     await expect(
