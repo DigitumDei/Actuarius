@@ -1,10 +1,18 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import pino from "pino";
 
-vi.mock("../src/utils/spawnCollect.js");
+vi.mock("../src/utils/spawnCollect.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/utils/spawnCollect.js")>();
+  return {
+    ...actual,
+    spawnCollectWithTransport: vi.fn().mockResolvedValue({ stdout: "ok", stderr: "" }),
+  };
+});
 
 const { spawnCollectWithTransport } = await import("../src/utils/spawnCollect.js");
 const mockSpawnCollectWithTransport = vi.mocked(spawnCollectWithTransport);
+
+const { decidePromptTransport, DEFAULT_ARGV_TOTAL_LIMIT } = await import("../src/utils/spawnCollect.js");
 
 const { CodexExecutionError, runCodexRequest } = await import("../src/services/codexExecutionService.js");
 
@@ -88,6 +96,17 @@ describe("runCodexRequest", () => {
     );
   });
 
+  it("passes supportsStdinFallback true and promptArgIndices [1] for fallback", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        supportsStdinFallback: true,
+        promptArgIndices: [1],
+      })
+    );
+  });
+
   it("throws CODEX_UNAVAILABLE when binary is not found (ENOENT)", async () => {
     const err = Object.assign(new Error("spawn codex ENOENT"), { code: "ENOENT" });
     mockSpawnCollectWithTransport.mockRejectedValueOnce(err);
@@ -122,44 +141,60 @@ describe("runCodexRequest", () => {
       name: "CodexExecutionError",
     });
   });
+});
 
-  it("passes supportsStdinFallback true for oversized prompt fallback", async () => {
-    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
-    await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
-    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
-      expect.objectContaining({
-        supportsStdinFallback: true,
-      })
-    );
+describe("codex prompt transport decision", () => {
+  it("uses argv transport for a small prompt (prompt stays in args)", () => {
+    const args = ["exec", "hello", "--dangerously-bypass-approvals-and-sandbox"];
+    const decision = decidePromptTransport(args, [1]);
+    expect(decision.transport).toBe("argv");
+    expect(decision.args).toBe(args);
+    expect(decision.stdinPayload).toBeUndefined();
   });
 
-  it("passes promptArgIndices as [1] for positional prompt after exec prefix", async () => {
-    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
-    await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
-    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
-      expect.objectContaining({
-        promptArgIndices: [1],
-      })
-    );
+  it("uses stdin transport for an oversized prompt (prompt removed from args)", () => {
+    const bigPrompt = "x".repeat(2_000_000);
+    const args = ["exec", bigPrompt, "--dangerously-bypass-approvals-and-sandbox"];
+    const decision = decidePromptTransport(args, [1]);
+    expect(decision.transport).toBe("stdin");
+    expect(decision.args).toEqual(["exec", "--dangerously-bypass-approvals-and-sandbox"]);
+    expect(decision.args).not.toContain(bigPrompt);
+    expect(decision.stdinPayload).toBe(bigPrompt);
   });
 
-  it("does not include prompt text in args when promptArgIndices would strip it for fallback", async () => {
-    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
-    await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
-    const callArgs = mockSpawnCollectWithTransport.mock.calls[0]![0];
-    expect(callArgs.args).toContain("hello");
-    expect(callArgs.promptArgIndices).toEqual([1]);
-  });
-
-  it("still passes model flag after prompt when stdin fallback strips the positional prompt", async () => {
-    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
-    await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, model: "o4-mini" }, logger);
-    const callArgs = mockSpawnCollectWithTransport.mock.calls[0]![0];
-    expect(callArgs.args).toEqual([
-      "exec", "hello",
+  it("preserves --model flag in correct position for oversized prompt with stdin", () => {
+    const bigPrompt = "y".repeat(2_000_000);
+    const args = ["exec", bigPrompt, "--dangerously-bypass-approvals-and-sandbox", "--model", "o4-mini"];
+    const decision = decidePromptTransport(args, [1]);
+    expect(decision.transport).toBe("stdin");
+    expect(decision.args).toEqual([
+      "exec",
       "--dangerously-bypass-approvals-and-sandbox",
-      "--model", "o4-mini",
+      "--model",
+      "o4-mini",
     ]);
-    expect(callArgs.promptArgIndices).toEqual([1]);
+    expect(decision.args).not.toContain(bigPrompt);
+    expect(decision.stdinPayload).toBe(bigPrompt);
+  });
+
+  it("uses argv transport for a small prompt with --model (normal argv path)", () => {
+    const args = ["exec", "hello", "--dangerously-bypass-approvals-and-sandbox", "--model", "o4-mini"];
+    const decision = decidePromptTransport(args, [1]);
+    expect(decision.transport).toBe("argv");
+    expect(decision.args).toBe(args);
+    expect(decision.stdinPayload).toBeUndefined();
+  });
+
+  it("reports totalBytes exceeding the limit for oversized prompts", () => {
+    const bigPrompt = "z".repeat(2_000_000);
+    const args = ["exec", bigPrompt];
+    const decision = decidePromptTransport(args, [1]);
+    expect(decision.totalBytes).toBeGreaterThan(DEFAULT_ARGV_TOTAL_LIMIT);
+  });
+
+  it("reports totalBytes within the limit for small prompts", () => {
+    const args = ["exec", "hello", "--dangerously-bypass-approvals-and-sandbox"];
+    const decision = decidePromptTransport(args, [1]);
+    expect(decision.totalBytes).toBeLessThanOrEqual(DEFAULT_ARGV_TOTAL_LIMIT);
   });
 });
