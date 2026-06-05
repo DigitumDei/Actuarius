@@ -1,5 +1,5 @@
 import type { Logger } from "pino";
-import { spawnCollect, spawnCollectWithTransport, estimateSpawnPayloadBytes, DEFAULT_ARGV_TOTAL_LIMIT } from "./spawnCollect.js";
+import { spawnCollect, spawnCollectWithTransport, exceedsArgvLimits, DEFAULT_ARGV_TOTAL_LIMIT, MAX_SINGLE_ARG_BYTES } from "./spawnCollect.js";
 
 export interface ProviderRequestInput {
   prompt: string;
@@ -96,7 +96,12 @@ export async function runProviderRequest(
     args.push("--model", input.model);
   }
 
-  logger.debug({ argCount: args.length, totalBytes: estimateSpawnPayloadBytes(args, input.env), limitBytes: DEFAULT_ARGV_TOTAL_LIMIT, cwd: input.cwd, timeoutMs: input.timeoutMs }, `${config.logLabel} subprocess args`);
+  // When env is undefined the child inherits the full parent process.env, which
+  // the kernel counts against ARG_MAX — so estimate against the env we'll spawn.
+  const effectiveEnv = input.env ?? process.env;
+  const { exceeds: payloadExceedsLimits, totalBytes, maxArgBytes } = exceedsArgvLimits(args, effectiveEnv);
+
+  logger.debug({ argCount: args.length, totalBytes, maxArgBytes, limitBytes: DEFAULT_ARGV_TOTAL_LIMIT, maxArgLimitBytes: MAX_SINGLE_ARG_BYTES, cwd: input.cwd, timeoutMs: input.timeoutMs }, `${config.logLabel} subprocess args`);
 
   // Calculate which indices in `args` contain the prompt text (and its flag)
   const promptStartIdx = prefix.length + (config.cwdFlag ? 2 : 0);
@@ -104,16 +109,15 @@ export async function runProviderRequest(
     ? [promptStartIdx]
     : [promptStartIdx, promptStartIdx + 1];
 
-  const totalBytes = estimateSpawnPayloadBytes(args, input.env);
-
   // For providers using the -p <prompt> flag-pair pattern with stdin fallback,
   // keep the -p flag in args with an empty value and pipe the actual prompt via
   // stdin (the CLI appends stdin content to the -p value, e.g. Gemini).
   // This bypasses spawnCollectWithTransport's prompt-removal behavior which
-  // would remove -p entirely, breaking headless mode.
+  // would remove -p entirely, breaking headless mode. The trigger honors both
+  // the total payload limit and the per-argument MAX_ARG_STRLEN cap.
   const useFlagPairStdin = !config.positionalPrompt
     && config.supportsStdinFallback !== false
-    && totalBytes > DEFAULT_ARGV_TOTAL_LIMIT;
+    && payloadExceedsLimits;
 
   let stdout: string;
   let stderr: string;
@@ -137,7 +141,9 @@ export async function runProviderRequest(
           transport: "stdin" as const,
           transportReason: "oversized_flag_pair_stdin" as const,
           totalBytes,
+          maxArgBytes,
           limitBytes: DEFAULT_ARGV_TOTAL_LIMIT,
+          maxArgLimitBytes: MAX_SINGLE_ARG_BYTES,
           useFlagPairStdin: true,
           logLabel: config.logLabel,
         },

@@ -7,6 +7,9 @@ import {
   estimateEnvBytes,
   estimateSpawnPayloadBytes,
   DEFAULT_ARGV_TOTAL_LIMIT,
+  MAX_SINGLE_ARG_BYTES,
+  maxArgByteLength,
+  exceedsArgvLimits,
   decidePromptTransport,
   writeTempPromptFile,
   cleanupTempPromptFile,
@@ -104,6 +107,55 @@ describe("DEFAULT_ARGV_TOTAL_LIMIT", () => {
   });
 });
 
+describe("MAX_SINGLE_ARG_BYTES", () => {
+  it("is 120 KB (122_880 bytes) — below the 128 KB Linux MAX_ARG_STRLEN cap", () => {
+    expect(MAX_SINGLE_ARG_BYTES).toBe(122_880);
+    // Must stay strictly under the hard kernel limit of 131072 bytes.
+    expect(MAX_SINGLE_ARG_BYTES).toBeLessThan(131_072);
+  });
+});
+
+describe("maxArgByteLength", () => {
+  it("returns 0 for an empty array", () => {
+    expect(maxArgByteLength([])).toBe(0);
+  });
+
+  it("returns the largest single-arg UTF-8 byte length, not the sum", () => {
+    expect(maxArgByteLength(["a", "bbbb", "cc"])).toBe(4);
+  });
+
+  it("counts multi-byte characters by UTF-8 byte length", () => {
+    // "你好" = 6 bytes, longer than the 5-byte ASCII string
+    expect(maxArgByteLength(["hello", "你好"])).toBe(6);
+  });
+});
+
+describe("exceedsArgvLimits", () => {
+  it("does not flag a small payload", () => {
+    const result = exceedsArgvLimits(["-p", "hello"]);
+    expect(result.exceeds).toBe(false);
+  });
+
+  it("flags a single argument over the per-arg cap even when the total is well under 1.5 MB", () => {
+    // 200 KB prompt: total ~200 KB (under DEFAULT_ARGV_TOTAL_LIMIT) but the
+    // single arg exceeds MAX_SINGLE_ARG_BYTES — the band that used to E2BIG.
+    const prompt = "x".repeat(200 * 1024);
+    const result = exceedsArgvLimits(["-p", prompt]);
+    expect(result.totalBytes).toBeLessThan(DEFAULT_ARGV_TOTAL_LIMIT);
+    expect(result.maxArgBytes).toBeGreaterThan(MAX_SINGLE_ARG_BYTES);
+    expect(result.exceeds).toBe(true);
+  });
+
+  it("flags an aggregate payload over the total limit even when each arg is small", () => {
+    // Many small args summing past the total, none individually over the cap.
+    const args = Array.from({ length: 40 }, () => "y".repeat(50 * 1024));
+    const result = exceedsArgvLimits(args);
+    expect(result.maxArgBytes).toBeLessThan(MAX_SINGLE_ARG_BYTES);
+    expect(result.totalBytes).toBeGreaterThan(DEFAULT_ARGV_TOTAL_LIMIT);
+    expect(result.exceeds).toBe(true);
+  });
+});
+
 describe("decidePromptTransport", () => {
   it("returns argv transport when payload fits under threshold", () => {
     const args = ["-p", "short prompt"];
@@ -118,6 +170,29 @@ describe("decidePromptTransport", () => {
     const decision = decidePromptTransport([], []);
     expect(decision.transport).toBe("argv");
     expect(decision.args).toEqual([]);
+  });
+
+  it("moves a 200 KB prompt off argv even though the total is under 1.5 MB (per-arg cap)", () => {
+    // Regression: a single prompt in the 128 KB–1.5 MB band exceeds Linux's
+    // MAX_ARG_STRLEN per-argument cap and E2BIGs, even though the total
+    // payload is far below DEFAULT_ARGV_TOTAL_LIMIT. The fallback must fire.
+    const prompt = "x".repeat(200 * 1024);
+    const args = ["-p", prompt];
+    const decision = decidePromptTransport(args, [0, 1]);
+    expect(decision.totalBytes).toBeLessThan(DEFAULT_ARGV_TOTAL_LIMIT);
+    expect(decision.transport).toBe("stdin");
+    expect(decision.args).toEqual([]);
+    expect(decision.stdinPayload).toBe(prompt);
+  });
+
+  it("uses tempfile for a 200 KB positional prompt when stdin is unsupported (per-arg cap)", () => {
+    const prompt = "z".repeat(200 * 1024);
+    const args = ["run", prompt, "--flag"];
+    const decision = decidePromptTransport(args, [1], undefined, false, ["--file", "<path>"]);
+    expect(decision.totalBytes).toBeLessThan(DEFAULT_ARGV_TOTAL_LIMIT);
+    expect(decision.transport).toBe("tempfile");
+    expect(decision.args).toEqual(["run", "--file", "<path>", "--flag"]);
+    expect(decision.stdinPayload).toBe(prompt);
   });
 
   it("returns stdin transport when payload exceeds threshold (default stdin support)", () => {

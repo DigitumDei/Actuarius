@@ -5,7 +5,17 @@ vi.mock("node:fs", () => ({
   existsSync: vi.fn(),
 }));
 
-vi.mock("../src/utils/spawnCollect.js");
+// Mock only the process-spawning functions; keep the real (pure) byte-math
+// helpers like exceedsArgvLimits/estimateSpawnPayloadBytes and the size
+// constants so the transport decision runs for real.
+vi.mock("../src/utils/spawnCollect.js", async (importActual) => {
+  const actual = await importActual<typeof import("../src/utils/spawnCollect.js")>();
+  return {
+    ...actual,
+    spawnCollect: vi.fn(),
+    spawnCollectWithTransport: vi.fn(),
+  };
+});
 
 const { spawnCollectWithTransport } = await import("../src/utils/spawnCollect.js");
 const mockSpawnCollectWithTransport = vi.mocked(spawnCollectWithTransport);

@@ -52,6 +52,50 @@ export function estimateSpawnPayloadBytes(args: string[], env?: NodeJS.ProcessEn
  */
 export const DEFAULT_ARGV_TOTAL_LIMIT = 1.5 * 1024 * 1024; // 1.5 MB
 
+/**
+ * Per-argument safety threshold.
+ *
+ * Linux `execve` enforces a SECOND limit independent of the ARG_MAX total:
+ * `MAX_ARG_STRLEN` = `32 * PAGE_SIZE` = 131072 bytes (128 KB on 4 KB-page
+ * systems) caps the length of any *single* argv or env string. A single
+ * oversized prompt argument therefore triggers `E2BIG` long before the 1.5 MB
+ * total threshold is reached — and a prompt in the 128 KB–1.5 MB band is the
+ * most common real case. We move the prompt off argv when any single argument
+ * approaches this cap, leaving ~6 KB of headroom below the hard 131072 ceiling.
+ */
+export const MAX_SINGLE_ARG_BYTES = 120 * 1024; // 122_880 bytes
+
+/** Largest single-argument size in bytes (UTF-8) across an argv array. */
+export function maxArgByteLength(args: string[]): number {
+  let max = 0;
+  for (const arg of args) {
+    const len = Buffer.byteLength(arg, "utf-8");
+    if (len > max) max = len;
+  }
+  return max;
+}
+
+/**
+ * Decide whether an argv/env payload must be moved off the command line to
+ * avoid `E2BIG`. Returns `exceeds: true` when EITHER the combined payload
+ * exceeds `DEFAULT_ARGV_TOTAL_LIMIT` OR any single argument exceeds
+ * `MAX_SINGLE_ARG_BYTES` (the per-string kernel cap). Both limits must be
+ * honored: the total guards against many medium args + a large env, while the
+ * per-arg guard catches a single huge prompt that fits well under the total.
+ */
+export function exceedsArgvLimits(
+  args: string[],
+  env?: NodeJS.ProcessEnv,
+): { exceeds: boolean; totalBytes: number; maxArgBytes: number } {
+  const totalBytes = estimateSpawnPayloadBytes(args, env);
+  const maxArgBytes = maxArgByteLength(args);
+  return {
+    exceeds: totalBytes > DEFAULT_ARGV_TOTAL_LIMIT || maxArgBytes > MAX_SINGLE_ARG_BYTES,
+    totalBytes,
+    maxArgBytes,
+  };
+}
+
 // ── Temp file helpers for prompt transport ────────────────────────────────
 
 const TEMP_DIR_PREFIX = "actuarius-prompt-";
@@ -199,9 +243,9 @@ export function decidePromptTransport(
     }
   }
 
-  const totalBytes = estimateSpawnPayloadBytes(args, env);
+  const { exceeds, totalBytes } = exceedsArgvLimits(args, env);
 
-  if (totalBytes <= DEFAULT_ARGV_TOTAL_LIMIT) {
+  if (!exceeds) {
     return { transport: "argv", args, totalBytes, transportReason: "under_limit" };
   }
 
@@ -350,10 +394,16 @@ export async function spawnCollectWithTransport(
     logLabel,
   } = options;
 
+  // When env is undefined, `spawnCollect` lets the child inherit the full
+  // parent `process.env`. The kernel charges those bytes against ARG_MAX, so
+  // the size estimate must count them too — otherwise we undercount and skip a
+  // fallback that was actually needed. Estimate against the env we will spawn.
+  const estimationEnv = env ?? process.env;
+
   const decision = decidePromptTransport(
     args,
     promptArgIndices,
-    env,
+    estimationEnv,
     supportsStdinFallback,
     tempfileFlag,
     reshapeArgsForTempfile,
@@ -373,7 +423,9 @@ export async function spawnCollectWithTransport(
         transport: decision.transport,
         transportReason: decision.transportReason,
         totalBytes: decision.totalBytes,
+        maxArgBytes: maxArgByteLength(args),
         limitBytes: DEFAULT_ARGV_TOTAL_LIMIT,
+        maxArgLimitBytes: MAX_SINGLE_ARG_BYTES,
         useFlagPairStdin: false,
         logLabel,
       },
