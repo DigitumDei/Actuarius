@@ -64,6 +64,7 @@ export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: 
       unavailableCode: "OPENCODE_UNAVAILABLE",
       notAuthenticatedCode: "NOT_AUTHENTICATED",
       authFailurePattern: /not authenticated|API key not found|authentication required|set an Auth method/i,
+      authCheckOnlyStderr: true,
       authHint: "Use `/opencode-auth` to configure API keys.",
       timeoutCode: "TIMEOUT",
       failedCode: "FAILED",

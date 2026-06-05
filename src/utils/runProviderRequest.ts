@@ -32,6 +32,12 @@ export interface ProviderRunnerConfig {
   notAuthenticatedCode?: string;
   /** Regex tested against stderr to detect authentication failures. */
   authFailurePattern?: RegExp;
+  /**
+   * If true, the clean-exit auth failure check tests only stderr (not stdout).
+   * Use for agentic CLIs whose stdout is task output and may contain arbitrary
+   * subprocess text (e.g. OpenCode running `gemini` commands as part of a task).
+   */
+  authCheckOnlyStderr?: boolean;
   /** User-facing hint appended to the auth failure message (e.g. "Use `/codex-auth` to upload credentials."). */
   authHint?: string;
   timeoutCode: string;
@@ -129,9 +135,11 @@ export async function runProviderRequest(
   }
   logger.debug({ stdoutLength: stdout.length }, `${config.logLabel} subprocess exited cleanly`);
 
-  // Detect auth prompts that the CLI printed to stdout instead of producing real output
+  // Detect auth prompts that the CLI printed to stdout instead of producing real output.
+  // For agentic CLIs (authCheckOnlyStderr=true), skip stdout — it's task output and may
+  // contain text from subprocesses the agent ran, causing false positives.
   if (config.authFailurePattern && config.notAuthenticatedCode) {
-    const combined = [stdout, stderr].join("\n");
+    const combined = config.authCheckOnlyStderr ? stderr : [stdout, stderr].join("\n");
     if (config.authFailurePattern.test(combined)) {
       const hint = config.authHint ? ` ${config.authHint}` : "";
       logger.warn({ stdout: stdout.slice(0, 1000), stderr }, `${config.logLabel} auth failure pattern matched on clean exit — logging output to assist diagnosis`);
