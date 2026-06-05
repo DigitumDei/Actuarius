@@ -3442,7 +3442,7 @@ Output the result of the command or the link to the created issue.`;
         repoId: input.repoId,
         threadId: input.threadId
       });
-      const env = executionEnvironment.packages.length > 0 ? executionEnvironment.env : undefined;
+      const env = executionEnvironment.env;
 
       stage = "planning";
       const plannerLabel = AI_PROVIDER_LABELS[input.planner.provider];
@@ -3490,7 +3490,7 @@ Output the result of the command or the link to the created issue.`;
         cwd: worktreePath,
         timeoutMs: this.config.askExecutionTimeoutMs,
         ...(input.planner.model ? { model: input.planner.model } : {}),
-        ...(env ? { env } : {})
+        env
       });
       if (!planText.trim()) {
         markFailed();
@@ -3578,7 +3578,7 @@ Output the result of the command or the link to the created issue.`;
           cwd: worktreePath,
           timeoutMs: this.config.askExecutionTimeoutMs,
           ...(input.implementer.model ? { model: input.implementer.model } : {}),
-          ...(env ? { env } : {})
+          env
         });
         for (const chunk of splitIntoDiscordMessages(implementationText, implementerLabel)) {
           await threadChannel.send(chunk);
@@ -3689,7 +3689,7 @@ Output the result of the command or the link to the created issue.`;
         repoId: input.repoId,
         threadId: input.threadId
       });
-      const env = executionEnvironment.packages.length > 0 ? executionEnvironment.env : undefined;
+      const env = executionEnvironment.env;
 
       stage = "compute-diff";
       if (!existsSync(input.worktreePath)) {
@@ -3752,7 +3752,7 @@ Output the result of the command or the link to the created issue.`;
         cwd: input.worktreePath,
         timeoutMs: this.config.askExecutionTimeoutMs,
         ...(input.planner.model ? { model: input.planner.model } : {}),
-        ...(env ? { env } : {})
+        env
       });
 
       if (!planText.trim()) {
@@ -3977,7 +3977,7 @@ Output the result of the command or the link to the created issue.`;
         provider: input.provider,
         prompt: effectivePrompt,
         cwd: worktreePath,
-        ...(executionEnvironment.packages.length > 0 ? { env: executionEnvironment.env } : {}),
+        env: executionEnvironment.env,
         ...(input.model ? { model: input.model } : {})
       });
 
