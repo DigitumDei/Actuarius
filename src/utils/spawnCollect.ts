@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, realpath } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
 import type { Logger } from "pino";
@@ -83,16 +83,17 @@ export async function writeTempPromptFile(content: string): Promise<TempPromptFi
  * No error is thrown if the path does not exist.
  */
 export async function cleanupTempPromptFile(tempDir: string): Promise<void> {
-  const systemTmp = tmpdir();
-  const resolved = join(systemTmp, basename(tempDir));
-  if (
-    resolved !== tempDir ||
-    !basename(tempDir).startsWith(TEMP_DIR_PREFIX)
-  ) {
-    return;
-  }
   try {
-    await rm(tempDir, { recursive: true, force: true });
+    const systemTmp = await realpath(tmpdir());
+    const realTempDir = await realpath(tempDir);
+    const resolved = join(systemTmp, basename(realTempDir));
+    if (
+      resolved !== realTempDir ||
+      !basename(realTempDir).startsWith(TEMP_DIR_PREFIX)
+    ) {
+      return;
+    }
+    await rm(realTempDir, { recursive: true, force: true });
   } catch {
     // Ignore — best-effort cleanup
   }
@@ -468,7 +469,7 @@ export function spawnCollect(
     });
 
     child.stderr!.on("data", (chunk: Buffer) => {
-      if (bufferOverflow) return;
+      if (bufferOverflow || timedOut) return;
       const combined = stderr + chunk.toString();
       if (combined.length > effectiveStderrMax) {
         stderrTruncated = true;
@@ -495,8 +496,8 @@ export function spawnCollect(
       }
       if (timedOut) {
         if (code !== null) {
-          reject(Object.assign(new Error(`Process exited with code ${String(code)}`), {
-            killed: false, signal, stdout, stderr: finalStderr,
+          reject(Object.assign(new Error(`Process exited with code ${String(code)} after timeout`), {
+            code: "ETIMEDOUT", killed: false, signal, stdout, stderr: finalStderr,
           }));
           return;
         }

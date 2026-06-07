@@ -352,7 +352,9 @@ export class InstallService {
   public buildMinimalExecutionEnvironment(input: {
     repoId: number;
     threadId?: string | null;
+    baseEnv?: NodeJS.ProcessEnv;
   }): InstallExecutionEnvironment {
+    const sourceEnv = input.baseEnv ?? process.env;
     const installs = this.db.listSuccessfulInstallRequestsForScope(input);
     const pathEntries = new Set<string>();
     const packages: string[] = [];
@@ -361,14 +363,14 @@ export class InstallService {
     const allowedAuthVars = new Set([...PROVIDER_AUTH_VARS, ...GITHUB_CLI_VARS]);
 
     for (const key of ESSENTIAL_ENV_VARS) {
-      if (process.env[key] !== undefined) {
-        env[key] = process.env[key];
+      if (sourceEnv[key] !== undefined) {
+        env[key] = sourceEnv[key];
       }
     }
 
     for (const key of allowedAuthVars) {
-      if (process.env[key] !== undefined) {
-        env[key] = process.env[key];
+      if (sourceEnv[key] !== undefined) {
+        env[key] = sourceEnv[key];
       }
     }
 

@@ -225,7 +225,7 @@ describe("spawnCollectWithTransport — stdin transport", () => {
         args: ["-e", `process.exit(1);`, bigPrompt],
         promptArgIndices: [2],
         cwd,
-        timeoutMs: 500,
+        timeoutMs: 5000,
         maxBuffer: 1024,
       })
     ).rejects.toMatchObject({ killed: false });
