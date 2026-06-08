@@ -189,8 +189,19 @@ describe("runOpencodeRequest", () => {
     });
   });
 
-  it("throws NOT_AUTHENTICATED when auth failure pattern matches on clean exit stdout", async () => {
+  it("does NOT treat an auth-like pattern on clean-exit stdout as NOT_AUTHENTICATED (authCheckOnlyStderr)", async () => {
+    // opencode is an agentic CLI: its stdout is task output and may contain
+    // auth-like strings emitted by subprocesses it runs (e.g. a nested gemini).
+    // Per authCheckOnlyStderr, only stderr is inspected for auth failures, so a
+    // clean exit with this text on stdout must be returned as the result, not
+    // misclassified as an auth error.
     mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "API key not found. Use /opencode-auth to set one.", stderr: "" });
+    const result = await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    expect(result.text).toBe("API key not found. Use /opencode-auth to set one.");
+  });
+
+  it("throws NOT_AUTHENTICATED when auth failure pattern matches on clean exit stderr", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "", stderr: "API key not found. Use /opencode-auth to set one." });
     await expect(runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
       code: "NOT_AUTHENTICATED",
       name: "OpencodeExecutionError",
