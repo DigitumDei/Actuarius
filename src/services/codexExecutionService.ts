@@ -31,6 +31,7 @@ export async function runCodexRequest(input: CodexExecutionInput, logger: Logger
       prefixArgs: ["exec"],
       positionalPrompt: true,
       extraArgs: ["--dangerously-bypass-approvals-and-sandbox"],
+      supportsStdinFallback: true,
       logLabel: "Codex",
       makeError: (code, message) => new CodexExecutionError(code as CodexExecutionError["code"], message),
       unavailableCode: "CODEX_UNAVAILABLE",

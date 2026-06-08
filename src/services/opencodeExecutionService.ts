@@ -59,6 +59,18 @@ export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: 
       positionalPrompt: true,
       cwdFlag: "--dir",
       extraArgs: ["--dangerously-skip-permissions"],
+      supportsStdinFallback: false,
+      reshapeArgsForTempfile: (_promptText: string, adjustedArgs: string[], tempFilePath: string) => {
+        const skipIdx = adjustedArgs.indexOf("--dangerously-skip-permissions");
+        if (skipIdx === -1) {
+          return [...adjustedArgs, "--file", tempFilePath];
+        }
+        return [
+          ...adjustedArgs.slice(0, skipIdx),
+          "--file", tempFilePath,
+          ...adjustedArgs.slice(skipIdx),
+        ];
+      },
       logLabel: "OpenCode",
       makeError: (code, message) => new OpencodeExecutionError(code as OpencodeExecutionError["code"], message),
       unavailableCode: "OPENCODE_UNAVAILABLE",

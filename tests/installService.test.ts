@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import pino from "pino";
 import { AppDatabase } from "../src/db/database.js";
 import { InstallService } from "../src/services/installService.js";
@@ -652,5 +652,220 @@ describe("InstallService", () => {
       process.env.PATH = originalPath;
       getuidSpy.mockRestore();
     }
+  });
+
+  describe("deduplicatePath", () => {
+    it("returns empty string for undefined or empty input", () => {
+      expect(InstallService.deduplicatePath(undefined)).toBe("");
+      expect(InstallService.deduplicatePath("")).toBe("");
+    });
+
+    it("returns the same path when there are no duplicates", () => {
+      expect(InstallService.deduplicatePath("/usr/bin:/usr/local/bin:/opt/bin")).toBe("/usr/bin:/usr/local/bin:/opt/bin");
+    });
+
+    it("removes duplicate entries while preserving order", () => {
+      expect(InstallService.deduplicatePath("/usr/bin:/usr/local/bin:/usr/bin:/opt/bin:/usr/local/bin")).toBe(
+        "/usr/bin:/usr/local/bin:/opt/bin"
+      );
+    });
+
+    it("handles a single entry", () => {
+      expect(InstallService.deduplicatePath("/usr/bin")).toBe("/usr/bin");
+    });
+  });
+
+  describe("buildMinimalExecutionEnvironment", () => {
+    const originalEnv: Record<string, string | undefined> = {};
+
+    beforeAll(() => {
+      for (const key of ["HOME", "USER", "SHELL", "LANG", "PATH", "GEMINI_API_KEY", "GOOGLE_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "XAI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "TOGETHER_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN", "GH_PROMPT_DISABLED", "NON_ESSENTIAL_VAR"]) {
+        originalEnv[key] = process.env[key];
+      }
+    });
+
+    afterAll(() => {
+      for (const [key, value] of Object.entries(originalEnv)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    });
+
+    it("only includes essential vars and auth vars, not arbitrary process.env entries", () => {
+      process.env.NON_ESSENTIAL_VAR = "should-not-appear";
+      process.env.SHELL = "/bin/bash";
+
+      const result = service.buildMinimalExecutionEnvironment({ repoId: 1, threadId: "thread-1" });
+
+      expect(result.env.NON_ESSENTIAL_VAR).toBeUndefined();
+      expect(result.env.SHELL).toBe("/bin/bash");
+      expect(Object.keys(result.env)).not.toContain("NON_ESSENTIAL_VAR");
+    });
+
+    it("preserves provider auth vars when set in process.env", () => {
+      const authVars: Record<string, string> = {
+        GEMINI_API_KEY: "gemini-test-key",
+        GOOGLE_API_KEY: "google-test-key",
+        DEEPSEEK_API_KEY: "deepseek-test-key",
+        OPENAI_API_KEY: "openai-test-key",
+        ANTHROPIC_API_KEY: "anthropic-test-key",
+        XAI_API_KEY: "xai-test-key",
+        GROQ_API_KEY: "groq-test-key",
+        OPENROUTER_API_KEY: "openrouter-test-key",
+        TOGETHER_API_KEY: "together-test-key",
+        CLAUDE_CODE_OAUTH_TOKEN: "claude-code-test-token",
+      };
+      for (const [key, value] of Object.entries(authVars)) {
+        process.env[key] = value;
+      }
+
+      const result = service.buildMinimalExecutionEnvironment({ repoId: 1, threadId: "thread-1" });
+
+      for (const key of Object.keys(authVars)) {
+        expect(result.env[key]).toBe(authVars[key]);
+      }
+    });
+
+    it("preserves GitHub CLI vars when set in process.env", () => {
+      process.env.GH_TOKEN = "gh-test-token";
+      process.env.GH_PROMPT_DISABLED = "1";
+
+      const result = service.buildMinimalExecutionEnvironment({ repoId: 1, threadId: "thread-1" });
+
+      expect(result.env.GH_TOKEN).toBe("gh-test-token");
+      expect(result.env.GH_PROMPT_DISABLED).toBe("1");
+    });
+
+    it("merges install env vars on top of the minimal base", () => {
+      const request = db.createRequest({
+        guildId: "guild-1",
+        repoId: 1,
+        channelId: "channel-1",
+        threadId: "thread-merge",
+        userId: "user-1",
+        prompt: "install tool",
+        status: "queued"
+      });
+
+      const install = db.createInstallRequest({
+        guildId: "guild-1",
+        repoId: 1,
+        requestId: request.id,
+        threadId: "thread-merge",
+        packageId: "npm-prettier",
+        packageVersion: "3",
+        scope: "request",
+        status: "approved",
+        requestedByUserId: "user-1",
+        approvedByUserId: "admin-1",
+        installRoot: "/data/tool-installs/request/thread-merge/npm-prettier"
+      });
+      db.updateInstallRequest({
+        installRequestId: install.id,
+        status: "succeeded",
+        binPath: "/data/tool-installs/request/thread-merge/npm-prettier/bin",
+        envJson: JSON.stringify({ CUSTOM_VAR: "custom-value", ANOTHER_VAR: "another-value" }),
+        completedAt: "2026-03-31T00:00:00.000Z"
+      });
+
+      process.env.SHELL = "/bin/zsh";
+      const result = service.buildMinimalExecutionEnvironment({ repoId: 1, threadId: "thread-merge" });
+
+      expect(result.env.SHELL).toBe("/bin/zsh");
+      expect(result.env.CUSTOM_VAR).toBe("custom-value");
+      expect(result.env.ANOTHER_VAR).toBe("another-value");
+    });
+
+    it("prepends bin dirs to PATH and deduplicates", () => {
+      const originalPath = process.env.PATH;
+      process.env.PATH = "/usr/bin:/usr/local/bin";
+
+      const request = db.createRequest({
+        guildId: "guild-1",
+        repoId: 1,
+        channelId: "channel-1",
+        threadId: "thread-path",
+        userId: "user-1",
+        prompt: "install tools",
+        status: "queued"
+      });
+
+      const installA = db.createInstallRequest({
+        guildId: "guild-1",
+        repoId: 1,
+        requestId: request.id,
+        threadId: "thread-path",
+        packageId: "npm-prettier",
+        packageVersion: "3",
+        scope: "request",
+        status: "approved",
+        requestedByUserId: "user-1",
+        approvedByUserId: "admin-1",
+        installRoot: "/data/tool-installs/request/thread-path/npm-prettier"
+      });
+      db.updateInstallRequest({
+        installRequestId: installA.id,
+        status: "succeeded",
+        binPath: "/data/tool-installs/request/thread-path/npm-prettier/bin",
+        envJson: "{}",
+        completedAt: "2026-03-31T00:00:00.000Z"
+      });
+
+      const installB = db.createInstallRequest({
+        guildId: "guild-1",
+        repoId: 1,
+        requestId: request.id,
+        threadId: "thread-path",
+        packageId: "java-temurin",
+        packageVersion: "21",
+        scope: "request",
+        status: "approved",
+        requestedByUserId: "user-1",
+        approvedByUserId: "admin-1",
+        installRoot: "/data/tool-installs/request/thread-path/java-temurin"
+      });
+      db.updateInstallRequest({
+        installRequestId: installB.id,
+        status: "succeeded",
+        binPath: "/data/tool-installs/request/thread-path/java-temurin/bin",
+        envJson: "{}",
+        completedAt: "2026-03-31T00:00:00.000Z"
+      });
+
+      const result = service.buildMinimalExecutionEnvironment({ repoId: 1, threadId: "thread-path" });
+
+      const pathParts = result.env.PATH!.split(":");
+      expect(pathParts[0]).toBe("/data/tool-installs/request/thread-path/npm-prettier/bin");
+      expect(pathParts[1]).toBe("/data/tool-installs/request/thread-path/java-temurin/bin");
+      expect(result.env.PATH).toContain("/usr/bin");
+      expect(result.env.PATH).toContain("/usr/local/bin");
+
+      const uniqueParts = new Set(pathParts);
+      expect(pathParts.length).toBe(uniqueParts.size);
+
+      process.env.PATH = originalPath;
+    });
+
+    it("buildMinimalExecutionEnvironment excludes arbitrary env vars that buildExecutionEnvironment includes", () => {
+      process.env.ARBITRARY_VAR = "should-be-in-full-not-minimal";
+
+      const fullResult = service.buildExecutionEnvironment({ repoId: 1, threadId: "thread-1" });
+      const minimalResult = service.buildMinimalExecutionEnvironment({ repoId: 1, threadId: "thread-1" });
+
+      expect(fullResult.env.ARBITRARY_VAR).toBe("should-be-in-full-not-minimal");
+      expect(minimalResult.env.ARBITRARY_VAR).toBeUndefined();
+      expect(Object.keys(minimalResult.env)).not.toContain("ARBITRARY_VAR");
+    });
+
+    it("buildExecutionEnvironment carries full process.env that runInstall uses for install steps", () => {
+      process.env.INSTALL_STEP_VAR = "needed-by-install-script";
+
+      const fullResult = service.buildExecutionEnvironment({ repoId: 1, threadId: "thread-1" });
+
+      expect(fullResult.env.INSTALL_STEP_VAR).toBe("needed-by-install-script");
+    });
   });
 });
