@@ -2520,24 +2520,39 @@ Output the result of the command or the link to the created issue.`;
     return null;
   }
 
-  private buildReviewRunners(guildId: string): {
+  private buildReviewRunners(input: {
+    guildId: string;
+    repoId: number;
+    threadId?: string | null;
+  }): {
     analyzer: ReviewModelRunner;
     reviewers: ReviewModelRunner[];
     judge: ReviewModelRunner;
     summarizer: ReviewModelRunner;
   } {
+    const { guildId } = input;
     const reviewConfig = this.db.getGuildReviewConfig(guildId);
     const slots = this.db.getReviewerSlots(guildId);
 
     const hasSlotOverride = (role: ReviewModelRole): boolean =>
       !!reviewConfig?.[`${role}_provider` as keyof typeof reviewConfig];
 
+    // Build the minimal execution env once for the whole review run. Without
+    // this, review subprocesses inherited the full parent process.env (the
+    // /ask path was migrated to a minimal env but /review was not), and — more
+    // subtly — the transport byte estimate undercounted because it saw no env
+    // while the kernel charged the inherited process.env against ARG_MAX.
+    const reviewEnv = this.installService.buildMinimalExecutionEnvironment({
+      repoId: input.repoId,
+      ...(input.threadId !== undefined ? { threadId: input.threadId } : {})
+    }).env;
+
     const buildRunner = (provider: AiProvider, defaultModel?: string | null, slotIndex?: number): ReviewModelRunner => ({
       provider,
       ...(defaultModel ? { model: defaultModel } : {}),
       label: slotIndex !== undefined ? `${AI_PROVIDER_LABELS[provider]} (Slot ${slotIndex})` : AI_PROVIDER_LABELS[provider],
       run: async ({ prompt, cwd, timeoutMs, model }) =>
-        this.runProviderText({ provider, prompt, cwd, timeoutMs, ...(model ? { model } : {}) })
+        this.runProviderText({ provider, prompt, cwd, timeoutMs, ...(model ? { model } : {}), env: reviewEnv })
     });
 
     if (slots.length > 0) {
@@ -2840,7 +2855,11 @@ Output the result of the command or the link to the created issue.`;
     }
 
     try {
-      const runners = this.buildReviewRunners(interaction.guildId);
+      const runners = this.buildReviewRunners({
+        guildId: interaction.guildId,
+        repoId: repo.id,
+        threadId: interaction.channelId
+      });
       const threadHistory = await this.buildThreadHistory(reviewThread);
       const result = await new Promise<Awaited<ReturnType<typeof runAdversarialReview>>>((resolve, reject) => {
         this.requestQueue.enqueue(interaction.guildId!, async () => {

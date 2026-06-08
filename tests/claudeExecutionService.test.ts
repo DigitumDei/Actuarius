@@ -1,7 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import pino from "pino";
 
-vi.mock("../src/utils/spawnCollect.js");
+// Mock only the process-spawning functions; keep the real (pure) byte-math
+// helpers like exceedsArgvLimits/estimateSpawnPayloadBytes and the size
+// constants so the transport decision runs for real.
+vi.mock("../src/utils/spawnCollect.js", async (importActual) => {
+  const actual = await importActual<typeof import("../src/utils/spawnCollect.js")>();
+  return {
+    ...actual,
+    spawnCollect: vi.fn(),
+    spawnCollectWithTransport: vi.fn(),
+  };
+});
 
 const { spawnCollectWithTransport } = await import("../src/utils/spawnCollect.js");
 const mockSpawnCollectWithTransport = vi.mocked(spawnCollectWithTransport);
@@ -108,7 +118,7 @@ describe("runClaudeRequest", () => {
         file: "claude",
         args: ["-p", "my prompt", "--output-format", "json", "--permission-mode", "bypassPermissions"],
         cwd: "/tmp",
-        promptArgIndices: [0, 1],
+        promptArgIndices: [1],
       })
     );
   });

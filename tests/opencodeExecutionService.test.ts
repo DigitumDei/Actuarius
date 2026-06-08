@@ -5,12 +5,22 @@ vi.mock("node:fs", () => ({
   existsSync: vi.fn(),
 }));
 
-vi.mock("../src/utils/spawnCollect.js");
+// Mock only the process-spawning functions; keep the real (pure) byte-math
+// helpers like exceedsArgvLimits/estimateSpawnPayloadBytes and the size
+// constants so the transport decision runs for real.
+vi.mock("../src/utils/spawnCollect.js", async (importActual) => {
+  const actual = await importActual<typeof import("../src/utils/spawnCollect.js")>();
+  return {
+    ...actual,
+    spawnCollect: vi.fn(),
+    spawnCollectWithTransport: vi.fn(),
+  };
+});
 
 const { spawnCollectWithTransport } = await import("../src/utils/spawnCollect.js");
 const mockSpawnCollectWithTransport = vi.mocked(spawnCollectWithTransport);
 
-const { OpencodeExecutionError, runOpencodeRequest } = await import("../src/services/opencodeExecutionService.js");
+const { OpencodeExecutionError, runOpencodeRequest, OPENCODE_TEMPFILE_DIRECTIVE } = await import("../src/services/opencodeExecutionService.js");
 
 const logger = pino({ level: "silent" });
 
@@ -130,7 +140,7 @@ describe("runOpencodeRequest", () => {
     const adjusted = ["run", "--dir", "/work", "--dangerously-skip-permissions", "--model", "o4-mini"];
     const result = reshapeArgsForTempfile("big prompt", adjusted, "/tmp/prompt.txt");
     expect(result).toEqual([
-      "run", "--dir", "/work",
+      "run", OPENCODE_TEMPFILE_DIRECTIVE, "--dir", "/work",
       "--file", "/tmp/prompt.txt",
       "--dangerously-skip-permissions",
       "--model", "o4-mini",
@@ -145,7 +155,7 @@ describe("runOpencodeRequest", () => {
     const adjusted = ["run", "--dir", "/work", "--model", "o4-mini"];
     const result = reshapeArgsForTempfile("big prompt", adjusted, "/tmp/prompt.txt");
     expect(result).toEqual([
-      "run", "--dir", "/work", "--model", "o4-mini",
+      "run", OPENCODE_TEMPFILE_DIRECTIVE, "--dir", "/work", "--model", "o4-mini",
       "--file", "/tmp/prompt.txt",
     ]);
   });
@@ -179,8 +189,19 @@ describe("runOpencodeRequest", () => {
     });
   });
 
-  it("throws NOT_AUTHENTICATED when auth failure pattern matches on clean exit stdout", async () => {
+  it("does NOT treat an auth-like pattern on clean-exit stdout as NOT_AUTHENTICATED (authCheckOnlyStderr)", async () => {
+    // opencode is an agentic CLI: its stdout is task output and may contain
+    // auth-like strings emitted by subprocesses it runs (e.g. a nested gemini).
+    // Per authCheckOnlyStderr, only stderr is inspected for auth failures, so a
+    // clean exit with this text on stdout must be returned as the result, not
+    // misclassified as an auth error.
     mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "API key not found. Use /opencode-auth to set one.", stderr: "" });
+    const result = await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    expect(result.text).toBe("API key not found. Use /opencode-auth to set one.");
+  });
+
+  it("throws NOT_AUTHENTICATED when auth failure pattern matches on clean exit stderr", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "", stderr: "API key not found. Use /opencode-auth to set one." });
     await expect(runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
       code: "NOT_AUTHENTICATED",
       name: "OpencodeExecutionError",

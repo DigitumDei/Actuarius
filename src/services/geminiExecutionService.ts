@@ -33,6 +33,9 @@ export async function runGeminiRequest(input: GeminiExecutionInput, logger: Logg
     {
       binary: "gemini",
       extraArgs: ["--yolo"],
+      // Verified contract (`gemini --help`): "-p/--prompt … Appended to input on
+      // stdin (if any)." The oversized path keeps `-p ""` and pipes the prompt
+      // via stdin, so the empty -p value plus stdin yields exactly the prompt.
       supportsStdinFallback: true,
       logLabel: "Gemini",
       makeError: (code, message) => new GeminiExecutionError(code as GeminiExecutionError["code"], message),

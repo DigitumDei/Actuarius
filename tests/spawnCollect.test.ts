@@ -150,8 +150,11 @@ describe("spawnCollectWithTransport — argv transport", () => {
     ).rejects.toMatchObject({ code: "EMSGSIZE" });
   });
 
-  it("rejects with E2BIG when oversized but promptArgIndices is empty", async () => {
+  it("rejects with a command-line-too-long error when oversized but promptArgIndices is empty", async () => {
     const hugeArg = "x".repeat(2 * 1024 * 1024);
+    // The OS rejects the over-long argv before the process starts. The errno
+    // differs by platform: E2BIG on Linux (execve), ENAMETOOLONG on Windows
+    // (CreateProcess via libuv). Both signal the same unrecoverable condition.
     await expect(
       spawnCollectWithTransport({
         file: node,
@@ -161,7 +164,7 @@ describe("spawnCollectWithTransport — argv transport", () => {
         timeoutMs,
         maxBuffer: 1024,
       })
-    ).rejects.toMatchObject({ code: "E2BIG" });
+    ).rejects.toMatchObject({ code: expect.stringMatching(/^(E2BIG|ENAMETOOLONG)$/) });
   });
 });
 

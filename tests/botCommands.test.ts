@@ -1412,7 +1412,7 @@ describe("ActuariusBot review runner selection", () => {
     (bot as any).config.enableCodexExecution = true;
     (bot as any).config.enableGeminiExecution = true;
 
-    const runners = (bot as any).buildReviewRunners("guild-1");
+    const runners = (bot as any).buildReviewRunners({ guildId: "guild-1", repoId: 1 });
 
     expect(runners.reviewers).toHaveLength(3);
     expect(runners.reviewers.map((runner: { provider: string; model?: string }) => ({
@@ -1441,7 +1441,7 @@ describe("ActuariusBot review runner selection", () => {
       ])
     });
 
-    const runners = (bot as any).buildReviewRunners("guild-1");
+    const runners = (bot as any).buildReviewRunners({ guildId: "guild-1", repoId: 1 });
 
     expect(runners.reviewers).toHaveLength(3);
     expect(runners.analyzer.provider).toBe("claude");
@@ -2898,7 +2898,7 @@ describe("ActuariusBot model-select command", () => {
     (bot as any).config.enableGeminiExecution = true;
     (bot as any).config.enableCodexExecution = true;
 
-    const runners = (bot as any).buildReviewRunners("guild-1");
+    const runners = (bot as any).buildReviewRunners({ guildId: "guild-1", repoId: 1 });
 
     expect(runners.analyzer.provider).toBe("gemini");
     expect(runners.analyzer.model).toBe("gemini-2.0-flash");
