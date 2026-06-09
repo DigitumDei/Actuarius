@@ -3,6 +3,13 @@ resource "google_compute_disk" "data" {
   type = "pd-standard"
   zone = var.gcp_zone
   size = 10 # GB — separate persistent disk so /data survives VM deletion
+
+  lifecycle {
+    # Guard against destroy/recreate (which previously caused full data loss).
+    # A size increase is an in-place update and is unaffected; this only blocks
+    # Terraform from tearing the disk down. See docs/lessons-learned.md.
+    prevent_destroy = true
+  }
 }
 
 resource "google_compute_instance" "actuarius" {

@@ -35,6 +35,27 @@ On Container-Optimized OS, `blkid` may return false on a freshly attached disk (
 
 **Rule:** Never use `blkid` as the sole guard before formatting a disk. Always try mount first.
 
+## `/data` fills from per-repo toolchains and build caches, not worktrees
+
+When the 10 GB `/data` disk hits `ENOSPC`, the bot fails to start (npm can't unpack provider CLIs, git can't write `.gitconfig.lock`). The culprit is two append-mostly sources — *not* worktrees, which are bounded by request count and partly reaped:
+
+- **Per-repo toolchains** installed via `/install`, under `/data/tool-installs/<scope>/<id>/`. The JVM/Android stack is heaviest — one Android repo pulled ~1.1 GB (`java-temurin` ~500 MB + `android-sdk` ~600 MB).
+- **Build-tool caches** in the container `$HOME` (`/data/home/appuser`): `.npm` (npm cache), `.gradle/caches`, `.cargo/registry`, `.rustup` (Rust toolchains), `.cache`.
+
+Two gotchas:
+- **Host vs container path:** the disk is `/mnt/disks/data` on the COS host but `/data` inside the container (`$HOME` = `/data/home/appuser`). `rm` against the wrong namespace silently no-ops — `df`/`du` won't budge.
+- **Installs are explicit and admin-gated** (`/install`) — nothing auto-installs toolchains. Deleting a toolchain's files does NOT clear its `install_requests` row, so `buildMinimalExecutionEnvironment` keeps injecting the dead `bin_path` onto `PATH` (harmless), and the bot won't reinstall until `/install` is re-run.
+
+**Fix (reclaim, run inside the container):** all of these regenerate or are re-`/install`able:
+```bash
+rm -rf ~/.npm/_cacache ~/.gradle/caches ~/.cargo/registry ~/.cache   # caches
+rm -rf ~/.rustup ~/.cargo                                              # Rust toolchain
+rm -rf /data/tool-installs/*/*/{java-temurin,android-sdk}             # JVM/Android toolchains (all repos)
+```
+Do NOT delete `.npm-global` (the provider CLIs) or auth files (`.codex/auth.json`, `.local/share/opencode/auth.json`, `.gemini` creds).
+
+**Rule:** When `/data` approaches full, reclaim caches + unused per-repo toolchains first. The durable fix is a larger disk — follow the snapshot-first resize procedure (confirm `prevent_destroy`, snapshot `actuarius-data`, bump `size` in `infra/compute.tf`, `terraform apply`, then `resize2fs`); a botched resize previously caused full data loss.
+
 ## Updating `scripts/redeploy.sh` requires a manual refresh on the VM
 
 `infra/startup.sh` fetches `scripts/redeploy.sh` from VM metadata at boot and saves it to `/var/redeploy.sh`. When Terraform updates the `env-redeploy-script` metadata key (e.g. adding a new env var), the VM is not rebooted, so `/var/redeploy.sh` stays stale.
