@@ -50,7 +50,7 @@ Two gotchas:
 ```bash
 rm -rf ~/.npm/_cacache ~/.gradle/caches ~/.cargo/registry ~/.cache   # caches
 rm -rf ~/.rustup ~/.cargo                                              # Rust toolchain
-rm -rf /data/tool-installs/repo/<id>/{java-temurin,android-sdk}        # JVM/Android toolchains
+rm -rf /data/tool-installs/*/*/{java-temurin,android-sdk}             # JVM/Android toolchains (all repos)
 ```
 Do NOT delete `.npm-global` (the provider CLIs) or auth files (`.codex/auth.json`, `.local/share/opencode/auth.json`, `.gemini` creds).
 
