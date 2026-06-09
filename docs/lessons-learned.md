@@ -48,7 +48,7 @@ Two gotchas:
 
 **Fix (reclaim, run inside the container):** all of these regenerate or are re-`/install`able:
 ```bash
-rm -rf ~/.npm/_cacache ~/.gradle/caches ~/.cargo/registry ~/.cache/*   # caches
+rm -rf ~/.npm/_cacache ~/.gradle/caches ~/.cargo/registry ~/.cache   # caches
 rm -rf ~/.rustup ~/.cargo                                              # Rust toolchain
 rm -rf /data/tool-installs/repo/<id>/{java-temurin,android-sdk}        # JVM/Android toolchains
 ```
