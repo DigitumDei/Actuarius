@@ -112,7 +112,7 @@ for tool in rustup cargo rustc rustfmt; do
   if [ -f "/usr/local/bin/$tool" ]; then continue; fi
   cat > "/usr/local/bin/$tool" <<'RUSTSTUB'
 #!/bin/sh
-echo "Rust toolchain is not available globally. Use /install rustup-default-stable to request scoped Rust access." >&2
+echo "Cannot run rust on this VM, please use CI to validate build." >&2
 exit 1
 RUSTSTUB
   chmod +x "/usr/local/bin/$tool"
