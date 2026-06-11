@@ -87,6 +87,15 @@ PYEOF
   fi
 fi
 
+# ── cache rotation ────────────────────────────────────────────
+# Clean accumulating caches on every container start to prevent
+# incremental disk fill (compounding npm/cargo/opencode caches).
+rm -rf "$HOME/.npm/_cacache" 2>/dev/null || true
+rm -rf "$HOME/.cache/"* 2>/dev/null || true
+rm -rf "$HOME/.cargo/registry/cache" 2>/dev/null || true
+rm -f "$HOME/.local/share/opencode/opencode.db" "$HOME/.local/share/opencode/opencode.db-shm" "$HOME/.local/share/opencode/opencode.db-wal" 2>/dev/null || true
+rm -rf "$HOME/.codex/tmp" "$HOME/.codex/sessions" 2>/dev/null || true
+
 git config --global user.name "$GIT_USER_NAME"
 git config --global user.email "$GIT_USER_EMAIL"
 
@@ -94,5 +103,19 @@ if [ -n "${GH_TOKEN:-}" ]; then
   git config --global --replace-all credential.https://github.com.helper \
     '!f() { echo username=x-token; printf "password=%s\n" "$GH_TOKEN"; }; f'
 fi
+
+# Stub out global Rust to prevent ~/.rustup and ~/.cargo disk bloat.  The
+# scoped installer (/install rustup-default-stable) downloads its own
+# rustup-init and places wrappers in a scoped bin dir that comes first in
+# PATH, so these stubs do NOT interfere with scoped Rust access.
+for tool in rustup cargo rustc rustfmt; do
+  if [ -f "/usr/local/bin/$tool" ]; then continue; fi
+  cat > "/usr/local/bin/$tool" <<'RUSTSTUB'
+#!/bin/sh
+echo "Rust toolchain is not available globally. Use /install rustup-default-stable to request scoped Rust access." >&2
+exit 1
+RUSTSTUB
+  chmod +x "/usr/local/bin/$tool"
+done
 
 exec "$@"
