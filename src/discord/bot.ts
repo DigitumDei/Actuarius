@@ -27,7 +27,7 @@ import type { AiProvider, ReviewModelRole, RepoRow, RequestStatus } from "../db/
 import { commandBuilders } from "./commands.js";
 import { buildHelpText } from "./messageTemplates.js";
 import { buildRepoChannelName, buildThreadName } from "./naming.js";
-import { forceRefreshGitHubAuth, getGitHubCommandEnvironment } from "../services/githubAuthService.js";
+import { ensureGitHubCliAuthenticated, forceRefreshGitHubAuth, getGitHubCommandEnvironment } from "../services/githubAuthService.js";
 import {
   GitHubIssueLookupError,
   GitHubRepoLookupError,
@@ -2380,15 +2380,17 @@ Output the result of the command or the link to the created issue.`;
 
   private async ensureGitHubCliAccess(interaction: ChatInputCommandInteraction, commands: string[]): Promise<boolean> {
     try {
+      await ensureGitHubCliAuthenticated();
       const { spawnCollect } = await import("../utils/spawnCollect.js");
-      await spawnCollect("gh", ["auth", "token"], {
+      await spawnCollect("gh", ["auth", "token", "--hostname", "github.com"], {
         cwd: process.cwd(),
         env: getGitHubCommandEnvironment(),
         timeoutMs: 10_000,
         maxBuffer: 4 * 1024
       });
       return true;
-    } catch {
+    } catch (err) {
+      this.logger.warn({ err }, "GitHub CLI access check failed");
       await interaction.reply({
         content:
           `GitHub CLI is not authenticated. Configure GitHub App credentials or \`GH_TOKEN\`, or run \`gh auth login\` on the host before using ${commands.join(" or ")}.`,
