@@ -537,6 +537,44 @@ describe("ActuariusBot thread follow-ups", () => {
     expect(enqueue).toHaveBeenCalledTimes(1);
   });
 
+  it("replies when the latest failed request has no workspace to continue", async () => {
+    const createRequest = vi.fn();
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot({
+      createRequest,
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue(undefined),
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 872,
+        repo_id: 1,
+        channel_id: "channel-1",
+        thread_id: "thread-1",
+        user_id: "user-1",
+        prompt: "failed plan",
+        status: "failed",
+        worktree_path: null,
+        branch_name: null
+      })
+    });
+
+    const enqueue = vi.fn();
+    (bot as any).requestQueue.enqueue = enqueue;
+
+    await (bot as any).handleThreadMessage({
+      author: { bot: false, id: "user-1" },
+      guildId: "guild-1",
+      guild: { id: "guild-1" },
+      channelId: "thread-1",
+      channel: { isThread: () => true, parentId: "channel-1" },
+      content: "can you continue?",
+      reply,
+      attachments: { size: 0, values: () => [] }
+    });
+
+    expect(reply).toHaveBeenCalledWith(expect.stringContaining("no tracked worktree"));
+    expect(createRequest).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
   it("enqueues a request for attachment-only follow-up messages with fallback prompt", async () => {
     const createRequest = vi.fn().mockReturnValue({ id: 88 });
     const bot = createBot({
@@ -3108,12 +3146,68 @@ describe("ActuariusBot pr command", () => {
   });
 });
 
+describe("ActuariusBot plan command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("defaults /plan to iterative execution when the option is omitted", async () => {
+    const createRequest = vi.fn().mockReturnValue({ id: 120 });
+    const bot = createBot({
+      createRequest,
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 5,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      })
+    });
+    const enqueue = vi.fn();
+    const runPlanRequest = vi.fn().mockResolvedValue(undefined);
+    (bot as any).requestQueue.enqueue = enqueue;
+    (bot as any).runPlanRequest = runPlanRequest;
+
+    const thread = {
+      id: "thread-plan-1",
+      send: vi.fn().mockResolvedValue(undefined)
+    };
+    const seedMessage = {
+      startThread: vi.fn().mockResolvedValue(thread)
+    };
+    const repoChannel = {
+      type: ChannelType.GuildText,
+      send: vi.fn().mockResolvedValue(seedMessage)
+    };
+    const interaction = createInteraction({
+      channelId: "channel-1",
+      channel: { isThread: () => false },
+      user: { id: "user-1", tag: "user#0001" },
+      guild: {
+        id: "guild-1",
+        name: "Guild",
+        channels: { fetch: vi.fn().mockResolvedValue(repoChannel) }
+      },
+      options: {
+        getString: vi.fn().mockReturnValue("Do the thing"),
+        getBoolean: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handlePlan(interaction);
+    await enqueue.mock.calls[0]![1]();
+
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("(iterative)"));
+    expect(runPlanRequest).toHaveBeenCalledWith(expect.objectContaining({ iterative: true }));
+  });
+});
+
 describe("ActuariusBot plan runner", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  it("deletes the request worktree when plan execution fails after creation", async () => {
+  it("preserves the request worktree when single-shot implementation fails after creation", async () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const updateRequestStatus = vi.fn();
     const updateRequestWorkspace = vi.fn();
@@ -3136,7 +3230,9 @@ describe("ActuariusBot plan runner", () => {
       packages: [],
       env: {}
     });
-    (bot as any).runProviderText = vi.fn().mockRejectedValue(new Error("planner failed"));
+    (bot as any).runProviderText = vi.fn()
+      .mockResolvedValueOnce("plan text")
+      .mockRejectedValueOnce(new Error("implementer failed"));
 
     await (bot as any).runPlanRequest({
       requestId: 91,
@@ -3149,25 +3245,16 @@ describe("ActuariusBot plan runner", () => {
       },
       prompt: "Do the thing",
       planner: { provider: "claude" },
-      implementer: { provider: "claude" }
+      implementer: { provider: "claude" },
+      iterative: false
     });
 
     expect(updateRequestStatus).toHaveBeenCalledWith(91, "failed");
-    expect(deleteRequestBranch).toHaveBeenCalledWith(
-      "/data/repos",
-      {
-        owner: "octocat",
-        repo: "hello-world",
-        fullName: "octocat/hello-world"
-      },
-      {
-        branchName: "ask/91-123",
-        worktreePath: "/tmp/worktree-plan"
-      }
-    );
-    expect(updateRequestWorkspace).toHaveBeenNthCalledWith(1, 91, "/tmp/worktree-plan", "ask/91-123");
-    expect(updateRequestWorkspace).toHaveBeenNthCalledWith(2, 91, null, null);
-    expect(send).toHaveBeenCalledWith(expect.stringContaining("Plan request failed during planning"));
+    expect(deleteRequestBranch).not.toHaveBeenCalled();
+    expect(updateRequestWorkspace).toHaveBeenCalledTimes(1);
+    expect(updateRequestWorkspace).toHaveBeenCalledWith(91, "/tmp/worktree-plan", "ask/91-123");
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Plan request failed during implementing"));
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("remains attached"));
   });
 
   it("preserves worktree when iterative loop fails so /revise can continue", async () => {
@@ -3663,7 +3750,7 @@ describe("ActuariusBot plan runner", () => {
     expect(updateRequestStatus).toHaveBeenCalledWith(95, "succeeded");
   });
 
-  it("planner/implementer errors mark failed and clean up worktree", async () => {
+  it("preserves worktree when planner errors after worktree creation", async () => {
     vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
     vi.mocked(createRequestWorktree).mockResolvedValue({
       path: "/tmp/worktree-plan",
@@ -3696,8 +3783,11 @@ describe("ActuariusBot plan runner", () => {
     });
 
     expect(updateRequestStatus).toHaveBeenCalledWith(96, "failed");
-    expect(deleteRequestBranch).toHaveBeenCalled();
+    expect(deleteRequestBranch).not.toHaveBeenCalled();
+    expect(updateRequestWorkspace).toHaveBeenCalledTimes(1);
+    expect(updateRequestWorkspace).toHaveBeenCalledWith(96, "/tmp/worktree-plan", "ask/96-123");
     expect(send).toHaveBeenCalledWith(expect.stringContaining("Plan request failed during planning"));
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("remains attached"));
   });
 });
 
