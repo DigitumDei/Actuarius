@@ -146,4 +146,33 @@ describe("MemPalaceRemoteService", () => {
     expect(globalConfig.federation.wings.repo_defined_wing).toEqual({ mode: "combined", remote: "actuarius", write: "remote" });
     expect(mockSpawnCollect).not.toHaveBeenCalled();
   });
+
+  it("recovers from corrupt global config while serializing concurrent registrations", async () => {
+    const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-concurrent-"));
+    const homeDir = join(root, "home");
+    const config = makeConfig(root);
+    const repoA = makeRepo();
+    const repoB: RepoMemoryIdentity = { owner: "DigitumDei", repo: "MemPalace", fullName: "DigitumDei/MemPalace" };
+    const checkoutA = join(config.reposRootPath, repoA.owner, repoA.repo);
+    const checkoutB = join(config.reposRootPath, repoB.owner, repoB.repo);
+    mkdirSync(join(checkoutA, ".git", "info"), { recursive: true });
+    mkdirSync(join(checkoutB, ".git", "info"), { recursive: true });
+    mkdirSync(join(homeDir, ".mempalace"), { recursive: true });
+    writeFileSync(join(homeDir, ".mempalace", "config.json"), "not valid json", "utf8");
+
+    const service = new MemPalaceRemoteService(config, logger, { homeDir });
+    await Promise.all([service.registerRepository(repoA, checkoutA), service.registerRepository(repoB, checkoutB)]);
+
+    const wingA = buildRepoMemoryWing(repoA);
+    const wingB = buildRepoMemoryWing(repoB);
+    const globalConfig = JSON.parse(readFileSync(join(homeDir, ".mempalace", "config.json"), "utf8"));
+    expect(globalConfig.server.checkouts[wingA]).toBe(checkoutA);
+    expect(globalConfig.server.checkouts[wingB]).toBe(checkoutB);
+    expect(globalConfig.federation.wings[wingA]).toEqual({ mode: "combined", remote: "actuarius", write: "remote" });
+    expect(globalConfig.federation.wings[wingB]).toEqual({ mode: "combined", remote: "actuarius", write: "remote" });
+
+    const tokenEntries = JSON.parse(readFileSync(config.mempalaceRemoteTokenFile, "utf8"));
+    expect(tokenEntries.filter((entry: { name?: string }) => entry.name === "actuarius-local")).toHaveLength(1);
+  });
+
 });

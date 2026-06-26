@@ -98,8 +98,12 @@ function uniqueRepos(rows: RepoRow[]): RepoMemoryIdentity[] {
 
 async function readJsonObject(path: string): Promise<Record<string, unknown>> {
   if (!(await pathExists(path))) return {};
-  const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
-  return isRecord(parsed) ? parsed : {};
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 async function readTokenEntries(path: string): Promise<TokenEntry[]> {
@@ -122,6 +126,8 @@ export class MemPalaceRemoteService {
   private server: ChildProcess | null = null;
   private expectedServerExit = false;
   private remoteToken: string | null = null;
+  private tokenPromise: Promise<string> | null = null;
+  private writeConfigPromise: Promise<void> = Promise.resolve();
 
   public constructor(config: AppConfig, logger: Logger, options: MemPalaceRemoteServiceOptions = {}) {
     this.config = config;
@@ -220,8 +226,16 @@ export class MemPalaceRemoteService {
     }
   }
 
-  private async ensureToken(): Promise<string> {
-    if (this.remoteToken) return this.remoteToken;
+  private ensureToken(): Promise<string> {
+    if (this.remoteToken) return Promise.resolve(this.remoteToken);
+    this.tokenPromise ??= this.createToken().catch((error: unknown) => {
+      this.tokenPromise = null;
+      throw error;
+    });
+    return this.tokenPromise;
+  }
+
+  private async createToken(): Promise<string> {
     const tokenFile = this.config.mempalaceRemoteTokenFile;
     await mkdir(dirname(tokenFile), { recursive: true });
     const entries = await readTokenEntries(tokenFile);
@@ -242,6 +256,12 @@ export class MemPalaceRemoteService {
   }
 
   private async writeGlobalConfig(): Promise<void> {
+    const write = this.writeConfigPromise.catch(() => undefined).then(() => this.writeGlobalConfigOnce());
+    this.writeConfigPromise = write.catch(() => undefined);
+    await write;
+  }
+
+  private async writeGlobalConfigOnce(): Promise<void> {
     await this.ensureToken();
     const configDir = join(this.homeDir, ".mempalace");
     const configPath = join(configDir, "config.json");
@@ -312,8 +332,14 @@ export class MemPalaceRemoteService {
 
     this.expectedServerExit = false;
     this.server = spawn(this.config.mempalaceCliPath, args, { env: this.buildProcessEnv(), stdio: ["ignore", "pipe", "pipe"] });
-    createInterface({ input: this.server.stdout! }).on("line", (line) => this.logger.debug({ line }, "mempalace-cli serve stdout"));
-    createInterface({ input: this.server.stderr! }).on("line", (line) => this.logger.info({ line }, "mempalace-cli serve"));
+    createInterface({ input: this.server.stdout! }).on("line", (line) => {
+      if (this.expectedServerExit) return;
+      this.logger.debug({ line }, "mempalace-cli serve stdout");
+    });
+    createInterface({ input: this.server.stderr! }).on("line", (line) => {
+      if (this.expectedServerExit) return;
+      this.logger.info({ line }, "mempalace-cli serve");
+    });
     this.server.on("error", (error) => this.logger.error({ error }, "MemPalace federation server process error"));
     this.server.on("close", (code) => {
       const expected = this.expectedServerExit;
@@ -358,7 +384,7 @@ export class MemPalaceRemoteService {
     while (Date.now() < deadline) {
       if (!this.server) throw new Error("MemPalace federation server exited before it became healthy");
       try {
-        const response = await fetch(healthUrl);
+        const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2_000) });
         if (response.ok) return;
         lastError = new Error("health returned HTTP " + response.status);
       } catch (error) {
