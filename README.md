@@ -58,8 +58,22 @@ Copy `.env.example` to `.env` and set:
 - `GEMINI_API_KEY` (required for Gemini execution)
 - `DEEPSEEK_API_KEY` (required for OpenCode execution when not using `/opencode-auth`)
 - `CLAUDE_CODE_OAUTH_TOKEN` (optional for local/manual runs, required by the production redeploy helper for non-interactive Claude auth)
+- `MEMPALACE_ENABLED` (default `false`, enables the local MemPalace MCP for agents)
+- `MEMPALACE_REMOTE_ENABLED` (default `false`, starts Actuarius' loopback MemPalace federation server and routes repo memory through it)
+- `MEMPALACE_REMOTE_URL` (default `http://127.0.0.1:8765`)
+- `MEMPALACE_REMOTE_TOKEN` (optional; generated and persisted if omitted)
+- `MEMPALACE_REMOTE_MINE_ON_SYNC` (default `true`, queues repo mining after connect/sync/checkouts)
 
 Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global`, with `docker/entrypoint.sh` seeding them on first boot if missing. That keeps Claude and Codex authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. Gemini and OpenCode execution use API keys instead of persisted OAuth state — set `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` as env vars, or use `/opencode-auth` to store per-provider keys in `auth.json` with support for DeepSeek, OpenAI, Anthropic, Google, xAI, Groq, OpenRouter, and Together.
+
+### MemPalace federation
+
+When both `MEMPALACE_ENABLED=true` and `MEMPALACE_REMOTE_ENABLED=true` are set, Actuarius runs two MemPalace stores:
+
+- Local agent memory at `/data/mempalace/palace`, exposed to Claude/Codex/Gemini/OpenCode through the local `mempalace-mcp` config.
+- Remote repo memory at `/data/mempalace/remote-palace`, served by `mempalace-cli serve` on `MEMPALACE_REMOTE_BIND` and reached by the local MCP through `MEMPALACE_REMOTE_URL`.
+
+For each connected repository, Actuarius assigns a deterministic wing like `wing_repo_owner_name`, writes federation routing to `/data/home/appuser/.mempalace/config.json`, and queues a background `mempalace-cli mine` of the main checkout after repo connect/sync/checkouts. If a repo already has `mempalace.yaml` or `mempal.yaml`, Actuarius honors its `wing:` value. Otherwise it writes an ignored `mempalace.yaml` into the checkout or request worktree so repo-scoped records route in combined mode with writes going to the remote store.
 
 ## Local development
 

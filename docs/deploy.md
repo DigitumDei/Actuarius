@@ -53,6 +53,19 @@ sudo reboot
 3. Stops and removes the old container
 4. Starts a new container with the correct env vars mapped from metadata
 
+## MemPalace Remote
+
+To run the local MemPalace MCP plus Actuarius' loopback remote repo store in production, set both Terraform switches:
+
+```hcl
+enable_mempalace        = true
+enable_mempalace_remote = true
+```
+
+Optional variables map directly to the redeploy metadata keys and can stay blank to use app defaults: `mempalace_remote_url`, `mempalace_remote_bind`, `mempalace_remote_name`, `mempalace_remote_token`, `mempalace_remote_timeout_ms`, `mempalace_remote_mine_on_sync`, `mempalace_remote_mine_timeout_ms`, and `mempalace_remote_mine_batch_size`. If `mempalace_remote_token` is blank, Actuarius generates a token and persists it under `/data/mempalace/server_tokens.json`.
+
+After `terraform apply`, reboot or re-fetch `/var/redeploy.sh` from metadata so the new metadata keys reach the container.
+
 ## Adding a new env var
 
 Three places need updating:

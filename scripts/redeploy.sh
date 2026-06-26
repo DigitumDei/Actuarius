@@ -62,6 +62,15 @@ ENABLE_CODEX=$(get_meta "env-enable-codex-execution" || true)
 ENABLE_GEMINI=$(get_meta "env-enable-gemini-execution" || true)
 ENABLE_OPENCODE=$(get_meta "env-enable-opencode-execution" || true)
 ENABLE_MEMPALACE=$(get_meta "env-enable-mempalace" || true)
+ENABLE_MEMPALACE_REMOTE=$(get_meta "env-enable-mempalace-remote" || true)
+MEMPALACE_REMOTE_URL=$(get_meta "env-mempalace-remote-url" || true)
+MEMPALACE_REMOTE_BIND=$(get_meta "env-mempalace-remote-bind" || true)
+MEMPALACE_REMOTE_NAME=$(get_meta "env-mempalace-remote-name" || true)
+MEMPALACE_REMOTE_TOKEN=$(get_meta "env-mempalace-remote-token" || true)
+MEMPALACE_REMOTE_TIMEOUT_MS=$(get_meta "env-mempalace-remote-timeout-ms" || true)
+MEMPALACE_REMOTE_MINE_ON_SYNC=$(get_meta "env-mempalace-remote-mine-on-sync" || true)
+MEMPALACE_REMOTE_MINE_TIMEOUT_MS=$(get_meta "env-mempalace-remote-mine-timeout-ms" || true)
+MEMPALACE_REMOTE_MINE_BATCH_SIZE=$(get_meta "env-mempalace-remote-mine-batch-size" || true)
 GEMINI_API_KEY=$(get_meta "env-gemini-api-key" || true)
 
 EXTRA_ARGS=()
@@ -91,6 +100,34 @@ if [ "$ENABLE_OPENCODE" = "true" ]; then
 fi
 if [ "$ENABLE_MEMPALACE" = "true" ]; then
   EXTRA_ARGS+=(-e "MEMPALACE_ENABLED=true")
+fi
+if [ "$ENABLE_MEMPALACE_REMOTE" = "true" ]; then
+  EXTRA_ARGS+=(-e "MEMPALACE_ENABLED=true")
+  EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_ENABLED=true")
+fi
+if [ -n "$MEMPALACE_REMOTE_URL" ]; then
+  EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_URL=$MEMPALACE_REMOTE_URL")
+fi
+if [ -n "$MEMPALACE_REMOTE_BIND" ]; then
+  EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_BIND=$MEMPALACE_REMOTE_BIND")
+fi
+if [ -n "$MEMPALACE_REMOTE_NAME" ]; then
+  EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_NAME=$MEMPALACE_REMOTE_NAME")
+fi
+if [ -n "$MEMPALACE_REMOTE_TOKEN" ]; then
+  EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_TOKEN=$MEMPALACE_REMOTE_TOKEN")
+fi
+if [ -n "$MEMPALACE_REMOTE_TIMEOUT_MS" ]; then
+  EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_TIMEOUT_MS=$MEMPALACE_REMOTE_TIMEOUT_MS")
+fi
+if [ -n "$MEMPALACE_REMOTE_MINE_ON_SYNC" ]; then
+  EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_MINE_ON_SYNC=$MEMPALACE_REMOTE_MINE_ON_SYNC")
+fi
+if [ -n "$MEMPALACE_REMOTE_MINE_TIMEOUT_MS" ]; then
+  EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_MINE_TIMEOUT_MS=$MEMPALACE_REMOTE_MINE_TIMEOUT_MS")
+fi
+if [ -n "$MEMPALACE_REMOTE_MINE_BATCH_SIZE" ]; then
+  EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_MINE_BATCH_SIZE=$MEMPALACE_REMOTE_MINE_BATCH_SIZE")
 fi
 if [ -n "$GEMINI_API_KEY" ]; then
   EXTRA_ARGS+=(-e "GEMINI_API_KEY=$GEMINI_API_KEY")

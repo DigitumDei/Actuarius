@@ -99,6 +99,61 @@ variable "enable_mempalace" {
   description = "Enable MemPalace persistent cross-request memory (MEMPALACE_ENABLED)"
 }
 
+variable "enable_mempalace_remote" {
+  type        = bool
+  default     = false
+  description = "Enable Actuarius' loopback MemPalace federation server for repo memory."
+}
+
+variable "mempalace_remote_url" {
+  type        = string
+  default     = ""
+  description = "Optional override for MEMPALACE_REMOTE_URL. Leave empty for the app default."
+}
+
+variable "mempalace_remote_bind" {
+  type        = string
+  default     = ""
+  description = "Optional override for MEMPALACE_REMOTE_BIND. Leave empty for the app default."
+}
+
+variable "mempalace_remote_name" {
+  type        = string
+  default     = ""
+  description = "Optional override for MEMPALACE_REMOTE_NAME. Leave empty for the app default."
+}
+
+variable "mempalace_remote_token" {
+  type        = string
+  sensitive   = true
+  default     = ""
+  description = "Optional bearer token for local-to-remote MemPalace federation. Leave empty to generate and persist one."
+}
+
+variable "mempalace_remote_timeout_ms" {
+  type        = string
+  default     = ""
+  description = "Optional override for MEMPALACE_REMOTE_TIMEOUT_MS. Leave empty for the app default."
+}
+
+variable "mempalace_remote_mine_on_sync" {
+  type        = string
+  default     = ""
+  description = "Optional override for MEMPALACE_REMOTE_MINE_ON_SYNC. Use true or false; leave empty for the app default."
+}
+
+variable "mempalace_remote_mine_timeout_ms" {
+  type        = string
+  default     = ""
+  description = "Optional override for MEMPALACE_REMOTE_MINE_TIMEOUT_MS. Leave empty for the app default."
+}
+
+variable "mempalace_remote_mine_batch_size" {
+  type        = string
+  default     = ""
+  description = "Optional override for MEMPALACE_REMOTE_MINE_BATCH_SIZE. Leave empty for the app default."
+}
+
 variable "gemini_api_key" {
   type        = string
   sensitive   = true
