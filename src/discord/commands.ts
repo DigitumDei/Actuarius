@@ -74,7 +74,7 @@ export const commandBuilders = [
     .setDescription("Plan with a deep model, implement with a flash model, then stop for review.")
     .addStringOption((option) => option.setName("prompt").setDescription("Request text for the plan-and-implement thread.").setRequired(true))
     .addBooleanOption((option) =>
-      option.setName("iterative").setDescription("Break the plan into iterative tasks with per-task verification.").setRequired(false)
+      option.setName("iterative").setDescription("Iterative per-task implementation and verification. Defaults true; set false for single-shot.").setRequired(false)
     ),
   new SlashCommandBuilder()
     .setName("install")

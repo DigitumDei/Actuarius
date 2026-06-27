@@ -573,7 +573,13 @@ export class ActuariusBot {
 
     const latestRequest = this.db.getLatestRequestWithWorkspaceByThreadId(message.channelId);
     const existingWorktreePath = latestRequest?.worktree_path;
-    if (!existingWorktreePath) return;
+    if (!existingWorktreePath) {
+      const latestThreadRequest = this.db.getRequestByThreadId(message.channelId);
+      if (latestThreadRequest?.status === "failed" && !latestThreadRequest.worktree_path) {
+        await message.reply("This request failed and no tracked worktree is available to continue. Start a new `/plan` request from the connected repo channel.");
+      }
+      return;
+    }
 
     if (!existsSync(existingWorktreePath)) {
       await message.reply("The worktree for this thread no longer exists (the bot may have been restarted or migrated). Use `/ask` to start a new request.");
@@ -2279,7 +2285,7 @@ export class ActuariusBot {
     }
 
     const prompt = interaction.options.getString("prompt", true).trim();
-    const iterative = interaction.options.getBoolean("iterative") ?? false;
+    const iterative = interaction.options.getBoolean("iterative") ?? true;
     if (!prompt) {
       await interaction.reply({ content: "Prompt cannot be empty.", ephemeral: true });
       return;
@@ -3391,27 +3397,18 @@ Output the result of the command or the link to the created issue.`;
       statusFinalized = true;
     };
 
-    const cleanupFailedWorktree = async (): Promise<void> => {
-      if (!worktreePath || !branchName) {
+    const sendPreservedWorktreeNotice = async (): Promise<void> => {
+      if (!worktreePath || !branchName || !threadChannel?.isThread()) {
         return;
       }
 
       try {
-        await deleteRequestBranch(
-          this.config.reposRootPath,
-          {
-            owner: input.repo.owner,
-            repo: input.repo.repo,
-            fullName: input.repo.fullName
-          },
-          {
-            branchName,
-            worktreePath
-          }
+        await threadChannel.send(`The request branch \`${branchName}\` remains attached. Send a follow-up message or run \`/revise\` to continue; use \`/delete\` if you want to remove it.`);
+      } catch (error) {
+        this.logger.warn(
+          { error, requestId: input.requestId, worktreePath, branchName },
+          "Failed to send preserved worktree notice"
         );
-        this.db.updateRequestWorkspace(input.requestId, null, null);
-      } catch (cleanupError) {
-        this.logger.warn({ error: cleanupError, requestId: input.requestId, worktreePath, branchName }, "Plan request worktree cleanup failed");
       }
     };
 
@@ -3516,7 +3513,7 @@ Output the result of the command or the link to the created issue.`;
       if (!planText.trim()) {
         markFailed();
         await threadChannel.send("Planner produced no output; aborting before implementation.");
-        await cleanupFailedWorktree();
+        await sendPreservedWorktreeNotice();
         this.logger.error({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Plan request failed with empty planner output");
         return;
       }
@@ -3637,9 +3634,7 @@ Output the result of the command or the link to the created issue.`;
       const message = this.describeExecutionError(error);
       if (threadChannel && threadChannel.isThread()) {
         await threadChannel.send(`**Plan request failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 60)}`);
-      }
-      if (stage !== "iterative-loop") {
-        await cleanupFailedWorktree();
+        await sendPreservedWorktreeNotice();
       }
       this.logger.error({ error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage }, "Plan request failed");
     }
