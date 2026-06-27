@@ -3257,6 +3257,67 @@ describe("ActuariusBot plan runner", () => {
     expect(send).toHaveBeenCalledWith(expect.stringContaining("remains attached"));
   });
 
+  it("does not mask the plan failure when the preserved worktree notice cannot be sent", async () => {
+    const noticeError = new Error("thread archived");
+    const send = vi.fn().mockImplementation(async (content: string) => {
+      if (content.includes("remains attached")) {
+        throw noticeError;
+      }
+    });
+    const updateRequestStatus = vi.fn();
+    const updateRequestWorkspace = vi.fn();
+    const warn = vi.spyOn(logger, "warn");
+    const bot = createBot({
+      updateRequestStatus,
+      updateRequestWorkspace
+    });
+
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan",
+      branchName: "ask/95-123"
+    });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn()
+      .mockResolvedValueOnce("plan text")
+      .mockRejectedValueOnce(new Error("implementer failed"));
+
+    await expect((bot as any).runPlanRequest({
+      requestId: 95,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: {
+        owner: "octocat",
+        repo: "hello-world",
+        fullName: "octocat/hello-world"
+      },
+      prompt: "Do the thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      iterative: false
+    })).resolves.toBeUndefined();
+
+    expect(updateRequestStatus).toHaveBeenCalledWith(95, "failed");
+    expect(updateRequestWorkspace).toHaveBeenCalledWith(95, "/tmp/worktree-plan", "ask/95-123");
+    expect(warn).toHaveBeenCalledWith(
+      {
+        error: noticeError,
+        requestId: 95,
+        worktreePath: "/tmp/worktree-plan",
+        branchName: "ask/95-123"
+      },
+      "Failed to send preserved worktree notice"
+    );
+    warn.mockRestore();
+  });
+
   it("preserves worktree when iterative loop fails so /revise can continue", async () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const updateRequestStatus = vi.fn();

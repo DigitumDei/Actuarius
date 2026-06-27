@@ -3402,7 +3402,14 @@ Output the result of the command or the link to the created issue.`;
         return;
       }
 
-      await threadChannel.send(`The request branch \`${branchName}\` remains attached. Send a follow-up message or run \`/revise\` to continue; use \`/delete\` if you want to remove it.`);
+      try {
+        await threadChannel.send(`The request branch \`${branchName}\` remains attached. Send a follow-up message or run \`/revise\` to continue; use \`/delete\` if you want to remove it.`);
+      } catch (error) {
+        this.logger.warn(
+          { error, requestId: input.requestId, worktreePath, branchName },
+          "Failed to send preserved worktree notice"
+        );
+      }
     };
 
     try {
