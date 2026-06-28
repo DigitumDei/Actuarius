@@ -72,6 +72,28 @@ function makeRepo(): RepoMemoryIdentity {
   return { owner: "DigitumDei", repo: "Actuarius", fullName: "DigitumDei/Actuarius" };
 }
 
+/**
+ * Subclass that replaces the real `mempalace-cli serve` spawn/kill with stubs, so
+ * the start/stop/restart/recover state machine can be exercised without a binary.
+ * `failStartAttempt` makes the Nth start throw, simulating a failed (re)start.
+ */
+class RecoveryTestService extends MemPalaceRemoteService {
+  public startAttempts = 0;
+  public stopAttempts = 0;
+  public failStartAttempt: number | null = null;
+
+  protected override async startServerProcess(): Promise<void> {
+    this.startAttempts += 1;
+    if (this.failStartAttempt === this.startAttempts) {
+      throw new Error(`simulated start failure #${this.startAttempts}`);
+    }
+  }
+
+  protected override async stopServerProcess(): Promise<void> {
+    this.stopAttempts += 1;
+  }
+}
+
 describe("MemPalaceRemoteService", () => {
   beforeEach(() => {
     mockSpawnCollect.mockReset();
@@ -79,11 +101,19 @@ describe("MemPalaceRemoteService", () => {
   });
 
   it("builds stable repo wing names and parses project config wings", () => {
-    expect(buildRepoMemoryWing({ owner: "Digitum Dei", repo: "Actuarius.NET", fullName: "Digitum Dei/Actuarius.NET" })).toBe(
-      "wing_repo_digitum_dei_actuarius_net"
+    expect(buildRepoMemoryWing({ owner: "Digitum Dei", repo: "Actuarius.NET", fullName: "Digitum Dei/Actuarius.NET" })).toMatch(
+      /^wing_repo_digitum_dei_actuarius_net_[0-9a-f]{8}$/
     );
     expect(parseProjectConfigWing("# comment\nwing: custom_wing # inline comment\n")).toBe("custom_wing");
     expect(parseProjectConfigWing("rooms: []\n")).toBeNull();
+  });
+
+  it("disambiguates repos whose sanitized slugs would collide", () => {
+    const collidingA = buildRepoMemoryWing({ owner: "acme-tools", repo: "web", fullName: "acme-tools/web" });
+    const collidingB = buildRepoMemoryWing({ owner: "acme", repo: "tools-web", fullName: "acme/tools-web" });
+    expect(collidingA).toMatch(/^wing_repo_acme_tools_web_[0-9a-f]{8}$/);
+    expect(collidingB).toMatch(/^wing_repo_acme_tools_web_[0-9a-f]{8}$/);
+    expect(collidingA).not.toBe(collidingB);
   });
 
   it("generates repo routing, token, global federation config, and git exclude", async () => {
@@ -97,7 +127,7 @@ describe("MemPalaceRemoteService", () => {
     const service = new MemPalaceRemoteService(config, logger, { homeDir });
     const wing = await service.registerRepository(repo, checkoutPath);
 
-    expect(wing).toBe("wing_repo_digitumdei_actuarius");
+    expect(wing).toMatch(/^wing_repo_digitumdei_actuarius_[0-9a-f]{8}$/);
     const projectConfig = readFileSync(join(checkoutPath, "mempalace.yaml"), "utf8");
     expect(projectConfig).toContain("wing: wing_repo_digitumdei_actuarius");
     expect(projectConfig).toContain("  mode: combined");
@@ -173,6 +203,67 @@ describe("MemPalaceRemoteService", () => {
 
     const tokenEntries = JSON.parse(readFileSync(config.mempalaceRemoteTokenFile, "utf8"));
     expect(tokenEntries.filter((entry: { name?: string }) => entry.name === "actuarius-local")).toHaveLength(1);
+  });
+
+  it("does not rewrite the global config when re-registering an unchanged repo", async () => {
+    const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-unchanged-"));
+    const homeDir = join(root, "home");
+    const config = makeConfig(root);
+    const repo = makeRepo();
+    const checkoutPath = join(config.reposRootPath, repo.owner, repo.repo);
+    mkdirSync(join(checkoutPath, ".git", "info"), { recursive: true });
+
+    const service = new MemPalaceRemoteService(config, logger, { homeDir });
+    await service.registerRepository(repo, checkoutPath);
+
+    // Overwrite the generated config with a sentinel; a second registration of
+    // the same repo at the same path must not rewrite it (no per-request churn).
+    const configPath = join(homeDir, ".mempalace", "config.json");
+    const sentinel = '{"sentinel":"untouched"}\n';
+    writeFileSync(configPath, sentinel, "utf8");
+
+    await service.registerRepository(repo, checkoutPath);
+    expect(readFileSync(configPath, "utf8")).toBe(sentinel);
+  });
+
+  it("recovers the federation server after a failed restart instead of staying down", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-recover-"));
+      const homeDir = join(root, "home");
+      const config = makeConfig(root);
+      const cliPath = join(root, "mempalace-cli");
+      writeFileSync(cliPath, "", "utf8"); // start() requires the binary to exist
+      config.mempalaceCliPath = cliPath;
+
+      const repo: RepoMemoryIdentity = { owner: "DigitumDei", repo: "Other", fullName: "DigitumDei/Other" };
+      const checkout = join(config.reposRootPath, repo.owner, repo.repo);
+      mkdirSync(join(checkout, ".git", "info"), { recursive: true });
+
+      const service = new RecoveryTestService(config, logger, { homeDir });
+      service.failStartAttempt = 2; // the restart's start attempt fails
+
+      await service.start([]);
+      expect(service.startAttempts).toBe(1);
+
+      // A brand-new repo forces a restart; its start attempt (#2) throws, so the
+      // server is down but a recovery is scheduled rather than abandoned.
+      await service.registerRepository(repo, checkout);
+      expect(service.startAttempts).toBe(2);
+      expect(service.stopAttempts).toBe(1);
+
+      // The background retry brings the server back with no further repo activity.
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(service.startAttempts).toBe(3);
+
+      // Recovered and stable: no spurious retries once it is healthy again.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(service.startAttempts).toBe(3);
+
+      await service.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
 });

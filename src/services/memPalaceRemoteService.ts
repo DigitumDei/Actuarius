@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { access, appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -55,7 +55,12 @@ function sanitizeWingPart(value: string): string {
 }
 
 export function buildRepoMemoryWing(repo: RepoMemoryIdentity): string {
-  return "wing_repo_" + sanitizeWingPart(repo.owner) + "_" + sanitizeWingPart(repo.repo);
+  const slug = sanitizeWingPart(repo.owner) + "_" + sanitizeWingPart(repo.repo);
+  // Sanitizing collapses "/", "-", "." etc. to "_", so distinct repos such as
+  // `acme-tools/web` and `acme/tools-web` would share a slug. Append a short
+  // digest of the canonical owner/repo so wings can never collide.
+  const digest = createHash("sha256").update(repo.fullName.toLowerCase()).digest("hex").slice(0, 8);
+  return "wing_repo_" + slug + "_" + digest;
 }
 
 export function parseProjectConfigWing(configText: string): string | null {
@@ -123,7 +128,12 @@ export class MemPalaceRemoteService {
   private readonly repoCheckouts = new Map<string, string>();
   private readonly repoWings = new Map<string, string>();
   private readonly mineJobs = new Map<string, Promise<void>>();
+  private static readonly SERVER_RETRY_DELAY_MS = 30_000;
   private server: ChildProcess | null = null;
+  private serverRunning = false;
+  private serverDesired = false;
+  private serverOp: Promise<void> = Promise.resolve();
+  private serverRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private expectedServerExit = false;
   private remoteToken: string | null = null;
   private tokenPromise: Promise<string> | null = null;
@@ -143,11 +153,14 @@ export class MemPalaceRemoteService {
     await this.ensureToken();
     await this.configureKnownRepositories(existingRepos);
     await this.writeGlobalConfig();
-    await this.startServer();
+    this.serverDesired = true;
+    await this.bringServerUp();
   }
 
   public async stop(): Promise<void> {
-    await this.stopServer();
+    this.serverDesired = false;
+    this.clearServerRetry();
+    await this.runServerOp(() => this.stopGuarded());
   }
 
   public async configureKnownRepositories(rows: RepoRow[]): Promise<void> {
@@ -166,8 +179,18 @@ export class MemPalaceRemoteService {
     const changed = this.repoCheckouts.get(wing) !== checkoutPath || this.repoWings.get(repo.fullName.toLowerCase()) !== wing;
     this.repoWings.set(repo.fullName.toLowerCase(), wing);
     this.repoCheckouts.set(wing, checkoutPath);
-    await this.writeGlobalConfig();
-    if (changed && this.server) await this.restartServer();
+    if (changed) {
+      await this.writeGlobalConfig();
+      if (this.serverDesired) {
+        await this.restartServer().catch((error: unknown) =>
+          this.logger.warn({ error, repo: repo.fullName }, "MemPalace federation server restart failed; recovery scheduled")
+        );
+      }
+    } else if (this.serverDesired && !this.serverRunning) {
+      await this.recoverServer().catch((error: unknown) =>
+        this.logger.warn({ error, repo: repo.fullName }, "MemPalace federation server recovery failed; retry scheduled")
+      );
+    }
     if (options.queueMine && this.config.mempalaceRemoteMineOnSync) this.queueMainBranchMine(repo, checkoutPath, wing);
     return wing;
   }
@@ -317,7 +340,81 @@ export class MemPalaceRemoteService {
     };
   }
 
-  private async startServer(): Promise<void> {
+  // ── Server lifecycle ──────────────────────────────────────────────────────
+  // `serverDesired` is the intent (should the federation server be up). The live
+  // process handle is an implementation detail of start/stopServerProcess, so a
+  // failed restart or an unexpected crash can recover — via the next repository
+  // registration (`recoverServer`) or a background retry — instead of leaving
+  // federation down for every repo until the bot restarts. All transitions run
+  // through `runServerOp` so a start can never race a stop.
+
+  private runServerOp(op: () => Promise<void>): Promise<void> {
+    const run = this.serverOp.then(op, op);
+    this.serverOp = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private async bringServerUp(): Promise<void> {
+    await this.runServerOp(() => this.startGuarded());
+  }
+
+  private async restartServer(): Promise<void> {
+    await this.runServerOp(async () => {
+      await this.stopGuarded();
+      await this.startGuarded();
+    });
+  }
+
+  private async recoverServer(): Promise<void> {
+    await this.runServerOp(async () => {
+      if (this.serverRunning) return;
+      await this.startGuarded();
+    });
+  }
+
+  private async startGuarded(): Promise<void> {
+    if (this.serverRunning) return;
+    try {
+      await this.startServerProcess();
+      this.serverRunning = true;
+    } catch (error) {
+      this.serverRunning = false;
+      this.scheduleServerRetry();
+      throw error;
+    }
+  }
+
+  private async stopGuarded(): Promise<void> {
+    this.clearServerRetry();
+    try {
+      await this.stopServerProcess();
+    } finally {
+      this.serverRunning = false;
+    }
+  }
+
+  private scheduleServerRetry(): void {
+    if (!this.serverDesired || this.serverRetryTimer) return;
+    const timer = setTimeout(() => {
+      this.serverRetryTimer = null;
+      if (!this.serverDesired || this.serverRunning) return;
+      void this.recoverServer().catch((error: unknown) =>
+        this.logger.warn({ error }, "MemPalace federation server retry attempt failed; will retry")
+      );
+    }, MemPalaceRemoteService.SERVER_RETRY_DELAY_MS);
+    timer.unref?.();
+    this.serverRetryTimer = timer;
+  }
+
+  private clearServerRetry(): void {
+    if (this.serverRetryTimer) {
+      clearTimeout(this.serverRetryTimer);
+      this.serverRetryTimer = null;
+    }
+  }
+
+  /** Spawn `mempalace-cli serve` and resolve once it reports healthy. Overridable in tests. */
+  protected async startServerProcess(): Promise<void> {
     if (this.server) return;
     await mkdir(this.config.mempalaceRemotePalacePath, { recursive: true });
     const args = [
@@ -331,30 +428,47 @@ export class MemPalaceRemoteService {
     ];
 
     this.expectedServerExit = false;
-    this.server = spawn(this.config.mempalaceCliPath, args, { env: this.buildProcessEnv(), stdio: ["ignore", "pipe", "pipe"] });
-    createInterface({ input: this.server.stdout! }).on("line", (line) => {
+    const child = spawn(this.config.mempalaceCliPath, args, { env: this.buildProcessEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    this.server = child;
+    createInterface({ input: child.stdout! }).on("line", (line) => {
       if (this.expectedServerExit) return;
       this.logger.debug({ line }, "mempalace-cli serve stdout");
     });
-    createInterface({ input: this.server.stderr! }).on("line", (line) => {
+    createInterface({ input: child.stderr! }).on("line", (line) => {
       if (this.expectedServerExit) return;
       this.logger.info({ line }, "mempalace-cli serve");
     });
-    this.server.on("error", (error) => this.logger.error({ error }, "MemPalace federation server process error"));
-    this.server.on("close", (code) => {
+    child.on("error", (error) => this.logger.error({ error }, "MemPalace federation server process error"));
+    child.on("close", (code) => {
       const expected = this.expectedServerExit;
-      this.server = null;
-      if (!expected) this.logger.warn({ code }, "MemPalace federation server exited unexpectedly");
+      if (this.server === child) {
+        this.server = null;
+        this.serverRunning = false;
+      }
+      if (!expected) {
+        this.logger.warn({ code }, "MemPalace federation server exited unexpectedly");
+        this.scheduleServerRetry();
+      }
     });
 
-    await this.waitForHealth();
+    try {
+      await this.waitForHealth();
+    } catch (error) {
+      // Health never came up — tear down this (possibly hung) process so a retry
+      // restarts cleanly instead of adopting a zombie handle as "running".
+      this.expectedServerExit = true;
+      if (!child.killed) child.kill("SIGKILL");
+      if (this.server === child) this.server = null;
+      throw error;
+    }
     this.logger.info(
       { bind: this.config.mempalaceRemoteBind, url: this.config.mempalaceRemoteUrl, palacePath: this.config.mempalaceRemotePalacePath },
       "MemPalace federation server ready"
     );
   }
 
-  private async stopServer(): Promise<void> {
+  /** Terminate the running `serve` process. Overridable in tests. */
+  protected async stopServerProcess(): Promise<void> {
     const child = this.server;
     if (!child) return;
     this.expectedServerExit = true;
@@ -369,12 +483,7 @@ export class MemPalaceRemoteService {
       });
       child.kill("SIGTERM");
     });
-    this.server = null;
-  }
-
-  private async restartServer(): Promise<void> {
-    await this.stopServer();
-    await this.startServer();
+    if (this.server === child) this.server = null;
   }
 
   private async waitForHealth(): Promise<void> {
