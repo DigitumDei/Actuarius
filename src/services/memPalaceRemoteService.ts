@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { access, appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash, randomBytes } from "node:crypto";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
@@ -267,12 +267,7 @@ export class MemPalaceRemoteService {
     const token = configuredToken || (typeof existingToken === "string" ? existingToken : randomBytes(32).toString("base64url"));
     const withoutLocal = entries.filter((entry) => entry.name !== "actuarius-local");
     withoutLocal.unshift({ token, name: "actuarius-local", enabled: true });
-    await writeFile(tokenFile, JSON.stringify(withoutLocal, null, 2) + "\n", "utf8");
-    try {
-      await chmod(tokenFile, 0o600);
-    } catch {
-      // chmod is best effort on non-Unix development hosts.
-    }
+    await writeFile(tokenFile, JSON.stringify(withoutLocal, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
     process.env.MEMPALACE_REMOTE_TOKEN = token;
     this.remoteToken = token;
     return token;
