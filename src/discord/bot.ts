@@ -920,10 +920,6 @@ export class ActuariusBot {
       return;
     }
 
-    if (!(await this.ensureGitHubCliAccess(interaction, ["/issues"]))) {
-      return;
-    }
-
     const mode = interaction.options.getString("mode") ?? "list";
     const issueNumber = interaction.options.getInteger("issue");
 
@@ -936,6 +932,10 @@ export class ActuariusBot {
     }
 
     await interaction.deferReply({ ephemeral: true });
+
+    if (!(await this.ensureGitHubCliAccess(interaction, ["/issues"], true))) {
+      return;
+    }
 
     try {
       if (mode === "detail") {
@@ -2137,6 +2137,7 @@ export class ActuariusBot {
       rawOutput?: boolean;
       detachWorktree?: boolean;
       attachments?: PendingAttachment[];
+      requireGitHubCli?: boolean;
     }
   ): Promise<void> {
     if (!interaction.guild || !interaction.guildId) {
@@ -2175,13 +2176,19 @@ export class ActuariusBot {
     const provider: AiProvider = modelConfig?.provider ?? "claude";
     const model = modelConfig?.model;
 
-    const channel = (await interaction.guild.channels.fetch(repo.channel_id)) as GuildTextBasedChannel | null;
-    if (!channel || channel.type !== ChannelType.GuildText) {
-      await interaction.reply({ content: "Mapped repo channel is unavailable or not a text channel.", ephemeral: true });
-      return;
+    await interaction.deferReply({ ephemeral: true });
+
+    if (options.requireGitHubCli) {
+      if (!(await this.ensureGitHubCliAccess(interaction, [`/${options.label}`], true))) {
+        return;
+      }
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    const channel = (await interaction.guild.channels.fetch(repo.channel_id)) as GuildTextBasedChannel | null;
+    if (!channel || channel.type !== ChannelType.GuildText) {
+      await interaction.editReply("Mapped repo channel is unavailable or not a text channel.");
+      return;
+    }
 
     const seedMessage = await channel.send({
       content: `New ${options.label} from <@${interaction.user.id}> for \`${repo.full_name}\``
@@ -2361,10 +2368,6 @@ export class ActuariusBot {
   }
 
   private async handleIssueCreate(interaction: ChatInputCommandInteraction, type: "bug" | "issue"): Promise<void> {
-    if (!(await this.ensureGitHubCliAccess(interaction, ["/bug", "/issue"]))) {
-      return;
-    }
-
     const defaultLabel = type === "bug" ? "bug" : "enhancement";
     const promptTransformer = (prompt: string): string =>
       `Analyze the codebase against the master branch to produce a structured GitHub issue report for the following request.
@@ -2380,11 +2383,12 @@ Output the result of the command or the link to the created issue.`;
       label: type,
       promptTransformer,
       rawOutput: true,
-      detachWorktree: true
+      detachWorktree: true,
+      requireGitHubCli: true
     });
   }
 
-  private async ensureGitHubCliAccess(interaction: ChatInputCommandInteraction, commands: string[]): Promise<boolean> {
+  private async ensureGitHubCliAccess(interaction: ChatInputCommandInteraction, commands: string[], deferred: boolean = false): Promise<boolean> {
     try {
       await ensureGitHubCliAuthenticated();
       const { spawnCollect } = await import("../utils/spawnCollect.js");
@@ -2397,11 +2401,13 @@ Output the result of the command or the link to the created issue.`;
       return true;
     } catch (err) {
       this.logger.warn({ err }, "GitHub CLI access check failed");
-      await interaction.reply({
-        content:
-          `GitHub CLI is not authenticated. Configure GitHub App credentials or \`GH_TOKEN\`, or run \`gh auth login\` on the host before using ${commands.join(" or ")}.`,
-        ephemeral: true
-      });
+      const content =
+        `GitHub CLI is not authenticated. Configure GitHub App credentials or \`GH_TOKEN\`, or run \`gh auth login\` on the host before using ${commands.join(" or ")}.`;
+      if (deferred) {
+        await interaction.editReply(content);
+      } else {
+        await interaction.reply({ content, ephemeral: true });
+      }
       return false;
     }
   }
@@ -2786,58 +2792,43 @@ Output the result of the command or the link to the created issue.`;
       return;
     }
 
+    await interaction.deferReply({ ephemeral: true });
+    await reviewThread.send("Adversarial review started.");
+
     const latestRequest = this.db.getLatestRequestWithWorkspaceByThreadId(interaction.channelId);
     if (!latestRequest?.worktree_path || !latestRequest.branch_name) {
-      await interaction.reply({
-        content: "This thread does not have a tracked request branch. Run `/ask` first and keep the worktree attached.",
-        ephemeral: true
-      });
+      await interaction.editReply("This thread does not have a tracked request branch. Run `/ask` first and keep the worktree attached.");
       return;
     }
 
     const isOwner = latestRequest.user_id === interaction.user.id;
     const canManageGuild = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
     if (!isOwner && !canManageGuild) {
-      await interaction.reply({
-        content: "Only the original requester or a user with `Manage Server` can run `/review` for this branch.",
-        ephemeral: true
-      });
+      await interaction.editReply("Only the original requester or a user with `Manage Server` can run `/review` for this branch.");
       return;
     }
 
     if (isActiveRequestStatus(latestRequest.status)) {
-      await interaction.reply({
-        content: "The latest request in this thread is still queued or running. Wait for it to finish before reviewing.",
-        ephemeral: true
-      });
+      await interaction.editReply("The latest request in this thread is still queued or running. Wait for it to finish before reviewing.");
       return;
     }
 
     if (!existsSync(latestRequest.worktree_path)) {
-      await interaction.reply({
-        content: "The tracked worktree for this thread no longer exists. Start a new `/ask` request before reviewing.",
-        ephemeral: true
-      });
+      await interaction.editReply("The tracked worktree for this thread no longer exists. Start a new `/ask` request before reviewing.");
       return;
     }
 
     const repo = this.db.getRepoByChannelId(interaction.guildId, parentId);
     if (!repo) {
-      await interaction.reply({
-        content: "This thread is not attached to a connected repository channel. Run `/connect-repo` first.",
-        ephemeral: true
-      });
+      await interaction.editReply("This thread is not attached to a connected repository channel. Run `/connect-repo` first.");
       return;
     }
 
     const configError = await this.validateReviewConfig(interaction.guildId);
     if (configError) {
-      await interaction.reply({ content: configError, ephemeral: true });
+      await interaction.editReply(configError);
       return;
     }
-
-    await interaction.deferReply({ ephemeral: true });
-    await reviewThread.send("Adversarial review started.");
 
     let autoCommitted = false;
     try {
@@ -3009,6 +3000,8 @@ Output the result of the command or the link to the created issue.`;
       return;
     }
 
+    await interaction.deferReply({ ephemeral: true });
+
     let revisionRequestId: number | null = null;
     let roles: { planner: ResolvedModelRole; implementer: ResolvedModelRole };
     try {
@@ -3024,8 +3017,6 @@ Output the result of the command or the link to the created issue.`;
       });
       revisionRequestId = revisionRequest.id;
       this.db.updateRequestWorkspace(revisionRequest.id, worktreePath, branchName);
-
-      await interaction.deferReply({ ephemeral: true });
 
       roles = await this.resolvePlanRoleModels(interaction.guildId);
 

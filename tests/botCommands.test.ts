@@ -1155,11 +1155,10 @@ describe("ActuariusBot issues command", () => {
 
     await (bot as any).handleIssues(interaction);
 
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content:
-        "GitHub CLI is not authenticated. Configure GitHub App credentials or `GH_TOKEN`, or run `gh auth login` on the host before using /issues.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "GitHub CLI is not authenticated. Configure GitHub App credentials or `GH_TOKEN`, or run `gh auth login` on the host before using /issues."
+    );
   });
 
   it("returns an issue title list in default mode", async () => {
@@ -1574,10 +1573,10 @@ describe("ActuariusBot review command", () => {
 
     await (bot as any).handleReview(interaction);
 
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "Only the original requester or a user with `Manage Server` can run `/review` for this branch.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "Only the original requester or a user with `Manage Server` can run `/review` for this branch."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1598,10 +1597,10 @@ describe("ActuariusBot review command", () => {
     });
     await (bot as any).handleReview(interaction);
 
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "The latest request in this thread is still queued or running. Wait for it to finish before reviewing.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "The latest request in this thread is still queued or running. Wait for it to finish before reviewing."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1779,10 +1778,10 @@ describe("ActuariusBot review command", () => {
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
     await (bot as any).handleReview(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Insufficient reviewers configured** — at least 2 reviewer slots are required for `/review`. Use `/model-select reviewer-1` and `/model-select reviewer-2` to set them up.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "**Insufficient reviewers configured** — at least 2 reviewer slots are required for `/review`. Use `/model-select reviewer-1` and `/model-select reviewer-2` to set them up."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1803,10 +1802,10 @@ describe("ActuariusBot review command", () => {
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
     await (bot as any).handleReview(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Provider unavailable** — slot 2 uses `codex` which is not available. Codex execution is not enabled on this instance (`ENABLE_CODEX_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "**Provider unavailable** — slot 2 uses `codex` which is not available. Codex execution is not enabled on this instance (`ENABLE_CODEX_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1831,10 +1830,10 @@ describe("ActuariusBot review command", () => {
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
     await (bot as any).handleReview(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Provider unavailable** — the `analyzer` role override uses `gemini` which is not available. Gemini execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "**Provider unavailable** — the `analyzer` role override uses `gemini` which is not available. Gemini execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1853,10 +1852,10 @@ describe("ActuariusBot review command", () => {
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
     await (bot as any).handleReview(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Insufficient reviewers configured** — at least 2 available AI providers are required for `/review`. Use `/model-select` to configure a second provider or ask the server administrator to enable or configure additional providers.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "**Insufficient reviewers configured** — at least 2 available AI providers are required for `/review`. Use `/model-select` to configure a second provider or ask the server administrator to enable or configure additional providers."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1944,10 +1943,10 @@ describe("ActuariusBot review command", () => {
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
     await (bot as any).handleReview(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Provider unavailable** — slot 2 uses `gemini` which is not available. Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "**Provider unavailable** — slot 2 uses `gemini` which is not available. Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1972,10 +1971,10 @@ describe("ActuariusBot review command", () => {
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
     await (bot as any).handleReview(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Provider unavailable** — slot 2 uses `opencode` which is not available. OpenCode execution requires an API key. Use `/opencode-auth` to configure keys (e.g. `deepseek`, `openai`, `anthropic`), or set `DEEPSEEK_API_KEY` on the instance.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "**Provider unavailable** — slot 2 uses `opencode` which is not available. OpenCode execution requires an API key. Use `/opencode-auth` to configure keys (e.g. `deepseek`, `openai`, `anthropic`), or set `DEEPSEEK_API_KEY` on the instance."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1996,10 +1995,10 @@ describe("ActuariusBot review command", () => {
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
     await (bot as any).handleReview(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: '**Provider unavailable** — saved default provider `gemini` is not available. Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.',
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "**Provider unavailable** — saved default provider `gemini` is not available. Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 });
