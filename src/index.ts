@@ -32,6 +32,18 @@ async function main(): Promise<void> {
       const started = await startMemPalaceRemoteWithRetry(memPalaceRemote, db.listAllRepos(), logger, {
         signal: startupAbort.signal
       });
+      if (startupAbort.signal.aborted) {
+        // A shutdown signal arrived during the retry window and the permanent
+        // gracefulShutdown handlers below aren't registered yet — clean up
+        // and exit here instead of continuing to boot the rest of the app.
+        logger.info("Shutdown received during MemPalace federation startup; aborting boot");
+        await memPalaceRemote.stop().catch((stopError: unknown) => {
+          logger.warn({ error: stopError }, "MemPalace federation server cleanup failed during aborted startup");
+        });
+        db.close();
+        process.exitCode = 0;
+        return;
+      }
       if (!started) {
         memPalaceRemote = null;
       }
