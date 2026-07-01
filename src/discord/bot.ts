@@ -45,9 +45,13 @@ import {
   cleanupDeletedRemoteBranches,
   detectDefaultBranch,
   ensureRepoCheckedOutToMaster,
+  getCommitsSinceBaseRef,
+  getDefaultBranchBaseRef,
   getDiffSinceRef,
   getHeadSha,
   getReviewDiff,
+  getShortStatus,
+  getUnstagedDiffSummary,
   hasUncommittedChanges,
   hasUncommittedChangesExcluding,
   listBranches,
@@ -3673,8 +3677,16 @@ Output the result of the command or the link to the created issue.`;
       markFailed();
       const message = this.describeExecutionError(error);
       if (threadChannel && threadChannel.isThread()) {
-        await threadChannel.send(`**Plan request failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 60)}`);
-        await sendPreservedWorktreeNotice();
+        const timeoutReport = await this.buildTimeoutReport(error, worktreePath, branchName, "plan");
+        if (timeoutReport) {
+          for (const chunk of splitPlainTextForDiscord(timeoutReport, `**Plan request timed out during ${stage}**`)) {
+            await threadChannel.send(chunk);
+          }
+          await sendPreservedWorktreeNotice();
+        } else {
+          await threadChannel.send(`**Plan request failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 60)}`);
+          await sendPreservedWorktreeNotice();
+        }
       }
       this.logger.error({ error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage }, "Plan request failed");
     }
@@ -3894,7 +3906,14 @@ Output the result of the command or the link to the created issue.`;
       markFailed();
       const message = this.describeExecutionError(error);
       if (threadChannel && threadChannel.isThread()) {
-        await threadChannel.send(`**Revision failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 60)}`);
+        const timeoutReport = await this.buildTimeoutReport(error, input.worktreePath, input.branchName, "revision");
+        if (timeoutReport) {
+          for (const chunk of splitPlainTextForDiscord(timeoutReport, `**Revision timed out during ${stage}**`)) {
+            await threadChannel.send(chunk);
+          }
+        } else {
+          await threadChannel.send(`**Revision failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 60)}`);
+        }
       }
       this.logger.error({ error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage }, "Revise request failed");
     }
@@ -4082,7 +4101,14 @@ Output the result of the command or the link to the created issue.`;
       markFailed();
       const message = this.describeExecutionError(error);
       if (threadChannel && threadChannel.isThread()) {
-        await threadChannel.send(`**${providerLabel} execution failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
+        const timeoutReport = await this.buildTimeoutReport(error, worktreePath, branchName, providerLabel);
+        if (timeoutReport) {
+          for (const chunk of splitPlainTextForDiscord(timeoutReport, `**${providerLabel} execution timed out**`)) {
+            await threadChannel.send(chunk);
+          }
+        } else {
+          await threadChannel.send(`**${providerLabel} execution failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
+        }
       }
       this.logger.error(
         { error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage, provider: input.provider },
@@ -4143,6 +4169,87 @@ Output the result of the command or the link to the created issue.`;
     }
 
     return "Unknown execution error.";
+  }
+
+  private async buildTimeoutReport(
+    error: unknown,
+    worktreePath: string | null,
+    branchName: string | null,
+    providerLabel: string
+  ): Promise<string> {
+    const isTimeout =
+      (error instanceof ClaudeExecutionError && error.code === "TIMEOUT") ||
+      (error instanceof CodexExecutionError && error.code === "TIMEOUT") ||
+      (error instanceof GeminiExecutionError && error.code === "TIMEOUT") ||
+      (error instanceof OpencodeExecutionError && error.code === "TIMEOUT") ||
+      (error instanceof Error && error.message.toLowerCase().includes("timed out"));
+
+    if (!isTimeout) {
+      return "";
+    }
+
+    const err = error as { partialStdout?: string; partialStderr?: string };
+    const lines: string[] = [];
+
+    const partialStdout = err.partialStdout?.trim();
+    const partialStderr = err.partialStderr?.trim();
+
+    if (partialStdout) {
+      lines.push("**Partial output (stdout):**");
+      lines.push(clipForDiscord(partialStdout, 1800));
+      lines.push("");
+    }
+
+    if (partialStderr) {
+      lines.push("**Partial error output (stderr):**");
+      lines.push(clipForDiscord(partialStderr, 1800));
+      lines.push("");
+    }
+
+    if (worktreePath && branchName) {
+      try {
+        const baseRef = await getDefaultBranchBaseRef(worktreePath);
+        if (baseRef) {
+          const commits = await getCommitsSinceBaseRef(worktreePath, baseRef);
+          if (commits.length > 0) {
+            lines.push(`**Commits on \`${branchName}\` (since ${baseRef}):**`);
+            for (const c of commits) {
+              lines.push(c);
+            }
+            lines.push("");
+          }
+        }
+      } catch {
+        lines.push("**Commits:** (unavailable)");
+        lines.push("");
+      }
+
+      try {
+        const status = await getShortStatus(worktreePath);
+        if (status) {
+          lines.push("**Working tree status:**");
+          lines.push(`\`\`\`\n${clipForDiscord(status, 1800)}\n\`\`\``);
+          lines.push("");
+        }
+      } catch {
+        lines.push("**Working tree status:** (unavailable)");
+        lines.push("");
+      }
+
+      try {
+        const diff = await getUnstagedDiffSummary(worktreePath);
+        if (diff) {
+          lines.push("**Unstaged changes:**");
+          lines.push(`\`\`\`diff\n${clipForDiscord(diff, 1800)}\n\`\`\``);
+          lines.push("");
+        }
+      } catch {
+        lines.push("**Unstaged changes:** (unavailable)");
+        lines.push("");
+      }
+    }
+
+    return lines.join("\n").trim();
   }
 
   private describeInstallTarget(packageId: string, packageVersion?: string): string {

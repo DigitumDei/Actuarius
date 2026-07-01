@@ -31,6 +31,8 @@ export interface OpencodeExecutionResult {
 
 export class OpencodeExecutionError extends Error {
   public readonly code: "OPENCODE_UNAVAILABLE" | "OPENCODE_DISABLED" | "NOT_AUTHENTICATED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT";
+  public partialStdout?: string;
+  public partialStderr?: string;
 
   public constructor(code: "OPENCODE_UNAVAILABLE" | "OPENCODE_DISABLED" | "NOT_AUTHENTICATED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT", message: string) {
     super(message);
@@ -89,7 +91,14 @@ export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: 
         ];
       },
       logLabel: "OpenCode",
-      makeError: (code, message) => new OpencodeExecutionError(code as OpencodeExecutionError["code"], message),
+      makeError: (code, message, details) => {
+        const err = new OpencodeExecutionError(code as OpencodeExecutionError["code"], message);
+        if (details) {
+          if (details.partialStdout) err.partialStdout = details.partialStdout;
+          if (details.partialStderr) err.partialStderr = details.partialStderr;
+        }
+        return err;
+      },
       unavailableCode: "OPENCODE_UNAVAILABLE",
       timeoutCode: "TIMEOUT",
       failedCode: "FAILED",

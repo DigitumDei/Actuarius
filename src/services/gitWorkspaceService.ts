@@ -635,3 +635,51 @@ export async function getDiffSinceRef(
     throw new GitWorkspaceError("DIFF_FAILED", message);
   }
 }
+
+export async function getCommitsSinceBaseRef(worktreePath: string, baseRef: string): Promise<string[]> {
+  try {
+    const result = await runGitWithOutput(["log", "--oneline", `${baseRef}..HEAD`], { cwd: worktreePath });
+    return result.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+export async function getShortStatus(worktreePath: string): Promise<string> {
+  try {
+    const result = await runGitWithOutput(["status", "--short"], { cwd: worktreePath });
+    return result.stdout.trim();
+  } catch {
+    return "";
+  }
+}
+
+export async function getUnstagedDiffSummary(worktreePath: string): Promise<string> {
+  try {
+    const diff = await runGitDiffWithOverflowFallback(["diff"], worktreePath);
+    if (diff.trim()) {
+      return diff;
+    }
+    return "";
+  } catch {
+    try {
+      const statResult = await runGitWithOutput(["diff", "--stat"], { cwd: worktreePath });
+      if (statResult.stdout.trim()) {
+        return statResult.stdout.trim();
+      }
+      const nameResult = await runGitWithOutput(["diff", "--name-only"], { cwd: worktreePath });
+      return nameResult.stdout.trim() || "";
+    } catch {
+      return "";
+    }
+  }
+}
+
+export async function getDefaultBranchBaseRef(worktreePath: string): Promise<string> {
+  try {
+    const defaultBranch = await detectDefaultBranch(worktreePath);
+    return defaultBranch.remoteRef;
+  } catch {
+    return "";
+  }
+}

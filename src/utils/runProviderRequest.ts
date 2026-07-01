@@ -9,6 +9,11 @@ export interface ProviderRequestInput {
   env?: NodeJS.ProcessEnv;
 }
 
+export interface ProviderErrorDetails {
+  partialStdout?: string;
+  partialStderr?: string;
+}
+
 export interface ProviderRunnerConfig {
   /** CLI binary name, e.g. "codex" or "gemini". */
   binary: string;
@@ -27,7 +32,7 @@ export interface ProviderRunnerConfig {
   cwdFlag?: string;
   /** Human-readable label used in log messages, e.g. "Codex". */
   logLabel: string;
-  makeError: (code: string, message: string) => Error;
+  makeError: (code: string, message: string, details?: ProviderErrorDetails) => Error;
   unavailableCode: string;
   notAuthenticatedCode?: string;
   /** Regex tested against stderr to detect authentication failures. */
@@ -226,7 +231,10 @@ export async function runProviderRequest(
       (nodeError.killed === true && nodeError.signal === "SIGTERM") ||
       message.toLowerCase().includes("timed out")
     ) {
-      throw config.makeError(config.timeoutCode, `${config.logLabel} execution timed out after ${input.timeoutMs}ms.`);
+      const errorDetails: ProviderErrorDetails = {};
+      if (nodeError.stdout) errorDetails.partialStdout = nodeError.stdout;
+      if (nodeError.stderr) errorDetails.partialStderr = nodeError.stderr;
+      throw config.makeError(config.timeoutCode, `${config.logLabel} execution timed out after ${input.timeoutMs}ms.`, errorDetails);
     }
 
     const stderrLines = nodeError.stderr?.trim().split("\n") ?? [];

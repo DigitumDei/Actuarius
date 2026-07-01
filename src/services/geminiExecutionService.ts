@@ -15,6 +15,8 @@ export interface GeminiExecutionResult {
 
 export class GeminiExecutionError extends Error {
   public readonly code: "GEMINI_UNAVAILABLE" | "GEMINI_DISABLED" | "NOT_AUTHENTICATED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT";
+  public partialStdout?: string;
+  public partialStderr?: string;
 
   public constructor(code: "GEMINI_UNAVAILABLE" | "GEMINI_DISABLED" | "NOT_AUTHENTICATED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT", message: string) {
     super(message);
@@ -38,7 +40,14 @@ export async function runGeminiRequest(input: GeminiExecutionInput, logger: Logg
       // via stdin, so the empty -p value plus stdin yields exactly the prompt.
       supportsStdinFallback: true,
       logLabel: "Gemini",
-      makeError: (code, message) => new GeminiExecutionError(code as GeminiExecutionError["code"], message),
+      makeError: (code, message, details) => {
+        const err = new GeminiExecutionError(code as GeminiExecutionError["code"], message);
+        if (details) {
+          if (details.partialStdout) err.partialStdout = details.partialStdout;
+          if (details.partialStderr) err.partialStderr = details.partialStderr;
+        }
+        return err;
+      },
       unavailableCode: "GEMINI_UNAVAILABLE",
       notAuthenticatedCode: "NOT_AUTHENTICATED",
       authFailurePattern: /set an Auth method|authentication required|not authenticated|Enter the authorization code:/i,

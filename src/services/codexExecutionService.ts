@@ -15,6 +15,8 @@ export interface CodexExecutionResult {
 
 export class CodexExecutionError extends Error {
   public readonly code: "CODEX_UNAVAILABLE" | "CODEX_DISABLED" | "NOT_AUTHENTICATED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT";
+  public partialStdout?: string;
+  public partialStderr?: string;
 
   public constructor(code: "CODEX_UNAVAILABLE" | "CODEX_DISABLED" | "NOT_AUTHENTICATED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT", message: string) {
     super(message);
@@ -36,7 +38,14 @@ export async function runCodexRequest(input: CodexExecutionInput, logger: Logger
       // positional prompt and pipes it via stdin — exactly this contract.
       supportsStdinFallback: true,
       logLabel: "Codex",
-      makeError: (code, message) => new CodexExecutionError(code as CodexExecutionError["code"], message),
+      makeError: (code, message, details) => {
+        const err = new CodexExecutionError(code as CodexExecutionError["code"], message);
+        if (details) {
+          if (details.partialStdout) err.partialStdout = details.partialStdout;
+          if (details.partialStderr) err.partialStderr = details.partialStderr;
+        }
+        return err;
+      },
       unavailableCode: "CODEX_UNAVAILABLE",
       timeoutCode: "TIMEOUT",
       failedCode: "FAILED",
