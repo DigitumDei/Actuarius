@@ -90,11 +90,17 @@ fi
 # ── cache rotation ────────────────────────────────────────────
 # Clean accumulating caches on every container start to prevent
 # incremental disk fill (compounding npm/cargo/opencode caches).
-rm -rf "$HOME/.npm/_cacache" 2>/dev/null || true
-rm -rf "$HOME/.cache" 2>/dev/null || true
-rm -rf "$HOME/.cargo/registry/cache" 2>/dev/null || true
-rm -f "$HOME/.local/share/opencode/opencode.db" "$HOME/.local/share/opencode/opencode.db-shm" "$HOME/.local/share/opencode/opencode.db-wal" 2>/dev/null || true
-rm -rf "$HOME/.codex/tmp" "$HOME/.codex/sessions" 2>/dev/null || true
+# Skippable via SKIP_CACHE_ROTATION for local testing, where the wipe just
+# forces every provider CLI to redownload from scratch on each restart —
+# disk-fill isn't a concern on a throwaway local volume the way it is in
+# production. Defaults to running the wipe (production-safe).
+if [ "${SKIP_CACHE_ROTATION:-false}" != "true" ]; then
+  rm -rf "$HOME/.npm/_cacache" 2>/dev/null || true
+  rm -rf "$HOME/.cache" 2>/dev/null || true
+  rm -rf "$HOME/.cargo/registry/cache" 2>/dev/null || true
+  rm -f "$HOME/.local/share/opencode/opencode.db" "$HOME/.local/share/opencode/opencode.db-shm" "$HOME/.local/share/opencode/opencode.db-wal" 2>/dev/null || true
+  rm -rf "$HOME/.codex/tmp" "$HOME/.codex/sessions" 2>/dev/null || true
+fi
 
 git config --global user.name "$GIT_USER_NAME"
 git config --global user.email "$GIT_USER_EMAIL"

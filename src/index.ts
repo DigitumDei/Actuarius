@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { appConfig } from "./config.js";
 import { AppDatabase } from "./db/database.js";
 import { registerSlashCommands } from "./discord/commands.js";
@@ -7,6 +8,7 @@ import { runCapabilityChecks } from "./services/capabilityService.js";
 import { initializeGitHubAuth } from "./services/githubAuthService.js";
 import { MemPalaceClient } from "./services/memPalaceClient.js";
 import { MemPalaceRemoteService } from "./services/memPalaceRemoteService.js";
+import { startMemPalaceRemoteWithRetry } from "./services/memPalaceRemoteStartup.js";
 
 async function main(): Promise<void> {
   const db = new AppDatabase(appConfig.databasePath);
@@ -19,14 +21,35 @@ async function main(): Promise<void> {
   let memPalaceRemote: MemPalaceRemoteService | null = null;
   if (appConfig.mempalaceRemoteEnabled) {
     memPalaceRemote = new MemPalaceRemoteService(appConfig, logger);
+    // Retrying can take up to ~2 minutes; abort the wait promptly on shutdown
+    // rather than leaving the process unresponsive to SIGINT/SIGTERM for that
+    // whole window (the permanent shutdown handlers aren't registered yet).
+    const startupAbort = new AbortController();
+    const abortStartup = (): void => startupAbort.abort();
+    process.once("SIGINT", abortStartup);
+    process.once("SIGTERM", abortStartup);
     try {
-      await memPalaceRemote.start(db.listAllRepos());
-    } catch (err) {
-      logger.warn({ error: err }, "MemPalace federation server failed to start - remote repo memory disabled for this session");
-      await memPalaceRemote.stop().catch((stopError: unknown) => {
-        logger.warn({ error: stopError }, "MemPalace federation server cleanup failed");
+      const started = await startMemPalaceRemoteWithRetry(memPalaceRemote, db.listAllRepos(), logger, {
+        signal: startupAbort.signal
       });
-      memPalaceRemote = null;
+      if (startupAbort.signal.aborted) {
+        // A shutdown signal arrived during the retry window and the permanent
+        // gracefulShutdown handlers below aren't registered yet — clean up
+        // and exit here instead of continuing to boot the rest of the app.
+        logger.info("Shutdown received during MemPalace federation startup; aborting boot");
+        await memPalaceRemote.stop().catch((stopError: unknown) => {
+          logger.warn({ error: stopError }, "MemPalace federation server cleanup failed during aborted startup");
+        });
+        db.close();
+        process.exitCode = 0;
+        return;
+      }
+      if (!started) {
+        memPalaceRemote = null;
+      }
+    } finally {
+      process.off("SIGINT", abortStartup);
+      process.off("SIGTERM", abortStartup);
     }
   }
 
@@ -72,4 +95,8 @@ async function main(): Promise<void> {
   });
 }
 
-void main();
+// Only bootstrap when run directly (`node dist/index.js`), not if this module
+// is ever imported elsewhere (e.g. for testing).
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  void main();
+}

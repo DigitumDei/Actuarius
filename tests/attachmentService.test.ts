@@ -285,7 +285,9 @@ describe("processAttachments", () => {
     expect(result.processed).toHaveLength(1);
     expect(result.processed[0]!.type).toBe("image");
     expect(result.promptSection).toContain("File: screenshot.png");
-    expect(result.promptSection).toContain("Attached image: .actuarius/attachments/request-42/1-screenshot.png");
+    expect(result.promptSection).toContain(
+      `Attached image: ${join(".actuarius", "attachments", "request-42", "1-screenshot.png")}`
+    );
   });
 
   it("processes multiple mixed text and image attachments", async () => {
@@ -308,7 +310,9 @@ describe("processAttachments", () => {
 
     expect(result.processed.map((attachment) => attachment.type)).toEqual(["text", "image"]);
     expect(result.promptSection).toContain("debug output");
-    expect(result.promptSection).toContain("Attached image: .actuarius/attachments/request-45/2-screenshot.png");
+    expect(result.promptSection).toContain(
+      `Attached image: ${join(".actuarius", "attachments", "request-45", "2-screenshot.png")}`
+    );
   });
 
   it("clips inline text to max", async () => {
