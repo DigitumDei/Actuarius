@@ -23,16 +23,34 @@ const MEMPALACE_REMOTE_START_RETRY_DELAY_MS = 20_000;
  * would otherwise disable federation for the rest of the process lifetime.
  * 4 attempts * 15s + 3 delays * 20s = ~2 minutes worst case.
  */
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    timer.unref?.();
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export async function startMemPalaceRemoteWithRetry(
   service: MemPalaceRemoteService,
   existingRepos: RepoRow[],
   log: Logger,
-  options: { maxAttempts?: number; retryDelayMs?: number } = {}
+  options: { maxAttempts?: number; retryDelayMs?: number; signal?: AbortSignal } = {}
 ): Promise<boolean> {
   const maxAttempts = options.maxAttempts ?? MEMPALACE_REMOTE_START_MAX_ATTEMPTS;
   const retryDelayMs = options.retryDelayMs ?? MEMPALACE_REMOTE_START_RETRY_DELAY_MS;
+  const { signal } = options;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (signal?.aborted) return false;
     try {
       await service.start(existingRepos);
       return true;
@@ -44,13 +62,17 @@ export async function startMemPalaceRemoteWithRetry(
           ? "MemPalace federation server failed to start after all retries - remote repo memory disabled for this session"
           : "MemPalace federation server failed to start; retrying"
       );
+      // Always stop, even between retries: a failed start() leaves the
+      // service's own background retry timer scheduled (see scheduleServerRetry
+      // in memPalaceRemoteService.ts), and stop() clears it — otherwise our
+      // manual retries and that internal timer could both attempt recovery.
+      await service.stop().catch((stopError: unknown) => {
+        log.warn({ error: stopError }, "MemPalace federation server cleanup failed");
+      });
       if (isLastAttempt) {
-        await service.stop().catch((stopError: unknown) => {
-          log.warn({ error: stopError }, "MemPalace federation server cleanup failed");
-        });
         return false;
       }
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      await abortableDelay(retryDelayMs, signal);
     }
   }
   return false;
@@ -67,9 +89,23 @@ async function main(): Promise<void> {
   let memPalaceRemote: MemPalaceRemoteService | null = null;
   if (appConfig.mempalaceRemoteEnabled) {
     memPalaceRemote = new MemPalaceRemoteService(appConfig, logger);
-    const started = await startMemPalaceRemoteWithRetry(memPalaceRemote, db.listAllRepos(), logger);
-    if (!started) {
-      memPalaceRemote = null;
+    // Retrying can take up to ~2 minutes; abort the wait promptly on shutdown
+    // rather than leaving the process unresponsive to SIGINT/SIGTERM for that
+    // whole window (the permanent shutdown handlers aren't registered yet).
+    const startupAbort = new AbortController();
+    const abortStartup = (): void => startupAbort.abort();
+    process.once("SIGINT", abortStartup);
+    process.once("SIGTERM", abortStartup);
+    try {
+      const started = await startMemPalaceRemoteWithRetry(memPalaceRemote, db.listAllRepos(), logger, {
+        signal: startupAbort.signal
+      });
+      if (!started) {
+        memPalaceRemote = null;
+      }
+    } finally {
+      process.off("SIGINT", abortStartup);
+      process.off("SIGTERM", abortStartup);
     }
   }
 

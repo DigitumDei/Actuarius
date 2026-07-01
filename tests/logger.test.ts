@@ -6,7 +6,7 @@ function createLogCapture(): { writer: Writable; records: Record<string, unknown
   const records: Record<string, unknown>[] = [];
   const writer = new Writable({
     write(chunk: Buffer, _encoding: string, callback: () => void) {
-      for (const line of chunk.toString().trim().split("\n")) {
+      for (const line of chunk.toString().trim().split(/\r?\n/)) {
         try {
           records.push(JSON.parse(line) as Record<string, unknown>);
         } catch {
