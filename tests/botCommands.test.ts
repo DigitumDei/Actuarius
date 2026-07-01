@@ -1577,6 +1577,7 @@ describe("ActuariusBot review command", () => {
     expect(interaction.editReply).toHaveBeenCalledWith(
       "Only the original requester or a user with `Manage Server` can run `/review` for this branch."
     );
+    expect(interaction.channel.send).not.toHaveBeenCalled();
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 

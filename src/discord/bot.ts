@@ -2793,7 +2793,6 @@ Output the result of the command or the link to the created issue.`;
     }
 
     await interaction.deferReply({ ephemeral: true });
-    await reviewThread.send("Adversarial review started.");
 
     const latestRequest = this.db.getLatestRequestWithWorkspaceByThreadId(interaction.channelId);
     if (!latestRequest?.worktree_path || !latestRequest.branch_name) {
@@ -2829,6 +2828,8 @@ Output the result of the command or the link to the created issue.`;
       await interaction.editReply(configError);
       return;
     }
+
+    await reviewThread.send("Adversarial review started.");
 
     let autoCommitted = false;
     try {
