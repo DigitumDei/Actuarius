@@ -102,7 +102,7 @@ const envSchema = z.object({
   MEMPALACE_REMOTE_ENABLED: z.string().default("false").transform((value) => value === "true"),
   MEMPALACE_REMOTE_PALACE_PATH: z.string().default("/data/mempalace/remote-palace"),
   MEMPALACE_REMOTE_BIND: z.string().default("127.0.0.1:8765"),
-  MEMPALACE_REMOTE_URL: z.string().default("http://127.0.0.1:8765"),
+  MEMPALACE_REMOTE_URL: z.string().url("MEMPALACE_REMOTE_URL must be a valid URL").default("http://127.0.0.1:8765"),
   MEMPALACE_REMOTE_NAME: z.string().default("actuarius"),
   MEMPALACE_REMOTE_TOKEN: optionalNonEmpty,
   MEMPALACE_REMOTE_TOKEN_FILE: z.string().default("/data/mempalace/server_tokens.json"),
