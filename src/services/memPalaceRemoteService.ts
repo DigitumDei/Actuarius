@@ -26,6 +26,19 @@ export interface RepoMemoryIdentity {
   fullName: string;
 }
 
+/**
+ * Thrown for deterministic startup failures that a retry cannot fix (a
+ * missing binary, a malformed existing project config) — as opposed to the
+ * federation server failing its health check, which can be transient. Callers
+ * (see memPalaceRemoteStartup.ts) use this to skip retrying.
+ */
+export class MemPalaceRemoteConfigError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = "MemPalaceRemoteConfigError";
+  }
+}
+
 export interface MemPalaceRemoteServiceOptions {
   homeDir?: string;
 }
@@ -148,7 +161,7 @@ export class MemPalaceRemoteService {
   public async start(existingRepos: RepoRow[] = []): Promise<void> {
     if (!this.config.mempalaceRemoteEnabled) return;
     if (!existsSync(this.config.mempalaceCliPath)) {
-      throw new Error("mempalace-cli binary not found at " + this.config.mempalaceCliPath);
+      throw new MemPalaceRemoteConfigError("mempalace-cli binary not found at " + this.config.mempalaceCliPath);
     }
     await this.ensureToken();
     await this.configureKnownRepositories(existingRepos);
@@ -220,7 +233,7 @@ export class MemPalaceRemoteService {
     const existingPath = (await pathExists(primaryPath)) ? primaryPath : (await pathExists(legacyPath)) ? legacyPath : null;
     if (existingPath) {
       const wing = parseProjectConfigWing(await readFile(existingPath, "utf8"));
-      if (!wing) throw new Error("Existing MemPalace project config has no wing: " + existingPath);
+      if (!wing) throw new MemPalaceRemoteConfigError("Existing MemPalace project config has no wing: " + existingPath);
       return wing;
     }
     const wing = buildRepoMemoryWing(repo);
