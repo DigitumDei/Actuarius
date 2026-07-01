@@ -177,34 +177,54 @@ describe("runOpencodeRequest", () => {
     });
   });
 
-  it("throws NOT_AUTHENTICATED when auth failure pattern matches on process error", async () => {
+  it("returns FAILED (not NOT_AUTHENTICATED) when stderr contains an auth-like phrase on process error", async () => {
+    // opencode is an agentic CLI: its own subprocesses (gh, git, build tools) can
+    // write "not authenticated"-style text to stderr for reasons unrelated to
+    // opencode's own credentials. There is no post-exec auth-pattern check
+    // anymore (only the pre-flight hasOpencodeAuth()/DEEPSEEK_API_KEY check
+    // above gates NOT_AUTHENTICATED), so this now surfaces as a generic failure.
     const err = Object.assign(
       new Error("not authenticated"),
       { stderr: "not authenticated: set an Auth method", stdout: "" },
     );
     mockSpawnCollectWithTransport.mockRejectedValueOnce(err);
     await expect(runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
-      code: "NOT_AUTHENTICATED",
+      code: "FAILED",
       name: "OpencodeExecutionError",
     });
   });
 
-  it("does NOT treat an auth-like pattern on clean-exit stdout as NOT_AUTHENTICATED (authCheckOnlyStderr)", async () => {
-    // opencode is an agentic CLI: its stdout is task output and may contain
-    // auth-like strings emitted by subprocesses it runs (e.g. a nested gemini).
-    // Per authCheckOnlyStderr, only stderr is inspected for auth failures, so a
-    // clean exit with this text on stdout must be returned as the result, not
-    // misclassified as an auth error.
-    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "API key not found. Use /opencode-auth to set one.", stderr: "" });
+  it("does not treat an auth-like phrase on stdout or stderr as NOT_AUTHENTICATED when the run produced real output", async () => {
+    // opencode's stdout is task output and stderr can carry subprocess noise
+    // (e.g. a nested gh/git auth error); neither should be misread as opencode
+    // itself being unauthenticated when the run otherwise produced output.
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({
+      stdout: "task complete: API key not found in third-party log line",
+      stderr: "gh: authentication required"
+    });
     const result = await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
-    expect(result.text).toBe("API key not found. Use /opencode-auth to set one.");
+    expect(result.text).toBe("task complete: API key not found in third-party log line");
   });
 
-  it("throws NOT_AUTHENTICATED when auth failure pattern matches on clean exit stderr", async () => {
+  it("throws EMPTY_OUTPUT with the stderr tail as diagnostic detail when stdout is blank", async () => {
+    // This is the exact false-positive scenario from #156/#157: stdout empty,
+    // stderr contains auth-sounding text from a subprocess. Previously this was
+    // misreported as NOT_AUTHENTICATED; now it's an honest EMPTY_OUTPUT with the
+    // stderr surfaced so the operator can see what actually happened.
     mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "", stderr: "API key not found. Use /opencode-auth to set one." });
     await expect(runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
-      code: "NOT_AUTHENTICATED",
+      code: "EMPTY_OUTPUT",
       name: "OpencodeExecutionError",
+      message: expect.stringContaining("API key not found. Use /opencode-auth to set one."),
+    });
+  });
+
+  it("strips trailing \\r from CRLF stderr lines in the EMPTY_OUTPUT diagnostic detail", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "", stderr: "line one\r\nline two\r\n" });
+    await expect(runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
+      code: "EMPTY_OUTPUT",
+      name: "OpencodeExecutionError",
+      message: expect.stringContaining("line one\nline two"),
     });
   });
 

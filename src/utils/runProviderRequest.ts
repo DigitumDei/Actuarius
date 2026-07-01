@@ -75,6 +75,12 @@ export interface ProviderRunnerConfig {
   transformOutput?: (stdout: string) => string;
 }
 
+/** Returns the last `count` non-empty stderr lines, joined, for use as diagnostic detail. */
+function lastMeaningfulLines(text: string | undefined, count: number): string {
+  const lines = text?.trim().split(/\r?\n/).filter((line) => line.trim().length > 0 && !line.includes("[object Object]")) ?? [];
+  return count <= 0 ? "" : lines.slice(-count).join("\n");
+}
+
 /**
  * Generic CLI runner shared by Codex and Gemini execution services.
  * Spawns the binary, handles timeout/ENOENT/empty-output errors, and returns
@@ -255,7 +261,11 @@ export async function runProviderRequest(
 
   const text = stdout.trim();
   if (!text) {
-    throw config.makeError(config.emptyOutputCode, `${config.logLabel} returned empty output.`);
+    const stderrTail = lastMeaningfulLines(stderr, 5);
+    const detail = stderrTail
+      ? `${config.logLabel} returned empty output. Last stderr output:\n${stderrTail}`
+      : `${config.logLabel} returned empty output.`;
+    throw config.makeError(config.emptyOutputCode, detail);
   }
 
   return text;

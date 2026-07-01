@@ -537,6 +537,44 @@ describe("ActuariusBot thread follow-ups", () => {
     expect(enqueue).toHaveBeenCalledTimes(1);
   });
 
+  it("replies when the latest failed request has no workspace to continue", async () => {
+    const createRequest = vi.fn();
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot({
+      createRequest,
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue(undefined),
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 872,
+        repo_id: 1,
+        channel_id: "channel-1",
+        thread_id: "thread-1",
+        user_id: "user-1",
+        prompt: "failed plan",
+        status: "failed",
+        worktree_path: null,
+        branch_name: null
+      })
+    });
+
+    const enqueue = vi.fn();
+    (bot as any).requestQueue.enqueue = enqueue;
+
+    await (bot as any).handleThreadMessage({
+      author: { bot: false, id: "user-1" },
+      guildId: "guild-1",
+      guild: { id: "guild-1" },
+      channelId: "thread-1",
+      channel: { isThread: () => true, parentId: "channel-1" },
+      content: "can you continue?",
+      reply,
+      attachments: { size: 0, values: () => [] }
+    });
+
+    expect(reply).toHaveBeenCalledWith(expect.stringContaining("no tracked worktree"));
+    expect(createRequest).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
   it("enqueues a request for attachment-only follow-up messages with fallback prompt", async () => {
     const createRequest = vi.fn().mockReturnValue({ id: 88 });
     const bot = createBot({
@@ -1117,11 +1155,10 @@ describe("ActuariusBot issues command", () => {
 
     await (bot as any).handleIssues(interaction);
 
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content:
-        "GitHub CLI is not authenticated. Configure GitHub App credentials or `GH_TOKEN`, or run `gh auth login` on the host before using /issues.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "GitHub CLI is not authenticated. Configure GitHub App credentials or `GH_TOKEN`, or run `gh auth login` on the host before using /issues."
+    );
   });
 
   it("returns an issue title list in default mode", async () => {
@@ -1536,10 +1573,11 @@ describe("ActuariusBot review command", () => {
 
     await (bot as any).handleReview(interaction);
 
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "Only the original requester or a user with `Manage Server` can run `/review` for this branch.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "Only the original requester or a user with `Manage Server` can run `/review` for this branch."
+    );
+    expect(interaction.channel.send).not.toHaveBeenCalled();
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1560,10 +1598,10 @@ describe("ActuariusBot review command", () => {
     });
     await (bot as any).handleReview(interaction);
 
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "The latest request in this thread is still queued or running. Wait for it to finish before reviewing.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "The latest request in this thread is still queued or running. Wait for it to finish before reviewing."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1741,10 +1779,10 @@ describe("ActuariusBot review command", () => {
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
     await (bot as any).handleReview(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Insufficient reviewers configured** — at least 2 reviewer slots are required for `/review`. Use `/model-select reviewer-1` and `/model-select reviewer-2` to set them up.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "**Insufficient reviewers configured** — at least 2 reviewer slots are required for `/review`. Use `/model-select reviewer-1` and `/model-select reviewer-2` to set them up."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1765,10 +1803,10 @@ describe("ActuariusBot review command", () => {
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
     await (bot as any).handleReview(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Provider unavailable** — slot 2 uses `codex` which is not available. Codex execution is not enabled on this instance (`ENABLE_CODEX_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "**Provider unavailable** — slot 2 uses `codex` which is not available. Codex execution is not enabled on this instance (`ENABLE_CODEX_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1793,10 +1831,10 @@ describe("ActuariusBot review command", () => {
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
     await (bot as any).handleReview(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Provider unavailable** — the `analyzer` role override uses `gemini` which is not available. Gemini execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "**Provider unavailable** — the `analyzer` role override uses `gemini` which is not available. Gemini execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1815,10 +1853,10 @@ describe("ActuariusBot review command", () => {
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
     await (bot as any).handleReview(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Insufficient reviewers configured** — at least 2 available AI providers are required for `/review`. Use `/model-select` to configure a second provider or ask the server administrator to enable or configure additional providers.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "**Insufficient reviewers configured** — at least 2 available AI providers are required for `/review`. Use `/model-select` to configure a second provider or ask the server administrator to enable or configure additional providers."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1906,10 +1944,10 @@ describe("ActuariusBot review command", () => {
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
     await (bot as any).handleReview(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Provider unavailable** — slot 2 uses `gemini` which is not available. Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "**Provider unavailable** — slot 2 uses `gemini` which is not available. Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1934,10 +1972,10 @@ describe("ActuariusBot review command", () => {
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
     await (bot as any).handleReview(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "**Provider unavailable** — slot 2 uses `opencode` which is not available. OpenCode execution requires an API key. Use `/opencode-auth` to configure keys (e.g. `deepseek`, `openai`, `anthropic`), or set `DEEPSEEK_API_KEY` on the instance.",
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "**Provider unavailable** — slot 2 uses `opencode` which is not available. OpenCode execution requires an API key. Use `/opencode-auth` to configure keys (e.g. `deepseek`, `openai`, `anthropic`), or set `DEEPSEEK_API_KEY` on the instance."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 
@@ -1958,10 +1996,10 @@ describe("ActuariusBot review command", () => {
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
     });
     await (bot as any).handleReview(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: '**Provider unavailable** — saved default provider `gemini` is not available. Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.',
-      ephemeral: true
-    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "**Provider unavailable** — saved default provider `gemini` is not available. Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it."
+    );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
 });
@@ -3108,12 +3146,68 @@ describe("ActuariusBot pr command", () => {
   });
 });
 
+describe("ActuariusBot plan command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("defaults /plan to iterative execution when the option is omitted", async () => {
+    const createRequest = vi.fn().mockReturnValue({ id: 120 });
+    const bot = createBot({
+      createRequest,
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 5,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      })
+    });
+    const enqueue = vi.fn();
+    const runPlanRequest = vi.fn().mockResolvedValue(undefined);
+    (bot as any).requestQueue.enqueue = enqueue;
+    (bot as any).runPlanRequest = runPlanRequest;
+
+    const thread = {
+      id: "thread-plan-1",
+      send: vi.fn().mockResolvedValue(undefined)
+    };
+    const seedMessage = {
+      startThread: vi.fn().mockResolvedValue(thread)
+    };
+    const repoChannel = {
+      type: ChannelType.GuildText,
+      send: vi.fn().mockResolvedValue(seedMessage)
+    };
+    const interaction = createInteraction({
+      channelId: "channel-1",
+      channel: { isThread: () => false },
+      user: { id: "user-1", tag: "user#0001" },
+      guild: {
+        id: "guild-1",
+        name: "Guild",
+        channels: { fetch: vi.fn().mockResolvedValue(repoChannel) }
+      },
+      options: {
+        getString: vi.fn().mockReturnValue("Do the thing"),
+        getBoolean: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handlePlan(interaction);
+    await enqueue.mock.calls[0]![1]();
+
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("(iterative)"));
+    expect(runPlanRequest).toHaveBeenCalledWith(expect.objectContaining({ iterative: true }));
+  });
+});
+
 describe("ActuariusBot plan runner", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  it("deletes the request worktree when plan execution fails after creation", async () => {
+  it("preserves the request worktree when single-shot implementation fails after creation", async () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const updateRequestStatus = vi.fn();
     const updateRequestWorkspace = vi.fn();
@@ -3136,7 +3230,9 @@ describe("ActuariusBot plan runner", () => {
       packages: [],
       env: {}
     });
-    (bot as any).runProviderText = vi.fn().mockRejectedValue(new Error("planner failed"));
+    (bot as any).runProviderText = vi.fn()
+      .mockResolvedValueOnce("plan text")
+      .mockRejectedValueOnce(new Error("implementer failed"));
 
     await (bot as any).runPlanRequest({
       requestId: 91,
@@ -3149,25 +3245,77 @@ describe("ActuariusBot plan runner", () => {
       },
       prompt: "Do the thing",
       planner: { provider: "claude" },
-      implementer: { provider: "claude" }
+      implementer: { provider: "claude" },
+      iterative: false
     });
 
     expect(updateRequestStatus).toHaveBeenCalledWith(91, "failed");
-    expect(deleteRequestBranch).toHaveBeenCalledWith(
-      "/data/repos",
-      {
+    expect(deleteRequestBranch).not.toHaveBeenCalled();
+    expect(updateRequestWorkspace).toHaveBeenCalledTimes(1);
+    expect(updateRequestWorkspace).toHaveBeenCalledWith(91, "/tmp/worktree-plan", "ask/91-123");
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Plan request failed during implementing"));
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("remains attached"));
+  });
+
+  it("does not mask the plan failure when the preserved worktree notice cannot be sent", async () => {
+    const noticeError = new Error("thread archived");
+    const send = vi.fn().mockImplementation(async (content: string) => {
+      if (content.includes("remains attached")) {
+        throw noticeError;
+      }
+    });
+    const updateRequestStatus = vi.fn();
+    const updateRequestWorkspace = vi.fn();
+    const warn = vi.spyOn(logger, "warn");
+    const bot = createBot({
+      updateRequestStatus,
+      updateRequestWorkspace
+    });
+
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan",
+      branchName: "ask/95-123"
+    });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn()
+      .mockResolvedValueOnce("plan text")
+      .mockRejectedValueOnce(new Error("implementer failed"));
+
+    await expect((bot as any).runPlanRequest({
+      requestId: 95,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: {
         owner: "octocat",
         repo: "hello-world",
         fullName: "octocat/hello-world"
       },
+      prompt: "Do the thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      iterative: false
+    })).resolves.toBeUndefined();
+
+    expect(updateRequestStatus).toHaveBeenCalledWith(95, "failed");
+    expect(updateRequestWorkspace).toHaveBeenCalledWith(95, "/tmp/worktree-plan", "ask/95-123");
+    expect(warn).toHaveBeenCalledWith(
       {
-        branchName: "ask/91-123",
-        worktreePath: "/tmp/worktree-plan"
-      }
+        error: noticeError,
+        requestId: 95,
+        worktreePath: "/tmp/worktree-plan",
+        branchName: "ask/95-123"
+      },
+      "Failed to send preserved worktree notice"
     );
-    expect(updateRequestWorkspace).toHaveBeenNthCalledWith(1, 91, "/tmp/worktree-plan", "ask/91-123");
-    expect(updateRequestWorkspace).toHaveBeenNthCalledWith(2, 91, null, null);
-    expect(send).toHaveBeenCalledWith(expect.stringContaining("Plan request failed during planning"));
+    warn.mockRestore();
   });
 
   it("preserves worktree when iterative loop fails so /revise can continue", async () => {
@@ -3663,7 +3811,7 @@ describe("ActuariusBot plan runner", () => {
     expect(updateRequestStatus).toHaveBeenCalledWith(95, "succeeded");
   });
 
-  it("planner/implementer errors mark failed and clean up worktree", async () => {
+  it("preserves worktree when planner errors after worktree creation", async () => {
     vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
     vi.mocked(createRequestWorktree).mockResolvedValue({
       path: "/tmp/worktree-plan",
@@ -3696,8 +3844,11 @@ describe("ActuariusBot plan runner", () => {
     });
 
     expect(updateRequestStatus).toHaveBeenCalledWith(96, "failed");
-    expect(deleteRequestBranch).toHaveBeenCalled();
+    expect(deleteRequestBranch).not.toHaveBeenCalled();
+    expect(updateRequestWorkspace).toHaveBeenCalledTimes(1);
+    expect(updateRequestWorkspace).toHaveBeenCalledWith(96, "/tmp/worktree-plan", "ask/96-123");
     expect(send).toHaveBeenCalledWith(expect.stringContaining("Plan request failed during planning"));
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("remains attached"));
   });
 });
 

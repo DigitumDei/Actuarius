@@ -8,7 +8,7 @@ export function buildHelpText(): string {
     "- `/repos` List connected repos and their channels.",
     "- `/issues [mode:<list|summary|detail>] [issue:<number>]` Read open GitHub issues for the connected repo.",
     "- `/ask prompt:<text>` Create a new request thread and run AI in an isolated worktree.",
-    "- `/plan prompt:<text> [iterative:true]` Create a request thread, run a planner, then run an implementer (with `iterative`, breaks into per-task implementation and verification).",
+    "- `/plan prompt:<text> [iterative:false]` Create a request thread, run a planner, then run iterative per-task implementation and verification by default.",
     "- `/install [package:<allowed-package-id>] [apt-package:<deb-specs>] scope:<repo|request>` Install an allowlisted tool or apt package (admin only; specify exactly one of `package` or `apt-package`).",
     "- `/review` Run adversarial code review on the current request worktree, including staged, unstaged, and untracked changes. Auto-commits any pending work before diffing (request owner or Manage Server).",
     "- `/revise [findings:<text>]` Re-run planner-verified implementation on the current request thread. Findings can be provided explicitly or will be pulled from the latest review summary (request owner or Manage Server).",
