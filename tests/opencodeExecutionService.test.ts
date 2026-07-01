@@ -219,6 +219,15 @@ describe("runOpencodeRequest", () => {
     });
   });
 
+  it("strips trailing \\r from CRLF stderr lines in the EMPTY_OUTPUT diagnostic detail", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "", stderr: "line one\r\nline two\r\n" });
+    await expect(runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
+      code: "EMPTY_OUTPUT",
+      name: "OpencodeExecutionError",
+      message: expect.stringContaining("line one\nline two"),
+    });
+  });
+
   it("throws TIMEOUT when process times out (ETIMEDOUT)", async () => {
     const err = Object.assign(new Error("timed out"), { code: "ETIMEDOUT", killed: true, signal: "SIGTERM" });
     mockSpawnCollectWithTransport.mockRejectedValueOnce(err);

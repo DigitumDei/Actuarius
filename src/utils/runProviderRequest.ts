@@ -77,8 +77,8 @@ export interface ProviderRunnerConfig {
 
 /** Returns the last `count` non-empty stderr lines, joined, for use as diagnostic detail. */
 function lastMeaningfulLines(text: string | undefined, count: number): string {
-  const lines = text?.trim().split("\n").filter((line) => line.trim().length > 0 && !line.includes("[object Object]")) ?? [];
-  return lines.slice(-count).join("\n");
+  const lines = text?.trim().split(/\r?\n/).filter((line) => line.trim().length > 0 && !line.includes("[object Object]")) ?? [];
+  return count <= 0 ? "" : lines.slice(-count).join("\n");
 }
 
 /**
