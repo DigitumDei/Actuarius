@@ -30,5 +30,9 @@ enable_codex_execution  = true
 enable_gemini_execution = true
 gemini_api_key          = "replace_me"
 
-# Enable MemPalace persistent cross-request memory
-enable_mempalace = true
+# Enable MemPalace persistent cross-request memory and repo federation
+enable_mempalace        = true
+enable_mempalace_remote = true
+# Optional MemPalace remote overrides; leave blank to use app defaults.
+# mempalace_remote_token = "replace_me_or_omit_to_generate"
+# mempalace_remote_mine_on_sync = "true"

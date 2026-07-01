@@ -483,6 +483,17 @@ export class AppDatabase {
     }));
   }
 
+  public listAllRepos(): RepoRow[] {
+    const rows = z.array(repoRowRawSchema).parse(
+      this.db.prepare("SELECT * FROM repos ORDER BY guild_id ASC, created_at ASC").all()
+    );
+
+    return rows.map((row) => ({
+      ...row,
+      id: toNumber(row.id)
+    }));
+  }
+
   public createRepo(input: {
     guildId: string;
     owner: string;

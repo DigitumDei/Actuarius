@@ -41,23 +41,32 @@ resource "google_compute_instance" "actuarius" {
   # bootstrapper that pulls the real script from metadata, so metadata changes
   # never force VM recreation.
   metadata = {
-    env-discord-token              = var.discord_token
-    env-discord-client-id          = var.discord_client_id
-    env-discord-guild-id           = var.discord_guild_id
-    env-gh-token                   = var.gh_token
-    env-github-app-id              = var.github_app_id
-    env-github-app-installation-id = var.github_app_installation_id
-    env-github-app-private-key-b64 = var.github_app_private_key_b64
-    env-claude-oauth-token         = var.claude_oauth_token
-    env-docker-image               = var.docker_image
-    env-ask-concurrency            = var.ask_concurrency
-    env-enable-codex-execution     = var.enable_codex_execution
-    env-enable-gemini-execution    = var.enable_gemini_execution
-    env-enable-opencode-execution  = var.enable_opencode_execution
-    env-enable-mempalace           = var.enable_mempalace
-    env-gemini-api-key             = var.gemini_api_key
-    env-redeploy-script            = file("${path.module}/../scripts/redeploy.sh")
-    env-startup-script             = file("${path.module}/startup.sh")
+    env-discord-token                    = var.discord_token
+    env-discord-client-id                = var.discord_client_id
+    env-discord-guild-id                 = var.discord_guild_id
+    env-gh-token                         = var.gh_token
+    env-github-app-id                    = var.github_app_id
+    env-github-app-installation-id       = var.github_app_installation_id
+    env-github-app-private-key-b64       = var.github_app_private_key_b64
+    env-claude-oauth-token               = var.claude_oauth_token
+    env-docker-image                     = var.docker_image
+    env-ask-concurrency                  = var.ask_concurrency
+    env-enable-codex-execution           = var.enable_codex_execution
+    env-enable-gemini-execution          = var.enable_gemini_execution
+    env-enable-opencode-execution        = var.enable_opencode_execution
+    env-enable-mempalace                 = var.enable_mempalace
+    env-enable-mempalace-remote          = var.enable_mempalace_remote
+    env-mempalace-remote-url             = var.mempalace_remote_url
+    env-mempalace-remote-bind            = var.mempalace_remote_bind
+    env-mempalace-remote-name            = var.mempalace_remote_name
+    env-mempalace-remote-token           = var.mempalace_remote_token
+    env-mempalace-remote-timeout-ms      = var.mempalace_remote_timeout_ms
+    env-mempalace-remote-mine-on-sync    = var.mempalace_remote_mine_on_sync
+    env-mempalace-remote-mine-timeout-ms = var.mempalace_remote_mine_timeout_ms
+    env-mempalace-remote-mine-batch-size = var.mempalace_remote_mine_batch_size
+    env-gemini-api-key                   = var.gemini_api_key
+    env-redeploy-script                  = file("${path.module}/../scripts/redeploy.sh")
+    env-startup-script                   = file("${path.module}/startup.sh")
   }
 
   # Static bootstrapper — pulls the real startup script from metadata and runs it.

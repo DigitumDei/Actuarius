@@ -68,6 +68,7 @@ import { InstallService, InstallServiceError } from "../services/installService.
 import { buildAptPackageId, getAptPackageSpec, isAptPackageId } from "../services/installerRegistry.js";
 import { createRequestWorktree, deleteRequestBranch, RequestWorktreeError } from "../services/requestWorktreeService.js";
 import { MemPalaceClient } from "../services/memPalaceClient.js";
+import { MemPalaceRemoteService, type RepoMemoryIdentity } from "../services/memPalaceRemoteService.js";
 import { createDraftPullRequest, PullRequestServiceError } from "../services/pullRequestService.js";
 import {
   AttachmentError,
@@ -440,8 +441,15 @@ export class ActuariusBot {
   private readonly requestQueue: RequestExecutionQueue;
   private readonly installService: InstallService;
   private readonly memPalace: MemPalaceClient | null;
+  private readonly memPalaceRemote: MemPalaceRemoteService | null;
 
-  public constructor(config: AppConfig, logger: pino.Logger, db: AppDatabase, memPalace: MemPalaceClient | null = null) {
+  public constructor(
+    config: AppConfig,
+    logger: pino.Logger,
+    db: AppDatabase,
+    memPalace: MemPalaceClient | null = null,
+    memPalaceRemote: MemPalaceRemoteService | null = null
+  ) {
     this.config = config;
     this.logger = logger;
     this.db = db;
@@ -456,6 +464,7 @@ export class ActuariusBot {
     );
     this.installService = new InstallService(config, logger, db);
     this.memPalace = memPalace;
+    this.memPalaceRemote = memPalaceRemote;
     this.client = new Client({
       // MessageContent is a privileged intent — must be enabled in the Discord Developer Portal
       intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
@@ -766,6 +775,40 @@ export class ActuariusBot {
     return this.db.getRepoByChannelId(interaction.guildId, resolvedChannelId) ?? null;
   }
 
+  private toRepoMemoryIdentity(repo: RepoRow | { owner: string; repo: string; fullName: string }): RepoMemoryIdentity {
+    if ("fullName" in repo) {
+      return { owner: repo.owner, repo: repo.repo, fullName: repo.fullName };
+    }
+    return { owner: repo.owner, repo: repo.repo, fullName: repo.full_name };
+  }
+
+  private async prepareRepositoryMemory(
+    repo: RepoRow | { owner: string; repo: string; fullName: string },
+    checkoutPath: string,
+    options: { queueMine?: boolean } = {}
+  ): Promise<void> {
+    if (!this.memPalaceRemote) return;
+    const identity = this.toRepoMemoryIdentity(repo);
+    try {
+      await this.memPalaceRemote.registerRepository(identity, checkoutPath, options);
+    } catch (error) {
+      this.logger.warn({ error, repo: identity.fullName, checkoutPath }, "MemPalace remote repository registration failed");
+    }
+  }
+
+  private async prepareWorktreeMemoryConfig(
+    repo: RepoRow | { owner: string; repo: string; fullName: string },
+    worktreePath: string
+  ): Promise<void> {
+    if (!this.memPalaceRemote) return;
+    const identity = this.toRepoMemoryIdentity(repo);
+    try {
+      await this.memPalaceRemote.ensureWorktreeConfig(identity, worktreePath);
+    } catch (error) {
+      this.logger.warn({ error, repo: identity.fullName, worktreePath }, "MemPalace worktree config preparation failed");
+    }
+  }
+
   private async handleConnectRepo(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guild || !interaction.guildId) {
       await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
@@ -806,6 +849,7 @@ export class ActuariusBot {
     try {
       const lookup = await lookupRepo(parsedReference);
       const checkout = await ensureRepoCheckedOutToMaster(this.config.reposRootPath, lookup);
+      await this.prepareRepositoryMemory(lookup, checkout.localPath, { queueMine: true });
 
       const channelName = buildRepoChannelName(
         lookup.owner,
@@ -951,6 +995,7 @@ export class ActuariusBot {
           repo: repo.repo,
           fullName: repo.full_name
         });
+        await this.prepareRepositoryMemory(repo, checkout.localPath, { queueMine: true });
         const summaryText = await this.summarizeIssues({
           repoFullName: repo.full_name,
           issues,
@@ -1029,6 +1074,7 @@ export class ActuariusBot {
         repo: repo.repo,
         fullName: repo.full_name
       });
+      await this.prepareRepositoryMemory(repo, checkout.localPath, { queueMine: true });
 
       await interaction.editReply(
         [`Synced \`${repo.full_name}\`.`, `Checked out \`master\` at \`${checkout.localPath}\`.`].join("\n")
@@ -3436,6 +3482,7 @@ Output the result of the command or the link to the created issue.`;
         repo: input.repo.repo,
         fullName: input.repo.fullName
       });
+      await this.prepareRepositoryMemory(input.repo, checkout.localPath, { queueMine: true });
       this.logger.info({ requestId: input.requestId, checkoutPath: checkout.localPath }, "Repository sync complete for plan request");
 
       stage = "create-worktree";
@@ -3446,6 +3493,7 @@ Output the result of the command or the link to the created issue.`;
       }, input.requestId);
       worktreePath = worktree.path;
       branchName = worktree.branchName;
+      await this.prepareWorktreeMemoryConfig(input.repo, worktreePath);
       this.db.updateRequestWorkspace(input.requestId, worktreePath, branchName);
 
       const executionEnvironment = this.installService.buildMinimalExecutionEnvironment({
@@ -3706,6 +3754,7 @@ Output the result of the command or the link to the created issue.`;
         this.logger.error({ requestId: input.requestId, worktreePath: input.worktreePath }, "Revise request worktree no longer exists");
         return;
       }
+      await this.prepareWorktreeMemoryConfig(input.repo, input.worktreePath);
       const reviewDiff = await getReviewDiff(input.worktreePath, { headRef: input.branchName, excludePaths: ["docs/reviews/**"] });
       const currentDiff = reviewDiff.diffText;
 
@@ -3906,6 +3955,7 @@ Output the result of the command or the link to the created issue.`;
 
       if (input.existingWorktreePath) {
         worktreePath = input.existingWorktreePath;
+        await this.prepareWorktreeMemoryConfig(input.repo, worktreePath);
         this.logger.info({ requestId: input.requestId, worktreePath, branchName }, "Reusing existing worktree for follow-up");
       } else {
         stage = "sync-repo";
@@ -3915,6 +3965,7 @@ Output the result of the command or the link to the created issue.`;
           repo: input.repo.repo,
           fullName: input.repo.fullName
         });
+        await this.prepareRepositoryMemory(input.repo, checkout.localPath, { queueMine: true });
         this.logger.info({ requestId: input.requestId, repo: input.repo.fullName }, "Repository sync complete");
 
         stage = "create-worktree";
@@ -3931,6 +3982,7 @@ Output the result of the command or the link to the created issue.`;
         );
         worktreePath = worktree.path;
         branchName = worktree.branchName;
+        await this.prepareWorktreeMemoryConfig(input.repo, worktreePath);
         this.logger.info(
           { requestId: input.requestId, branchName: worktree.branchName, worktreePath: worktree.path },
           "Request worktree created"

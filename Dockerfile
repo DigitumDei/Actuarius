@@ -35,14 +35,18 @@ FROM base AS runtime
 
 WORKDIR /app
 
-# Download mempalace-mcp binary from the public nightly release on mempalace-rs.
+# Download MemPalace binaries from the public nightly release on mempalace-rs.
 # No auth required — public release assets are unauthenticated.
-# If the download fails the binary is simply not installed and MEMPALACE_ENABLED has no effect.
+# If the download fails the binaries are simply not installed and MemPalace has no effect.
 RUN curl -fsSL \
       https://github.com/DigitumDei/mempalace-rs/releases/download/nightly/mempalace-mcp-linux-x86_64 \
       -o /usr/local/bin/mempalace-mcp \
     && chmod 0755 /usr/local/bin/mempalace-mcp \
-    || echo "WARNING: Failed to download mempalace-mcp binary — MemPalace will be unavailable"
+    && curl -fsSL \
+      https://github.com/DigitumDei/mempalace-rs/releases/download/nightly/mempalace-cli-linux-x86_64 \
+      -o /usr/local/bin/mempalace-cli \
+    && chmod 0755 /usr/local/bin/mempalace-cli \
+    || echo "WARNING: Failed to download MemPalace binaries — MemPalace will be unavailable"
 
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/data/app.db

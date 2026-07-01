@@ -98,6 +98,18 @@ const envSchema = z.object({
     .transform((value) => value === "true"),
   MEMPALACE_PALACE_PATH: z.string().default("/data/mempalace/palace"),
   MEMPALACE_BINARY_PATH: z.string().default("/usr/local/bin/mempalace-mcp"),
+  MEMPALACE_CLI_PATH: z.string().default("/usr/local/bin/mempalace-cli"),
+  MEMPALACE_REMOTE_ENABLED: z.string().default("false").transform((value) => value === "true"),
+  MEMPALACE_REMOTE_PALACE_PATH: z.string().default("/data/mempalace/remote-palace"),
+  MEMPALACE_REMOTE_BIND: z.string().default("127.0.0.1:8765"),
+  MEMPALACE_REMOTE_URL: z.string().url("MEMPALACE_REMOTE_URL must be a valid URL").default("http://127.0.0.1:8765"),
+  MEMPALACE_REMOTE_NAME: z.string().default("actuarius"),
+  MEMPALACE_REMOTE_TOKEN: optionalNonEmpty,
+  MEMPALACE_REMOTE_TOKEN_FILE: z.string().default("/data/mempalace/server_tokens.json"),
+  MEMPALACE_REMOTE_TIMEOUT_MS: z.string().default("5000").transform((value) => Number.parseInt(value, 10)).refine((value) => Number.isFinite(value) && value > 0, "MEMPALACE_REMOTE_TIMEOUT_MS must be a positive number"),
+  MEMPALACE_REMOTE_MINE_ON_SYNC: z.string().default("true").transform((value) => value === "true"),
+  MEMPALACE_REMOTE_MINE_TIMEOUT_MS: z.string().default("2700000").transform((value) => Number.parseInt(value, 10)).refine((value) => Number.isFinite(value) && value > 0, "MEMPALACE_REMOTE_MINE_TIMEOUT_MS must be a positive number"),
+  MEMPALACE_REMOTE_MINE_BATCH_SIZE: z.string().default("0").transform((value) => Number.parseInt(value, 10)).refine((value) => Number.isFinite(value) && value >= 0, "MEMPALACE_REMOTE_MINE_BATCH_SIZE must be a non-negative number"),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -135,8 +147,12 @@ const databaseDirectory = dirname(rawConfig.DATABASE_PATH);
 mkdirSync(databaseDirectory, { recursive: true });
 mkdirSync(rawConfig.REPOS_ROOT_PATH, { recursive: true });
 mkdirSync(rawConfig.INSTALLS_ROOT_PATH, { recursive: true });
-if (rawConfig.MEMPALACE_ENABLED) {
+if (rawConfig.MEMPALACE_ENABLED || rawConfig.MEMPALACE_REMOTE_ENABLED) {
   mkdirSync(rawConfig.MEMPALACE_PALACE_PATH, { recursive: true });
+}
+if (rawConfig.MEMPALACE_REMOTE_ENABLED) {
+  mkdirSync(rawConfig.MEMPALACE_REMOTE_PALACE_PATH, { recursive: true });
+  mkdirSync(dirname(rawConfig.MEMPALACE_REMOTE_TOKEN_FILE), { recursive: true });
 }
 const githubCliConfigPath = resolve(rawConfig.REPOS_ROOT_PATH, "..", ".gh");
 mkdirSync(githubCliConfigPath, { recursive: true });
@@ -174,6 +190,18 @@ export const appConfig = {
   mempalaceEnabled: rawConfig.MEMPALACE_ENABLED,
   mempalacePalacePath: rawConfig.MEMPALACE_PALACE_PATH,
   mempalaceBinaryPath: rawConfig.MEMPALACE_BINARY_PATH,
+  mempalaceCliPath: rawConfig.MEMPALACE_CLI_PATH,
+  mempalaceRemoteEnabled: rawConfig.MEMPALACE_REMOTE_ENABLED,
+  mempalaceRemotePalacePath: rawConfig.MEMPALACE_REMOTE_PALACE_PATH,
+  mempalaceRemoteBind: rawConfig.MEMPALACE_REMOTE_BIND,
+  mempalaceRemoteUrl: rawConfig.MEMPALACE_REMOTE_URL,
+  mempalaceRemoteName: rawConfig.MEMPALACE_REMOTE_NAME,
+  mempalaceRemoteToken: rawConfig.MEMPALACE_REMOTE_TOKEN,
+  mempalaceRemoteTokenFile: rawConfig.MEMPALACE_REMOTE_TOKEN_FILE,
+  mempalaceRemoteTimeoutMs: rawConfig.MEMPALACE_REMOTE_TIMEOUT_MS,
+  mempalaceRemoteMineOnSync: rawConfig.MEMPALACE_REMOTE_MINE_ON_SYNC,
+  mempalaceRemoteMineTimeoutMs: rawConfig.MEMPALACE_REMOTE_MINE_TIMEOUT_MS,
+  mempalaceRemoteMineBatchSize: rawConfig.MEMPALACE_REMOTE_MINE_BATCH_SIZE,
 };
 
 export type AppConfig = typeof appConfig;
