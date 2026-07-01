@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import pino from "pino";
-import type { MemPalaceRemoteService } from "../src/services/memPalaceRemoteService.js";
-import { startMemPalaceRemoteWithRetry } from "../src/index.js";
+import { MemPalaceRemoteConfigError, type MemPalaceRemoteService } from "../src/services/memPalaceRemoteService.js";
+import { startMemPalaceRemoteWithRetry } from "../src/services/memPalaceRemoteStartup.js";
 
 const logger = pino({ level: "silent" });
 
@@ -86,23 +86,15 @@ describe("startMemPalaceRemoteWithRetry", () => {
     expect(service.start).not.toHaveBeenCalled();
   });
 
-  it("defaults to 4 attempts and a 20s delay when no options are given", async () => {
-    vi.useFakeTimers();
-    try {
-      let calls = 0;
-      const service = createMockService(() => {
-        calls += 1;
-        return calls < 2 ? Promise.reject(new Error("not healthy yet")) : Promise.resolve();
-      });
+  it("does not retry a deterministic MemPalaceRemoteConfigError (e.g. missing binary or malformed config)", async () => {
+    const service = createMockService(() => Promise.reject(new MemPalaceRemoteConfigError("mempalace-cli binary not found")));
 
-      const resultPromise = startMemPalaceRemoteWithRetry(service, [], logger);
-      await vi.advanceTimersByTimeAsync(20_000);
-      const result = await resultPromise;
+    const result = await startMemPalaceRemoteWithRetry(service, [], logger, { maxAttempts: 4, retryDelayMs: 1 });
 
-      expect(result).toBe(true);
-      expect(service.start).toHaveBeenCalledTimes(2);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(result).toBe(false);
+    // A config error can't resolve itself between attempts, so only one
+    // start() call — retrying would just waste up to ~2 minutes for nothing.
+    expect(service.start).toHaveBeenCalledTimes(1);
+    expect(service.stop).toHaveBeenCalledTimes(1);
   });
 });
