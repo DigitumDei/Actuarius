@@ -212,11 +212,21 @@ const ITERATIVE_OVERVIEW_LIMIT = 2_000;
 
 export function stripMarkdownJsonFence(text: string): string {
   const trimmed = text.trim();
-  const jsonMatch = /```(?:json)?[^\S\r\n]*\r?\n?([\s\S]*?)\r?\n?```/iu.exec(trimmed);
-  if (jsonMatch?.[1]) {
-    return jsonMatch[1].trim();
+  const lines = trimmed.split(/\r?\n/u);
+  const openingFenceIndex = lines.findIndex((line) => /^[\t ]*```(?:json)?[\t ]*$/iu.test(line));
+  if (openingFenceIndex < 0) {
+    return trimmed;
   }
-  return trimmed;
+
+  const closingFenceOffset = lines
+    .slice(openingFenceIndex + 1)
+    .findIndex((line) => /^[\t ]*```[\t ]*$/u.test(line));
+  if (closingFenceOffset < 0) {
+    return trimmed;
+  }
+
+  const closingFenceIndex = openingFenceIndex + closingFenceOffset + 1;
+  return lines.slice(openingFenceIndex + 1, closingFenceIndex).join("\n").trim();
 }
 
 function truncateText(text: string, limit: number): string {
@@ -227,33 +237,97 @@ function truncateText(text: string, limit: number): string {
   return `${normalized.slice(0, limit - 3).trimEnd()}...`;
 }
 
-export function parseIterativePlan(text: string): { overview: string; tasks: IterativePlanTask[] } | null {
-  const stripped = stripMarkdownJsonFence(text);
+function normalizeIterativePlan(parsed: unknown): { overview: string; tasks: IterativePlanTask[] } | null {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const candidate = parsed as { overview?: unknown; tasks?: unknown };
+  if (typeof candidate.overview !== "string" || candidate.overview.trim().length === 0 || !Array.isArray(candidate.tasks) || candidate.tasks.length === 0) {
+    return null;
+  }
+  const tasks = candidate.tasks.flatMap((task) => {
+    if (!task || typeof task.title !== "string" || typeof task.description !== "string") {
+      return [];
+    }
+    const title = truncateText(task.title.replace(/\s+/g, " "), ITERATIVE_TASK_TITLE_LIMIT);
+    const description = truncateText(task.description, ITERATIVE_TASK_DESCRIPTION_LIMIT);
+    if (!title || !description) {
+      return [];
+    }
+    return [{ title, description }];
+  });
+  if (tasks.length === 0) return null;
+  return { overview: truncateText(candidate.overview, ITERATIVE_OVERVIEW_LIMIT), tasks };
+}
+
+function parseIterativePlanCandidate(text: string): { overview: string; tasks: IterativePlanTask[] } | null {
   try {
-    const parsed = JSON.parse(stripped) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return null;
-    }
-    const candidate = parsed as { overview?: unknown; tasks?: unknown };
-    if (typeof candidate.overview !== "string" || candidate.overview.trim().length === 0 || !Array.isArray(candidate.tasks) || candidate.tasks.length === 0) {
-      return null;
-    }
-    const tasks = candidate.tasks.flatMap((task) => {
-      if (!task || typeof task.title !== "string" || typeof task.description !== "string") {
-        return [];
-      }
-      const title = truncateText(task.title.replace(/\s+/g, " "), ITERATIVE_TASK_TITLE_LIMIT);
-      const description = truncateText(task.description, ITERATIVE_TASK_DESCRIPTION_LIMIT);
-      if (!title || !description) {
-        return [];
-      }
-      return [{ title, description }];
-    });
-    if (tasks.length === 0) return null;
-    return { overview: truncateText(candidate.overview, ITERATIVE_OVERVIEW_LIMIT), tasks };
+    return normalizeIterativePlan(JSON.parse(text) as unknown);
   } catch {
     return null;
   }
+}
+
+function extractBalancedJsonObject(text: string, startIndex: number): string | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = startIndex; index < text.length; index++) {
+    const character = text[index]!;
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === "\"") {
+      inString = true;
+    } else if (character === "{") {
+      depth++;
+    } else if (character === "}") {
+      depth--;
+      if (depth === 0) {
+        return text.slice(startIndex, index + 1);
+      }
+      if (depth < 0) {
+        return null;
+      }
+    }
+  }
+
+  return null;
+}
+
+export function parseIterativePlan(text: string): { overview: string; tasks: IterativePlanTask[] } | null {
+  const trimmed = text.trim();
+  const stripped = stripMarkdownJsonFence(trimmed);
+  const directCandidates = stripped === trimmed ? [trimmed] : [trimmed, stripped];
+
+  for (const candidate of directCandidates) {
+    const parsed = parseIterativePlanCandidate(candidate);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  for (let startIndex = trimmed.indexOf("{"); startIndex >= 0; startIndex = trimmed.indexOf("{", startIndex + 1)) {
+    const candidate = extractBalancedJsonObject(trimmed, startIndex);
+    if (!candidate) {
+      continue;
+    }
+    const parsed = parseIterativePlanCandidate(candidate);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  return null;
 }
 
 function splitPlainTextForDiscord(text: string, header?: string): string[] {

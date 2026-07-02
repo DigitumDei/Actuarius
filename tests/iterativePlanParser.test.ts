@@ -46,6 +46,63 @@ describe("iterative plan parsing", () => {
     });
   });
 
+  it("does not treat triple backticks inside JSON strings as an outer fence", () => {
+    const text = JSON.stringify({
+      overview: "Fix Markdown handling",
+      tasks: [{
+        title: "Escape fences",
+        description: "Replace /```/gu and preserve the closing ``` marker"
+      }]
+    });
+
+    expect(stripMarkdownJsonFence(text)).toBe(text);
+    expect(parseIterativePlan(text)).toEqual({
+      overview: "Fix Markdown handling",
+      tasks: [{
+        title: "Escape fences",
+        description: "Replace /```/gu and preserve the closing ``` marker"
+      }]
+    });
+  });
+
+  it("parses fenced JSON containing triple backticks in string values", () => {
+    const plan = JSON.stringify({
+      overview: "Fix Markdown handling",
+      tasks: [{
+        title: "Escape fences",
+        description: "Ensure ``` inside a description does not close the outer fence"
+      }]
+    }, null, 2);
+    const text = `Here is the plan:\n\`\`\`json\n${plan}\n\`\`\`\nTrailing note.`;
+
+    expect(parseIterativePlan(text)).toEqual({
+      overview: "Fix Markdown handling",
+      tasks: [{
+        title: "Escape fences",
+        description: "Ensure ``` inside a description does not close the outer fence"
+      }]
+    });
+  });
+
+  it("extracts a balanced plan object from surrounding prose", () => {
+    const plan = JSON.stringify({
+      overview: "Fix parser recovery",
+      tasks: [{
+        title: "Extract JSON",
+        description: "Ignore prose and braces like {this} inside JSON strings"
+      }]
+    }, null, 2);
+    const text = `I have enough context to produce the plan.\n\n${plan}\n\`\`\`\nDone.`;
+
+    expect(parseIterativePlan(text)).toEqual({
+      overview: "Fix parser recovery",
+      tasks: [{
+        title: "Extract JSON",
+        description: "Ignore prose and braces like {this} inside JSON strings"
+      }]
+    });
+  });
+
   it("returns null for non-object JSON primitives", () => {
     expect(parseIterativePlan("null")).toBeNull();
     expect(parseIterativePlan("\"hello\"")).toBeNull();
