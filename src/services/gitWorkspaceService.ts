@@ -662,14 +662,12 @@ export async function getUnstagedDiffSummary(worktreePath: string, logger?: Logg
     const result = await runGitWithOutput(["diff"], { cwd: worktreePath });
     const trimmed = result.stdout.trim();
     if (trimmed.length > 1800) {
-      return await fallbackToStatOrNames(worktreePath, logger) || trimmed;
+      return await fallbackToStatOrNames(worktreePath, logger) || "";
     }
     return trimmed;
   } catch (error) {
     const spawnError = error as { code?: string; stdout?: string };
-    if (spawnError.code === "EMSGSIZE") {
-      logger?.warn({ error, worktreePath }, "getUnstagedDiffSummary EMSGSIZE — falling back to --stat/--name-only");
-    }
+    logger?.warn({ error, worktreePath }, "getUnstagedDiffSummary primary diff failed — falling back to --stat/--name-only");
     const fallback = await fallbackToStatOrNames(worktreePath, logger);
     if (fallback) return fallback;
     return "";
@@ -681,14 +679,12 @@ export async function getStagedDiffSummary(worktreePath: string, logger?: Logger
     const result = await runGitWithOutput(["diff", "--cached"], { cwd: worktreePath });
     const trimmed = result.stdout.trim();
     if (trimmed.length > 1800) {
-      return await fallbackToCachedStatOrNames(worktreePath, logger) || trimmed;
+      return await fallbackToCachedStatOrNames(worktreePath, logger) || "";
     }
     return trimmed;
   } catch (error) {
     const spawnError = error as { code?: string; stdout?: string };
-    if (spawnError.code === "EMSGSIZE") {
-      logger?.warn({ error, worktreePath }, "getStagedDiffSummary EMSGSIZE — falling back to --stat/--name-only");
-    }
+    logger?.warn({ error, worktreePath }, "getStagedDiffSummary primary diff failed — falling back to --stat/--name-only");
     const fallback = await fallbackToCachedStatOrNames(worktreePath, logger);
     if (fallback) return fallback;
     return "";

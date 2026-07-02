@@ -135,8 +135,18 @@ function isActiveRequestStatus(status: RequestStatus): boolean {
   return status === "queued" || status === "running" || status === "install_approved" || status === "install_running";
 }
 
-function escapeDiscordFence(input: string): string {
-  return input.replace(/```/gu, "`\u200B``");
+export function escapeDiscordFence(input: string): string {
+  return input.replace(/`{3,}/gu, (match) => {
+    if (match.length === 3) return "`\u200B``";
+    let result = "";
+    for (let i = 0; i < match.length; i++) {
+      result += "`";
+      if (i < match.length - 1) {
+        result += "\u200B";
+      }
+    }
+    return result;
+  });
 }
 
 function clipForDiscord(input: string, maxLength: number): string {
@@ -148,7 +158,7 @@ function clipForDiscord(input: string, maxLength: number): string {
   return `${text.slice(0, maxLength - 15).trimEnd()}\n...(truncated)`;
 }
 
-function clipTailForDiscord(input: string, maxLength: number): string {
+export function clipTailForDiscord(input: string, maxLength: number): string {
   const text = input.trim();
   if (text.length <= maxLength) {
     return text;
@@ -319,7 +329,8 @@ export function splitPlainTextForDiscord(text: string, header?: string): string[
         } else {
           // Fence opens at offset 0 and can't be closed in this chunk:
           // hard-split at maxLength, close the fence, and reopen in the next chunk.
-          splitAt = maxLength;
+          // Reserve 4 chars for the appended "\n```" closing fence so chunks never exceed DISCORD_MESSAGE_LIMIT.
+          splitAt = maxLength - 4;
           const chunkBody = remaining.slice(0, splitAt) + "\n```";
           remaining = "```\n" + remaining.slice(splitAt).trimStart();
           if (isFirst && normalizedHeader) {

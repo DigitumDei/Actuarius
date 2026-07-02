@@ -260,6 +260,24 @@ describe("runGeminiRequest — integration (real transport)", () => {
     });
   });
 
+  it("throws FAILED (not NOT_AUTHENTICATED or TIMEOUT) on EMSGSIZE with auth-pattern stderr", async () => {
+    const err = Object.assign(new Error("Process output exceeded maxBuffer"), {
+      code: "EMSGSIZE", killed: true, signal: "SIGTERM",
+      stdout: "a".repeat(500) + "\npartial output",
+      stderr: "set an Auth method to continue"
+    });
+    mockSpawn.mockImplementation(() => { throw err; });
+
+    await expect(runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
+      code: "FAILED",
+      name: "GeminiExecutionError",
+    });
+    await expect(runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toHaveProperty(
+      "message",
+      expect.stringMatching(/buffer limit/i)
+    );
+  });
+
   it("throws FAILED when process exits non-zero without auth pattern", async () => {
     mockSpawn.mockImplementation(() =>
       createMockChild({ stderr: "something broke", exitCode: 1 }),

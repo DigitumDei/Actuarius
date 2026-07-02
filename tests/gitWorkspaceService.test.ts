@@ -711,7 +711,7 @@ describe("gitWorkspaceService", () => {
     await getUnstagedDiffSummary("/tmp/repo", logger);
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ error: overflowError }),
-      "getUnstagedDiffSummary EMSGSIZE — falling back to --stat/--name-only"
+      "getUnstagedDiffSummary primary diff failed — falling back to --stat/--name-only"
     );
   });
 
@@ -727,7 +727,7 @@ describe("gitWorkspaceService", () => {
     await getStagedDiffSummary("/tmp/repo", logger);
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ error: overflowError }),
-      "getStagedDiffSummary EMSGSIZE — falling back to --stat/--name-only"
+      "getStagedDiffSummary primary diff failed — falling back to --stat/--name-only"
     );
   });
 
@@ -787,5 +787,45 @@ describe("gitWorkspaceService", () => {
 
     const ref = await getDefaultBranchBaseRef("/tmp/repo");
     expect(ref).toBe("");
+  });
+
+  it("getUnstagedDiffSummary logs warn on non-EMSGSIZE primary failure", async () => {
+    const logger = { warn: vi.fn() } as unknown as pino.Logger;
+    const primaryError = new Error("fatal: bad revision");
+    mockSpawnCollect
+      .mockRejectedValueOnce(primaryError)
+      .mockResolvedValueOnce({ stdout: "src/index.ts | 1 +\n", stderr: "" });
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo", logger);
+    expect(diff).toBe("src/index.ts | 1 +");
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: primaryError }),
+      "getUnstagedDiffSummary primary diff failed — falling back to --stat/--name-only"
+    );
+  });
+
+  it("getStagedDiffSummary logs warn on non-EMSGSIZE primary failure", async () => {
+    const logger = { warn: vi.fn() } as unknown as pino.Logger;
+    const primaryError = new Error("fatal: bad revision");
+    mockSpawnCollect
+      .mockRejectedValueOnce(primaryError)
+      .mockResolvedValueOnce({ stdout: "src/index.ts | 2 +-\n", stderr: "" });
+
+    const diff = await getStagedDiffSummary("/tmp/repo", logger);
+    expect(diff).toBe("src/index.ts | 2 +-");
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: primaryError }),
+      "getStagedDiffSummary primary diff failed — falling back to --stat/--name-only"
+    );
+  });
+
+  it("getUnstagedDiffSummary falls back to empty string when fallback also fails", async () => {
+    mockSpawnCollect
+      .mockRejectedValueOnce(new Error("primary failed"))
+      .mockRejectedValueOnce(new Error("stat failed"))
+      .mockRejectedValueOnce(new Error("name-only failed"));
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("");
   });
 });

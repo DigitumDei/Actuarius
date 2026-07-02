@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { splitPlainTextForDiscord, isProviderTimeout, buildTimeoutReportInner } from "../src/discord/bot.js";
+import { splitPlainTextForDiscord, isProviderTimeout, buildTimeoutReportInner, escapeDiscordFence, clipTailForDiscord } from "../src/discord/bot.js";
 import { ClaudeExecutionError } from "../src/services/claudeExecutionService.js";
 import { CodexExecutionError } from "../src/services/codexExecutionService.js";
 import { GeminiExecutionError } from "../src/services/geminiExecutionService.js";
 import { OpencodeExecutionError } from "../src/services/opencodeExecutionService.js";
+
+const DISCORD_MESSAGE_LIMIT = 2_000;
 
 vi.mock("../src/services/gitWorkspaceService.js", () => ({
   getDefaultBranchBaseRef: vi.fn().mockResolvedValue("origin/main"),
@@ -27,11 +29,17 @@ describe("splitPlainTextForDiscord", () => {
   it("includes a header in the first chunk when provided", () => {
     const chunks = splitPlainTextForDiscord("body", "**Header**");
     expect(chunks).toEqual(["**Header**\n\nbody"]);
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(DISCORD_MESSAGE_LIMIT);
+    }
   });
 
   it("only emits the header when the body is empty", () => {
     const chunks = splitPlainTextForDiscord("", "**Header**");
     expect(chunks).toEqual(["**Header**"]);
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(DISCORD_MESSAGE_LIMIT);
+    }
   });
 
   it("splits at a newline boundary for text exceeding the first message limit", () => {
@@ -41,6 +49,7 @@ describe("splitPlainTextForDiscord", () => {
     expect(chunks.length).toBeGreaterThanOrEqual(1);
     for (const chunk of chunks) {
       expect(chunk.length).toBeGreaterThan(0);
+      expect(chunk.length).toBeLessThanOrEqual(DISCORD_MESSAGE_LIMIT);
     }
   });
 
@@ -61,6 +70,7 @@ describe("splitPlainTextForDiscord", () => {
     expect(totalMarkers % 2 === 0).toBe(true);
     for (const chunk of chunks) {
       expect(chunk.length).toBeGreaterThan(0);
+      expect(chunk.length).toBeLessThanOrEqual(DISCORD_MESSAGE_LIMIT);
     }
   });
 
@@ -81,6 +91,7 @@ describe("splitPlainTextForDiscord", () => {
     expect(totalMarkers % 2 === 0).toBe(true);
     for (const chunk of chunks) {
       expect(chunk.length).toBeGreaterThan(0);
+      expect(chunk.length).toBeLessThanOrEqual(DISCORD_MESSAGE_LIMIT);
     }
   });
 
@@ -101,6 +112,7 @@ describe("splitPlainTextForDiscord", () => {
     expect(totalMarkers % 2 === 0).toBe(true);
     for (const chunk of chunks) {
       expect(chunk.length).toBeGreaterThan(0);
+      expect(chunk.length).toBeLessThanOrEqual(DISCORD_MESSAGE_LIMIT);
     }
   });
 
@@ -110,6 +122,7 @@ describe("splitPlainTextForDiscord", () => {
     expect(chunks.length).toBeGreaterThan(1);
     for (const chunk of chunks) {
       expect(chunk.length).toBeGreaterThan(0);
+      expect(chunk.length).toBeLessThanOrEqual(DISCORD_MESSAGE_LIMIT);
     }
   });
 
@@ -126,6 +139,7 @@ describe("splitPlainTextForDiscord", () => {
         idx = pos + 3;
       }
       expect(count % 2 === 0).toBe(true);
+      expect(chunk.length).toBeLessThanOrEqual(DISCORD_MESSAGE_LIMIT);
     }
   });
 });
@@ -291,5 +305,125 @@ describe("buildTimeoutReportInner", () => {
     expect(vi.mocked(getShortStatus)).toHaveBeenCalledWith("/my/worktree", undefined);
     expect(vi.mocked(getUnstagedDiffSummary)).toHaveBeenCalledWith("/my/worktree", undefined);
     expect(vi.mocked(getStagedDiffSummary)).toHaveBeenCalledWith("/my/worktree", undefined);
+  });
+});
+
+describe("escapeDiscordFence", () => {
+  it("escapes exactly 3 backticks", () => {
+    expect(escapeDiscordFence("```")).toBe("`\u200B``");
+  });
+
+  it("escapes 4 consecutive backticks — output contains no live ```", () => {
+    const result = escapeDiscordFence("````");
+    expect(result.includes("```")).toBe(false);
+  });
+
+  it("escapes 5 consecutive backticks — output contains no live ```", () => {
+    const result = escapeDiscordFence("`````");
+    expect(result.includes("```")).toBe(false);
+  });
+
+  it("escapes 6 consecutive backticks — output contains no live ```", () => {
+    const result = escapeDiscordFence("``````");
+    expect(result.includes("```")).toBe(false);
+  });
+
+  it("escapes mixed-length backtick runs in a single string", () => {
+    const result = escapeDiscordFence("a ``` b ```` c ````` d");
+    expect(result.includes("```")).toBe(false);
+  });
+
+  it("preserves text without backticks", () => {
+    expect(escapeDiscordFence("hello world")).toBe("hello world");
+  });
+
+  it("preserves single backticks", () => {
+    expect(escapeDiscordFence("`foo`")).toBe("`foo`");
+  });
+
+  it("preserves double backticks", () => {
+    expect(escapeDiscordFence("``foo``")).toBe("``foo``");
+  });
+});
+
+describe("clipTailForDiscord", () => {
+  it("returns input unchanged when under the limit", () => {
+    expect(clipTailForDiscord("short text", 2000)).toBe("short text");
+  });
+
+  it("returns input unchanged when at the exact limit", () => {
+    const text = "a".repeat(2000);
+    expect(clipTailForDiscord(text, 2000)).toBe(text);
+  });
+
+  it("trims input over the limit and preserves the tail with truncation prefix", () => {
+    const text = "prefix-content-" + "m".repeat(200) + "-suffix-content";
+    const maxLength = 100;
+    const result = clipTailForDiscord(text, maxLength);
+    expect(result).toMatch(/^\.\.\.\(truncated\)\n/);
+    expect(result.length).toBeLessThanOrEqual(maxLength);
+    expect(result).toContain("suffix-content");
+  });
+
+  it("exact boundary at maxLength = 50 with truncation prefix", () => {
+    const text = "a".repeat(100);
+    const maxLength = 50;
+    const result = clipTailForDiscord(text, maxLength);
+    expect(result.length).toBeLessThanOrEqual(maxLength);
+    expect(result.startsWith("...(truncated)")).toBe(true);
+  });
+});
+
+describe("splitPlainTextForDiscord — regression", () => {
+  it("oversized fenced block at offset 0 with header never exceeds DISCORD_MESSAGE_LIMIT", () => {
+    const longFence = "```\n" + "a".repeat(2500) + "\n```";
+    const chunks = splitPlainTextForDiscord(longFence, "**Header**");
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(DISCORD_MESSAGE_LIMIT);
+    }
+  });
+
+  it("splits mid-block at sectionStart boundary (fence not at offset 0)", () => {
+    const text = "header line\n\n```typescript\n" + "x".repeat(2500) + "\n```\nmore text";
+    const chunks = splitPlainTextForDiscord(text);
+    expect(chunks.length).toBeGreaterThan(1);
+    const totalMarkers = chunks.reduce((sum, c) => {
+      let count = 0;
+      let idx = 0;
+      while (true) {
+        const pos = c.indexOf("```", idx);
+        if (pos === -1) break;
+        count++;
+        idx = pos + 3;
+      }
+      return sum + count;
+    }, 0);
+    expect(totalMarkers % 2 === 0).toBe(true);
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeGreaterThan(0);
+      expect(chunk.length).toBeLessThanOrEqual(DISCORD_MESSAGE_LIMIT);
+    }
+  });
+
+  it("splits mid-block at fenceStart boundary (no newline before fence)", () => {
+    const text = "some text before the fence\n```\n" + "y".repeat(2500) + "\n```\nending";
+    const chunks = splitPlainTextForDiscord(text);
+    expect(chunks.length).toBeGreaterThan(1);
+    const totalMarkers = chunks.reduce((sum, c) => {
+      let count = 0;
+      let idx = 0;
+      while (true) {
+        const pos = c.indexOf("```", idx);
+        if (pos === -1) break;
+        count++;
+        idx = pos + 3;
+      }
+      return sum + count;
+    }, 0);
+    expect(totalMarkers % 2 === 0).toBe(true);
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeGreaterThan(0);
+      expect(chunk.length).toBeLessThanOrEqual(DISCORD_MESSAGE_LIMIT);
+    }
   });
 });
