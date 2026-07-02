@@ -471,7 +471,8 @@ export class ActuariusBot {
     this.memPalaceRemote = memPalaceRemote;
     this.client = new Client({
       // MessageContent is a privileged intent — must be enabled in the Discord Developer Portal
-      intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
+      intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+      allowedMentions: { parse: [] }
     });
   }
 
@@ -3680,7 +3681,7 @@ Output the result of the command or the link to the created issue.`;
         const timeoutReport = await this.buildTimeoutReport(error, worktreePath, branchName, "plan");
         if (timeoutReport) {
           for (const chunk of splitPlainTextForDiscord(timeoutReport, `**Plan request timed out during ${stage}**`)) {
-            await threadChannel.send(chunk);
+            await threadChannel.send({ content: chunk, allowedMentions: { parse: [] } });
           }
           await sendPreservedWorktreeNotice();
         } else {
@@ -3909,7 +3910,7 @@ Output the result of the command or the link to the created issue.`;
         const timeoutReport = await this.buildTimeoutReport(error, input.worktreePath, input.branchName, "revision");
         if (timeoutReport) {
           for (const chunk of splitPlainTextForDiscord(timeoutReport, `**Revision timed out during ${stage}**`)) {
-            await threadChannel.send(chunk);
+            await threadChannel.send({ content: chunk, allowedMentions: { parse: [] } });
           }
         } else {
           await threadChannel.send(`**Revision failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 60)}`);
@@ -4104,7 +4105,7 @@ Output the result of the command or the link to the created issue.`;
         const timeoutReport = await this.buildTimeoutReport(error, worktreePath, branchName, providerLabel);
         if (timeoutReport) {
           for (const chunk of splitPlainTextForDiscord(timeoutReport, `**${providerLabel} execution timed out**`)) {
-            await threadChannel.send(chunk);
+            await threadChannel.send({ content: chunk, allowedMentions: { parse: [] } });
           }
         } else {
           await threadChannel.send(`**${providerLabel} execution failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
