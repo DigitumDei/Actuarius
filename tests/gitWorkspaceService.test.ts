@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type pino from "pino";
 
 vi.mock("../src/utils/spawnCollect.js");
 vi.mock("../src/services/githubAuthService.js", () => ({
@@ -621,7 +622,7 @@ describe("gitWorkspaceService", () => {
     mockSpawnCollect.mockResolvedValueOnce({ stdout: " M src/index.ts\n?? new.txt\n", stderr: "" });
 
     const status = await getShortStatus("/tmp/repo");
-    expect(status).toBe("M src/index.ts\n?? new.txt");
+    expect(status).toBe(" M src/index.ts\n?? new.txt");
   });
 
   it("getShortStatus returns empty string on failure", async () => {
@@ -658,10 +659,10 @@ describe("gitWorkspaceService", () => {
     expect(diff).toBe("src/index.ts\nsrc/new.ts");
   });
 
-  it("getUnstagedDiffSummary falls back to --stat on EMSGSIZE", async () => {
+  it("getUnstagedDiffSummary falls back to --stat on EMSGSIZE (non-empty overflow stdout)", async () => {
     const overflowError = new Error("Process output exceeded maxBuffer") as Error & { code: string; stdout: string };
     overflowError.code = "EMSGSIZE";
-    overflowError.stdout = "";
+    overflowError.stdout = "diff --git a/src/index.ts b/src/index.ts\n+large".repeat(10000);
 
     mockSpawnCollect
       .mockRejectedValueOnce(overflowError)
@@ -669,12 +670,14 @@ describe("gitWorkspaceService", () => {
 
     const diff = await getUnstagedDiffSummary("/tmp/repo");
     expect(diff).toBe("src/index.ts | 1 +");
+    expect(diff).not.toContain("truncated");
+    expect(diff).not.toContain("diff --git");
   });
 
-  it("getUnstagedDiffSummary falls back to --name-only when --stat throws on EMSGSIZE", async () => {
+  it("getUnstagedDiffSummary falls back to --name-only when --stat throws on EMSGSIZE (non-empty overflow stdout)", async () => {
     const overflowError = new Error("Process output exceeded maxBuffer") as Error & { code: string; stdout: string };
     overflowError.code = "EMSGSIZE";
-    overflowError.stdout = "";
+    overflowError.stdout = "diff --git a/src/index.ts b/src/index.ts\n+large".repeat(10000);
 
     mockSpawnCollect
       .mockRejectedValueOnce(overflowError)
@@ -683,6 +686,7 @@ describe("gitWorkspaceService", () => {
 
     const diff = await getUnstagedDiffSummary("/tmp/repo");
     expect(diff).toBe("src/index.ts");
+    expect(diff).not.toContain("truncated");
   });
 
   it("getUnstagedDiffSummary returns empty string on total failure", async () => {
@@ -693,6 +697,38 @@ describe("gitWorkspaceService", () => {
 
     const diff = await getUnstagedDiffSummary("/tmp/repo");
     expect(diff).toBe("");
+  });
+
+  it("getUnstagedDiffSummary logs warn on EMSGSIZE when logger is provided", async () => {
+    const logger = { warn: vi.fn() } as unknown as pino.Logger;
+    const overflowError = new Error("overflow") as Error & { code: string; stdout: string };
+    overflowError.code = "EMSGSIZE";
+    overflowError.stdout = "diff".repeat(10000);
+    mockSpawnCollect
+      .mockRejectedValueOnce(overflowError)
+      .mockResolvedValueOnce({ stdout: "src/index.ts | 1 +\n", stderr: "" });
+
+    await getUnstagedDiffSummary("/tmp/repo", logger);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: overflowError }),
+      "getUnstagedDiffSummary EMSGSIZE — falling back to --stat/--name-only"
+    );
+  });
+
+  it("getStagedDiffSummary logs warn on EMSGSIZE when logger is provided", async () => {
+    const logger = { warn: vi.fn() } as unknown as pino.Logger;
+    const overflowError = new Error("overflow") as Error & { code: string; stdout: string };
+    overflowError.code = "EMSGSIZE";
+    overflowError.stdout = "diff".repeat(10000);
+    mockSpawnCollect
+      .mockRejectedValueOnce(overflowError)
+      .mockResolvedValueOnce({ stdout: "src/index.ts | 2 +-\n", stderr: "" });
+
+    await getStagedDiffSummary("/tmp/repo", logger);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: overflowError }),
+      "getStagedDiffSummary EMSGSIZE — falling back to --stat/--name-only"
+    );
   });
 
   it("getStagedDiffSummary returns staged diff", async () => {
@@ -721,10 +757,10 @@ describe("gitWorkspaceService", () => {
     expect(diff).toBe("src/index.ts");
   });
 
-  it("getStagedDiffSummary falls back to --stat on EMSGSIZE for cached diff", async () => {
+  it("getStagedDiffSummary falls back to --stat on EMSGSIZE for cached diff (non-empty overflow stdout)", async () => {
     const overflowError = new Error("overflow") as Error & { code: string; stdout: string };
     overflowError.code = "EMSGSIZE";
-    overflowError.stdout = "";
+    overflowError.stdout = "diff --git a/src/staged.ts b/src/staged.ts\n+large".repeat(10000);
 
     mockSpawnCollect
       .mockRejectedValueOnce(overflowError)
@@ -732,6 +768,7 @@ describe("gitWorkspaceService", () => {
 
     const diff = await getStagedDiffSummary("/tmp/repo");
     expect(diff).toBe("src/index.ts | 2 +-");
+    expect(diff).not.toContain("truncated");
   });
 
   it("getDefaultBranchBaseRef returns the remote ref", async () => {

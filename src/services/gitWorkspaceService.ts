@@ -650,85 +650,83 @@ export async function getCommitsSinceBaseRef(worktreePath: string, baseRef: stri
 export async function getShortStatus(worktreePath: string, logger?: Logger): Promise<string> {
   try {
     const result = await runGitWithOutput(["status", "--short"], { cwd: worktreePath });
-    return result.stdout.trim();
+    return result.stdout.replace(/\s+$/u, "");
   } catch (error) {
     logger?.warn({ error, worktreePath }, "getShortStatus failed");
     return "";
   }
 }
 
-export async function getUnstagedDiffSummary(worktreePath: string): Promise<string> {
+export async function getUnstagedDiffSummary(worktreePath: string, logger?: Logger): Promise<string> {
   try {
     const result = await runGitWithOutput(["diff"], { cwd: worktreePath });
     const trimmed = result.stdout.trim();
     if (trimmed.length > 1800) {
-      return await fallbackToStatOrNames(worktreePath) || trimmed;
+      return await fallbackToStatOrNames(worktreePath, logger) || trimmed;
     }
     return trimmed;
   } catch (error) {
     const spawnError = error as { code?: string; stdout?: string };
     if (spawnError.code === "EMSGSIZE") {
-      const partial = clipOverflowedDiff(spawnError.stdout ?? "");
-      if (partial && partial.length > 0) {
-        return partial;
-      }
+      logger?.warn({ error, worktreePath }, "getUnstagedDiffSummary EMSGSIZE — falling back to --stat/--name-only");
     }
-    const fallback = await fallbackToStatOrNames(worktreePath);
+    const fallback = await fallbackToStatOrNames(worktreePath, logger);
     if (fallback) return fallback;
     return "";
   }
 }
 
-export async function getStagedDiffSummary(worktreePath: string): Promise<string> {
+export async function getStagedDiffSummary(worktreePath: string, logger?: Logger): Promise<string> {
   try {
     const result = await runGitWithOutput(["diff", "--cached"], { cwd: worktreePath });
     const trimmed = result.stdout.trim();
     if (trimmed.length > 1800) {
-      return await fallbackToCachedStatOrNames(worktreePath) || trimmed;
+      return await fallbackToCachedStatOrNames(worktreePath, logger) || trimmed;
     }
     return trimmed;
   } catch (error) {
     const spawnError = error as { code?: string; stdout?: string };
     if (spawnError.code === "EMSGSIZE") {
-      const partial = clipOverflowedDiff(spawnError.stdout ?? "");
-      if (partial && partial.length > 0) {
-        return partial;
-      }
+      logger?.warn({ error, worktreePath }, "getStagedDiffSummary EMSGSIZE — falling back to --stat/--name-only");
     }
-    const fallback = await fallbackToCachedStatOrNames(worktreePath);
+    const fallback = await fallbackToCachedStatOrNames(worktreePath, logger);
     if (fallback) return fallback;
     return "";
   }
 }
 
-async function fallbackToStatOrNames(worktreePath: string): Promise<string> {
+async function fallbackToStatOrNames(worktreePath: string, logger?: Logger): Promise<string> {
   try {
     const statResult = await runGitWithOutput(["diff", "--stat"], { cwd: worktreePath });
     if (statResult.stdout.trim()) {
       return statResult.stdout.trim();
     }
-  } catch {
+  } catch (error) {
+    logger?.warn({ error, worktreePath }, "fallbackToStatOrNames --stat failed");
   }
   try {
     const nameResult = await runGitWithOutput(["diff", "--name-only"], { cwd: worktreePath });
     return nameResult.stdout.trim() || "";
-  } catch {
+  } catch (error) {
+    logger?.warn({ error, worktreePath }, "fallbackToStatOrNames --name-only failed");
     return "";
   }
 }
 
-async function fallbackToCachedStatOrNames(worktreePath: string): Promise<string> {
+async function fallbackToCachedStatOrNames(worktreePath: string, logger?: Logger): Promise<string> {
   try {
     const statResult = await runGitWithOutput(["diff", "--cached", "--stat"], { cwd: worktreePath });
     if (statResult.stdout.trim()) {
       return statResult.stdout.trim();
     }
-  } catch {
+  } catch (error) {
+    logger?.warn({ error, worktreePath }, "fallbackToCachedStatOrNames --cached --stat failed");
   }
   try {
     const nameResult = await runGitWithOutput(["diff", "--cached", "--name-only"], { cwd: worktreePath });
     return nameResult.stdout.trim() || "";
-  } catch {
+  } catch (error) {
+    logger?.warn({ error, worktreePath }, "fallbackToCachedStatOrNames --cached --name-only failed");
     return "";
   }
 }

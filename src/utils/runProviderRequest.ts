@@ -209,6 +209,10 @@ export async function runProviderRequest(
       throw config.makeError(config.unavailableCode, `${config.logLabel} CLI is not installed or not available in PATH.`);
     }
 
+    if (nodeError.code === "EMSGSIZE") {
+      throw config.makeError(config.failedCode, `${config.logLabel} output exceeded the buffer limit.`);
+    }
+
     if (
       nodeError.code === "ETIMEDOUT" ||
       (nodeError.killed === true && nodeError.signal === "SIGTERM") ||
@@ -231,10 +235,6 @@ export async function runProviderRequest(
         logger.warn({ stderr: nodeError.stderr, stdout: nodeError.stdout?.slice(0, 1000) }, `${config.logLabel} auth failure pattern matched on process error \u2014 logging output to assist diagnosis`);
         throw config.makeError(config.notAuthenticatedCode, `${config.logLabel} is not authenticated.${hint}`);
       }
-    }
-
-    if (nodeError.code === "EMSGSIZE") {
-      throw config.makeError(config.failedCode, `${config.logLabel} output exceeded the buffer limit.`);
     }
 
     const stderrLines = nodeError.stderr?.trim().split("\n") ?? [];

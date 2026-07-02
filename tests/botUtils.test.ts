@@ -112,6 +112,22 @@ describe("splitPlainTextForDiscord", () => {
       expect(chunk.length).toBeGreaterThan(0);
     }
   });
+
+  it("handles oversized single fenced block opening at offset 0 (no chunk has unbalanced fence)", () => {
+    const longFence = "```\n" + "a".repeat(2500) + "\n```";
+    const chunks = splitPlainTextForDiscord(longFence);
+    for (const chunk of chunks) {
+      let count = 0;
+      let idx = 0;
+      while (true) {
+        const pos = chunk.indexOf("```", idx);
+        if (pos === -1) break;
+        count++;
+        idx = pos + 3;
+      }
+      expect(count % 2 === 0).toBe(true);
+    }
+  });
 });
 
 describe("isProviderTimeout", () => {
@@ -215,5 +231,65 @@ describe("buildTimeoutReportInner", () => {
   it("returns fallback when worktreePath is null and no partial output", async () => {
     const report = await buildTimeoutReportInner({}, null, null, "Codex");
     expect(report).toBe("Codex execution timed out. No partial output or worktree changes were captured.");
+  });
+
+  it("escapes embedded triple backticks in partial output", async () => {
+    const err = { partialStdout: "some text with ``` in it", partialStderr: "" };
+    const report = await buildTimeoutReportInner(err, null, null, "Codex");
+    expect(report).toContain("`\u200B``");
+    const openCount = (report.match(/```/gu) || []).length;
+    expect(openCount % 2 === 0).toBe(true);
+  });
+
+  it("escapes embedded triple backticks in status section", async () => {
+    const getShortStatus = (await import("../src/services/gitWorkspaceService.js")).getShortStatus;
+    vi.mocked(getShortStatus).mockResolvedValueOnce(" M src/```dangerous```.ts");
+    const report = await buildTimeoutReportInner({}, "/tmp/worktree", null, "Codex");
+    expect(report).toContain("`\u200B``");
+    const openCount = (report.match(/```/gu) || []).length;
+    expect(openCount % 2 === 0).toBe(true);
+  });
+
+  it("uses tail-truncation for stderr (latest lines preserved)", async () => {
+    const longStderr = "line1\nline2\n" + "middle\n".repeat(400) + "last-significant-line";
+    const err = { partialStdout: "stdout content", partialStderr: longStderr };
+    const report = await buildTimeoutReportInner(err, null, null, "Codex");
+    const stderrSection = report.slice(report.indexOf("**Partial error output (stderr):**"));
+    expect(stderrSection).toContain("last-significant-line");
+    expect(stderrSection).toContain("(truncated)");
+    expect(stderrSection).not.toContain("line1");
+  });
+
+  it("renders only partial output sections when git helpers return empty", async () => {
+    const getDefaultBranchBaseRef = (await import("../src/services/gitWorkspaceService.js")).getDefaultBranchBaseRef;
+    const getCommitsSinceBaseRef = (await import("../src/services/gitWorkspaceService.js")).getCommitsSinceBaseRef;
+    const getShortStatus = (await import("../src/services/gitWorkspaceService.js")).getShortStatus;
+    const getUnstagedDiffSummary = (await import("../src/services/gitWorkspaceService.js")).getUnstagedDiffSummary;
+    const getStagedDiffSummary = (await import("../src/services/gitWorkspaceService.js")).getStagedDiffSummary;
+    vi.mocked(getDefaultBranchBaseRef).mockResolvedValueOnce("origin/main");
+    vi.mocked(getCommitsSinceBaseRef).mockResolvedValueOnce([]);
+    vi.mocked(getShortStatus).mockResolvedValueOnce("");
+    vi.mocked(getUnstagedDiffSummary).mockResolvedValueOnce("");
+    vi.mocked(getStagedDiffSummary).mockResolvedValueOnce("");
+    const err = { partialStdout: "some stdout output", partialStderr: "some stderr output" };
+    const report = await buildTimeoutReportInner(err, "/tmp/worktree", "ask/1-123", "Codex");
+    expect(report).toContain("**Partial output (stdout):**");
+    expect(report).toContain("**Partial error output (stderr):**");
+    expect(report).not.toContain("**Working tree status:**");
+    expect(report).not.toContain("**Unstaged changes:**");
+    expect(report).not.toContain("**Staged changes:**");
+    expect(report).not.toContain("**Commits on");
+  });
+
+  it("passes worktreePath to git helpers", async () => {
+    const getDefaultBranchBaseRef = (await import("../src/services/gitWorkspaceService.js")).getDefaultBranchBaseRef;
+    const getShortStatus = (await import("../src/services/gitWorkspaceService.js")).getShortStatus;
+    const getUnstagedDiffSummary = (await import("../src/services/gitWorkspaceService.js")).getUnstagedDiffSummary;
+    const getStagedDiffSummary = (await import("../src/services/gitWorkspaceService.js")).getStagedDiffSummary;
+    await buildTimeoutReportInner({}, "/my/worktree", "ask/1-123", "Codex");
+    expect(vi.mocked(getDefaultBranchBaseRef)).toHaveBeenCalledWith("/my/worktree", undefined);
+    expect(vi.mocked(getShortStatus)).toHaveBeenCalledWith("/my/worktree", undefined);
+    expect(vi.mocked(getUnstagedDiffSummary)).toHaveBeenCalledWith("/my/worktree", undefined);
+    expect(vi.mocked(getStagedDiffSummary)).toHaveBeenCalledWith("/my/worktree", undefined);
   });
 });

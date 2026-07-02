@@ -135,6 +135,10 @@ function isActiveRequestStatus(status: RequestStatus): boolean {
   return status === "queued" || status === "running" || status === "install_approved" || status === "install_running";
 }
 
+function escapeDiscordFence(input: string): string {
+  return input.replace(/```/gu, "`\u200B``");
+}
+
 function clipForDiscord(input: string, maxLength: number): string {
   const text = input.trim();
   if (text.length <= maxLength) {
@@ -142,6 +146,14 @@ function clipForDiscord(input: string, maxLength: number): string {
   }
 
   return `${text.slice(0, maxLength - 15).trimEnd()}\n...(truncated)`;
+}
+
+function clipTailForDiscord(input: string, maxLength: number): string {
+  const text = input.trim();
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `...(truncated)\n${text.slice(text.length - maxLength + 15).trimStart()}`;
 }
 
 function clipForPullRequestTitle(input: string): string {
@@ -304,6 +316,19 @@ export function splitPlainTextForDiscord(text: string, header?: string): string[
           splitAt = sectionStart;
         } else if (fenceStart > 0) {
           splitAt = fenceStart;
+        } else {
+          // Fence opens at offset 0 and can't be closed in this chunk:
+          // hard-split at maxLength, close the fence, and reopen in the next chunk.
+          splitAt = maxLength;
+          const chunkBody = remaining.slice(0, splitAt) + "\n```";
+          remaining = "```\n" + remaining.slice(splitAt).trimStart();
+          if (isFirst && normalizedHeader) {
+            chunks.push(`${normalizedHeader}\n\n${chunkBody}`);
+          } else {
+            chunks.push(chunkBody);
+          }
+          isFirst = false;
+          continue;
         }
       }
     }
@@ -4191,24 +4216,6 @@ Output the result of the command or the link to the created issue.`;
     return "Unknown execution error.";
   }
 
-  public isProviderTimeout(error: unknown): boolean {
-    return (
-      (error instanceof ClaudeExecutionError && error.code === "TIMEOUT") ||
-      (error instanceof CodexExecutionError && error.code === "TIMEOUT") ||
-      (error instanceof GeminiExecutionError && error.code === "TIMEOUT") ||
-      (error instanceof OpencodeExecutionError && error.code === "TIMEOUT")
-    );
-  }
-
-  public async buildTimeoutReport(
-    error: unknown,
-    worktreePath: string | null,
-    branchName: string | null,
-    providerLabel: string
-  ): Promise<string> {
-    return buildTimeoutReportInner(error, worktreePath, branchName, providerLabel, this.logger);
-  }
-
   private describeInstallTarget(packageId: string, packageVersion?: string): string {
     if (isAptPackageId(packageId)) {
       const packageSpec = getAptPackageSpec(packageId) ?? packageVersion ?? packageId;
@@ -4305,7 +4312,7 @@ export async function buildTimeoutReportInner(
   if (partialStdout) {
     lines.push("**Partial output (stdout):**");
     lines.push("```");
-    lines.push(clipForDiscord(partialStdout, 1800));
+    lines.push(escapeDiscordFence(clipForDiscord(partialStdout, 1800)));
     lines.push("```");
     lines.push("");
   }
@@ -4313,7 +4320,7 @@ export async function buildTimeoutReportInner(
   if (partialStderr) {
     lines.push("**Partial error output (stderr):**");
     lines.push("```");
-    lines.push(clipForDiscord(partialStderr, 1800));
+    lines.push(escapeDiscordFence(clipTailForDiscord(partialStderr, 1800)));
     lines.push("```");
     lines.push("");
   }
@@ -4336,21 +4343,21 @@ export async function buildTimeoutReportInner(
     const status = await getShortStatus(worktreePath, logger);
     if (status) {
       lines.push("**Working tree status:**");
-      lines.push(`\`\`\`\n${clipForDiscord(status, 1800)}\n\`\`\``);
+      lines.push(`\`\`\`\n${escapeDiscordFence(clipForDiscord(status, 1800))}\n\`\`\``);
       lines.push("");
     }
 
-    const diff = await getUnstagedDiffSummary(worktreePath);
+    const diff = await getUnstagedDiffSummary(worktreePath, logger);
     if (diff) {
       lines.push("**Unstaged changes:**");
-      lines.push(`\`\`\`diff\n${clipForDiscord(diff, 1800)}\n\`\`\``);
+      lines.push(`\`\`\`diff\n${escapeDiscordFence(clipForDiscord(diff, 1800))}\n\`\`\``);
       lines.push("");
     }
 
-    const stagedDiff = await getStagedDiffSummary(worktreePath);
+    const stagedDiff = await getStagedDiffSummary(worktreePath, logger);
     if (stagedDiff) {
       lines.push("**Staged changes:**");
-      lines.push(`\`\`\`diff\n${clipForDiscord(stagedDiff, 1800)}\n\`\`\``);
+      lines.push(`\`\`\`diff\n${escapeDiscordFence(clipForDiscord(stagedDiff, 1800))}\n\`\`\``);
       lines.push("");
     }
   }
