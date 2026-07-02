@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { access, constants } from "node:fs/promises";
 import { join } from "node:path";
+import type { Logger } from "pino";
 import {
   configureRepositoryGitAuth,
   ensureGitHubCliAuthenticated,
@@ -636,20 +637,22 @@ export async function getDiffSinceRef(
   }
 }
 
-export async function getCommitsSinceBaseRef(worktreePath: string, baseRef: string): Promise<string[]> {
+export async function getCommitsSinceBaseRef(worktreePath: string, baseRef: string, logger?: Logger): Promise<string[]> {
   try {
     const result = await runGitWithOutput(["log", "--oneline", `${baseRef}..HEAD`], { cwd: worktreePath });
     return result.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-  } catch {
+  } catch (error) {
+    logger?.warn({ error, worktreePath, baseRef }, "getCommitsSinceBaseRef failed");
     return [];
   }
 }
 
-export async function getShortStatus(worktreePath: string): Promise<string> {
+export async function getShortStatus(worktreePath: string, logger?: Logger): Promise<string> {
   try {
     const result = await runGitWithOutput(["status", "--short"], { cwd: worktreePath });
     return result.stdout.trim();
-  } catch {
+  } catch (error) {
+    logger?.warn({ error, worktreePath }, "getShortStatus failed");
     return "";
   }
 }
@@ -657,21 +660,21 @@ export async function getShortStatus(worktreePath: string): Promise<string> {
 export async function getUnstagedDiffSummary(worktreePath: string): Promise<string> {
   try {
     const result = await runGitWithOutput(["diff"], { cwd: worktreePath });
-    return result.stdout.trim();
+    const trimmed = result.stdout.trim();
+    if (trimmed.length > 1800) {
+      return await fallbackToStatOrNames(worktreePath) || trimmed;
+    }
+    return trimmed;
   } catch (error) {
     const spawnError = error as { code?: string; stdout?: string };
     if (spawnError.code === "EMSGSIZE") {
-      try {
-        const statResult = await runGitWithOutput(["diff", "--stat"], { cwd: worktreePath });
-        if (statResult.stdout.trim()) {
-          return statResult.stdout.trim();
-        }
-        const nameResult = await runGitWithOutput(["diff", "--name-only"], { cwd: worktreePath });
-        return nameResult.stdout.trim() || "";
-      } catch {
-        return "";
+      const partial = clipOverflowedDiff(spawnError.stdout ?? "");
+      if (partial && partial.length > 0) {
+        return partial;
       }
     }
+    const fallback = await fallbackToStatOrNames(worktreePath);
+    if (fallback) return fallback;
     return "";
   }
 }
@@ -679,30 +682,63 @@ export async function getUnstagedDiffSummary(worktreePath: string): Promise<stri
 export async function getStagedDiffSummary(worktreePath: string): Promise<string> {
   try {
     const result = await runGitWithOutput(["diff", "--cached"], { cwd: worktreePath });
-    return result.stdout.trim();
+    const trimmed = result.stdout.trim();
+    if (trimmed.length > 1800) {
+      return await fallbackToCachedStatOrNames(worktreePath) || trimmed;
+    }
+    return trimmed;
   } catch (error) {
     const spawnError = error as { code?: string; stdout?: string };
     if (spawnError.code === "EMSGSIZE") {
-      try {
-        const statResult = await runGitWithOutput(["diff", "--cached", "--stat"], { cwd: worktreePath });
-        if (statResult.stdout.trim()) {
-          return statResult.stdout.trim();
-        }
-        const nameResult = await runGitWithOutput(["diff", "--cached", "--name-only"], { cwd: worktreePath });
-        return nameResult.stdout.trim() || "";
-      } catch {
-        return "";
+      const partial = clipOverflowedDiff(spawnError.stdout ?? "");
+      if (partial && partial.length > 0) {
+        return partial;
       }
     }
+    const fallback = await fallbackToCachedStatOrNames(worktreePath);
+    if (fallback) return fallback;
     return "";
   }
 }
 
-export async function getDefaultBranchBaseRef(worktreePath: string): Promise<string> {
+async function fallbackToStatOrNames(worktreePath: string): Promise<string> {
+  try {
+    const statResult = await runGitWithOutput(["diff", "--stat"], { cwd: worktreePath });
+    if (statResult.stdout.trim()) {
+      return statResult.stdout.trim();
+    }
+  } catch {
+  }
+  try {
+    const nameResult = await runGitWithOutput(["diff", "--name-only"], { cwd: worktreePath });
+    return nameResult.stdout.trim() || "";
+  } catch {
+    return "";
+  }
+}
+
+async function fallbackToCachedStatOrNames(worktreePath: string): Promise<string> {
+  try {
+    const statResult = await runGitWithOutput(["diff", "--cached", "--stat"], { cwd: worktreePath });
+    if (statResult.stdout.trim()) {
+      return statResult.stdout.trim();
+    }
+  } catch {
+  }
+  try {
+    const nameResult = await runGitWithOutput(["diff", "--cached", "--name-only"], { cwd: worktreePath });
+    return nameResult.stdout.trim() || "";
+  } catch {
+    return "";
+  }
+}
+
+export async function getDefaultBranchBaseRef(worktreePath: string, logger?: Logger): Promise<string> {
   try {
     const defaultBranch = await detectDefaultBranch(worktreePath);
     return defaultBranch.remoteRef;
-  } catch {
+  } catch (error) {
+    logger?.warn({ error, worktreePath }, "getDefaultBranchBaseRef failed");
     return "";
   }
 }

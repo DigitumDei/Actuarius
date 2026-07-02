@@ -209,23 +209,6 @@ export async function runProviderRequest(
       throw config.makeError(config.unavailableCode, `${config.logLabel} CLI is not installed or not available in PATH.`);
     }
 
-    if (config.authFailurePattern && config.notAuthenticatedCode) {
-      const combined = [
-        nodeError.stderr,
-        ...(config.authCheckOnlyStderr ? [] : [nodeError.stdout]),
-        message,
-      ].filter(Boolean).join("\n");
-      if (config.authFailurePattern.test(combined)) {
-        const hint = config.authHint ? ` ${config.authHint}` : "";
-        logger.warn({ stderr: nodeError.stderr, stdout: nodeError.stdout?.slice(0, 1000) }, `${config.logLabel} auth failure pattern matched on process error — logging output to assist diagnosis`);
-        throw config.makeError(config.notAuthenticatedCode, `${config.logLabel} is not authenticated.${hint}`);
-      }
-    }
-
-    if (nodeError.code === "EMSGSIZE") {
-      throw config.makeError(config.failedCode, `${config.logLabel} output exceeded the buffer limit.`);
-    }
-
     if (
       nodeError.code === "ETIMEDOUT" ||
       (nodeError.killed === true && nodeError.signal === "SIGTERM") ||
@@ -235,6 +218,23 @@ export async function runProviderRequest(
       if (nodeError.stdout) errorDetails.partialStdout = nodeError.stdout;
       if (nodeError.stderr) errorDetails.partialStderr = nodeError.stderr;
       throw config.makeError(config.timeoutCode, `${config.logLabel} execution timed out after ${input.timeoutMs}ms.`, errorDetails);
+    }
+
+    if (config.authFailurePattern && config.notAuthenticatedCode) {
+      const combined = [
+        nodeError.stderr,
+        ...(config.authCheckOnlyStderr ? [] : [nodeError.stdout]),
+        message,
+      ].filter(Boolean).join("\n");
+      if (config.authFailurePattern.test(combined)) {
+        const hint = config.authHint ? ` ${config.authHint}` : "";
+        logger.warn({ stderr: nodeError.stderr, stdout: nodeError.stdout?.slice(0, 1000) }, `${config.logLabel} auth failure pattern matched on process error \u2014 logging output to assist diagnosis`);
+        throw config.makeError(config.notAuthenticatedCode, `${config.logLabel} is not authenticated.${hint}`);
+      }
+    }
+
+    if (nodeError.code === "EMSGSIZE") {
+      throw config.makeError(config.failedCode, `${config.logLabel} output exceeded the buffer limit.`);
     }
 
     const stderrLines = nodeError.stderr?.trim().split("\n") ?? [];

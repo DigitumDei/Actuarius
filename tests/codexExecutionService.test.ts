@@ -194,13 +194,31 @@ describe("runCodexRequest — integration (real transport)", () => {
   });
 
   it("throws TIMEOUT when process times out", async () => {
-    const err = Object.assign(new Error("timed out"), { code: "ETIMEDOUT", killed: true, signal: "SIGTERM" });
+    const err = Object.assign(new Error("timed out"), { code: "ETIMEDOUT", killed: true, signal: "SIGTERM", stdout: "partial output", stderr: "error details" });
     mockSpawn.mockImplementation(() => { throw err; });
 
     await expect(runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
       code: "TIMEOUT",
       name: "CodexExecutionError",
     });
+  });
+
+  it("propagates partialStdout and partialStderr through timeout error", async () => {
+    const err = Object.assign(new Error("timed out"), { code: "ETIMEDOUT", killed: true, signal: "SIGTERM", stdout: "partial agent output", stderr: "last error lines" });
+    mockSpawn.mockImplementation(() => { throw err; });
+
+    let caught: unknown;
+    try {
+      await runCodexRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(CodexExecutionError);
+    const codexErr = caught as CodexExecutionError;
+    expect(codexErr.code).toBe("TIMEOUT");
+    expect(codexErr.partialStdout).toBe("partial agent output");
+    expect(codexErr.partialStderr).toBe("last error lines");
   });
 
   it("throws FAILED when process exits non-zero", async () => {

@@ -17,9 +17,14 @@ const {
   cleanupDeletedRemoteBranches,
   detectDefaultBranch,
   GitWorkspaceError,
+  getCommitsSinceBaseRef,
+  getDefaultBranchBaseRef,
   getDiffSinceRef,
   getHeadSha,
   getReviewDiff,
+  getShortStatus,
+  getStagedDiffSummary,
+  getUnstagedDiffSummary,
   hasUncommittedChanges,
   listBranches,
   pushBranch
@@ -596,5 +601,154 @@ describe("gitWorkspaceService", () => {
     await expect(autoCommitAll("/tmp/repo", "test commit", ["docs/reviews/"])).rejects.toThrow();
     expect(mockSpawnCollect).toHaveBeenCalledTimes(3);
     expect(mockSpawnCollect).toHaveBeenNthCalledWith(3, "git", ["diff", "--cached", "--quiet"], expect.any(Object));
+  });
+
+  it("getCommitsSinceBaseRef returns commit list", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "abc123 first\n123def second\n", stderr: "" });
+
+    const commits = await getCommitsSinceBaseRef("/tmp/repo", "origin/main");
+    expect(commits).toEqual(["abc123 first", "123def second"]);
+  });
+
+  it("getCommitsSinceBaseRef returns empty array on failure", async () => {
+    mockSpawnCollect.mockRejectedValueOnce(new Error("git failed"));
+
+    const commits = await getCommitsSinceBaseRef("/tmp/repo", "origin/main");
+    expect(commits).toEqual([]);
+  });
+
+  it("getShortStatus returns porcelain status", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: " M src/index.ts\n?? new.txt\n", stderr: "" });
+
+    const status = await getShortStatus("/tmp/repo");
+    expect(status).toBe("M src/index.ts\n?? new.txt");
+  });
+
+  it("getShortStatus returns empty string on failure", async () => {
+    mockSpawnCollect.mockRejectedValueOnce(new Error("git failed"));
+
+    const status = await getShortStatus("/tmp/repo");
+    expect(status).toBe("");
+  });
+
+  it("getUnstagedDiffSummary returns the diff text", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "diff --git a/src/index.ts b/src/index.ts\n+change", stderr: "" });
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("diff --git a/src/index.ts b/src/index.ts\n+change");
+  });
+
+  it("getUnstagedDiffSummary falls back to --stat when raw diff exceeds 1800 chars", async () => {
+    const largeDiff = "a".repeat(1801);
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: largeDiff, stderr: "" })
+      .mockResolvedValueOnce({ stdout: " src/index.ts | 2 +-\n", stderr: "" });
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("src/index.ts | 2 +-");
+  });
+
+  it("getUnstagedDiffSummary falls back to --name-only when --stat throws", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "a".repeat(1801), stderr: "" })
+      .mockRejectedValueOnce(new Error("stat failed"))
+      .mockResolvedValueOnce({ stdout: "src/index.ts\nsrc/new.ts\n", stderr: "" });
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("src/index.ts\nsrc/new.ts");
+  });
+
+  it("getUnstagedDiffSummary falls back to --stat on EMSGSIZE", async () => {
+    const overflowError = new Error("Process output exceeded maxBuffer") as Error & { code: string; stdout: string };
+    overflowError.code = "EMSGSIZE";
+    overflowError.stdout = "";
+
+    mockSpawnCollect
+      .mockRejectedValueOnce(overflowError)
+      .mockResolvedValueOnce({ stdout: "src/index.ts | 1 +\n", stderr: "" });
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("src/index.ts | 1 +");
+  });
+
+  it("getUnstagedDiffSummary falls back to --name-only when --stat throws on EMSGSIZE", async () => {
+    const overflowError = new Error("Process output exceeded maxBuffer") as Error & { code: string; stdout: string };
+    overflowError.code = "EMSGSIZE";
+    overflowError.stdout = "";
+
+    mockSpawnCollect
+      .mockRejectedValueOnce(overflowError)
+      .mockRejectedValueOnce(new Error("stat failed"))
+      .mockResolvedValueOnce({ stdout: "src/index.ts\n", stderr: "" });
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("src/index.ts");
+  });
+
+  it("getUnstagedDiffSummary returns empty string on total failure", async () => {
+    mockSpawnCollect
+      .mockRejectedValueOnce(new Error("git failed"))
+      .mockRejectedValueOnce(new Error("stat failed"))
+      .mockRejectedValueOnce(new Error("name-only failed"));
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("");
+  });
+
+  it("getStagedDiffSummary returns staged diff", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "diff --git a/src/index.ts b/src/index.ts\n+staged", stderr: "" });
+
+    const diff = await getStagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("diff --git a/src/index.ts b/src/index.ts\n+staged");
+  });
+
+  it("getStagedDiffSummary falls back to --stat for large staged diff", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "a".repeat(1801), stderr: "" })
+      .mockResolvedValueOnce({ stdout: " src/index.ts | 1 +\n", stderr: "" });
+
+    const diff = await getStagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("src/index.ts | 1 +");
+  });
+
+  it("getStagedDiffSummary falls back to --name-only when --cached --stat throws", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "a".repeat(1801), stderr: "" })
+      .mockRejectedValueOnce(new Error("stat failed"))
+      .mockResolvedValueOnce({ stdout: "src/index.ts\n", stderr: "" });
+
+    const diff = await getStagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("src/index.ts");
+  });
+
+  it("getStagedDiffSummary falls back to --stat on EMSGSIZE for cached diff", async () => {
+    const overflowError = new Error("overflow") as Error & { code: string; stdout: string };
+    overflowError.code = "EMSGSIZE";
+    overflowError.stdout = "";
+
+    mockSpawnCollect
+      .mockRejectedValueOnce(overflowError)
+      .mockResolvedValueOnce({ stdout: "src/index.ts | 2 +-\n", stderr: "" });
+
+    const diff = await getStagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("src/index.ts | 2 +-");
+  });
+
+  it("getDefaultBranchBaseRef returns the remote ref", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "refs/remotes/origin/main\n", stderr: "" });
+
+    const ref = await getDefaultBranchBaseRef("/tmp/repo");
+    expect(ref).toBe("origin/main");
+  });
+
+  it("getDefaultBranchBaseRef returns empty string on failure", async () => {
+    mockSpawnCollect
+      .mockRejectedValueOnce(new Error("no HEAD"))
+      .mockRejectedValueOnce(new Error("no main"))
+      .mockRejectedValueOnce(new Error("no master"));
+
+    const ref = await getDefaultBranchBaseRef("/tmp/repo");
+    expect(ref).toBe("");
   });
 });

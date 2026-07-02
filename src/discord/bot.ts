@@ -261,7 +261,7 @@ export function parseIterativePlan(text: string): { overview: string; tasks: Ite
   }
 }
 
-function splitPlainTextForDiscord(text: string, header?: string): string[] {
+export function splitPlainTextForDiscord(text: string, header?: string): string[] {
   const trimmedBody = text.trim();
   const normalizedHeader = header?.trim();
   const firstChunkLimit = DISCORD_MESSAGE_LIMIT - (normalizedHeader ? normalizedHeader.length + 2 : 0);
@@ -288,14 +288,22 @@ function splitPlainTextForDiscord(text: string, header?: string): string[] {
         splitAt = maxLength;
       }
 
-      const fenceStart = remaining.lastIndexOf("\n```", splitAt);
-      if (fenceStart >= 0) {
-        const afterOpen = remaining.slice(fenceStart + 1, splitAt);
-        if (!/\n```\s*(?:\n|$)/.test(afterOpen)) {
-          const sectionStart = remaining.lastIndexOf("\n", fenceStart - 1);
-          if (sectionStart > 0) {
-            splitAt = sectionStart;
-          }
+      const prefix = remaining.slice(0, splitAt);
+      let fenceCount = 0;
+      let idx = 0;
+      while (true) {
+        const pos = prefix.indexOf("```", idx);
+        if (pos === -1) break;
+        fenceCount++;
+        idx = pos + 3;
+      }
+      if (fenceCount % 2 === 1) {
+        const fenceStart = prefix.lastIndexOf("```");
+        const sectionStart = prefix.lastIndexOf("\n", fenceStart - 2);
+        if (sectionStart > 0) {
+          splitAt = sectionStart;
+        } else if (fenceStart > 0) {
+          splitAt = fenceStart;
         }
       }
     }
@@ -484,7 +492,6 @@ export class ActuariusBot {
     this.client = new Client({
       // MessageContent is a privileged intent — must be enabled in the Discord Developer Portal
       intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
-      allowedMentions: { parse: [] }
     });
   }
 
@@ -3690,8 +3697,8 @@ Output the result of the command or the link to the created issue.`;
       markFailed();
       const message = this.describeExecutionError(error);
       if (threadChannel && threadChannel.isThread()) {
-        if (this.isProviderTimeout(error)) {
-          const timeoutReport = await this.buildTimeoutReport(error, worktreePath, branchName, "plan");
+        if (isProviderTimeout(error)) {
+          const timeoutReport = await buildTimeoutReportInner(error, worktreePath, branchName, "plan", this.logger);
           for (const chunk of splitPlainTextForDiscord(timeoutReport, `**Plan request timed out during ${stage}**`)) {
             await threadChannel.send({ content: chunk, allowedMentions: { parse: [] } });
           }
@@ -3919,8 +3926,8 @@ Output the result of the command or the link to the created issue.`;
       markFailed();
       const message = this.describeExecutionError(error);
       if (threadChannel && threadChannel.isThread()) {
-        if (this.isProviderTimeout(error)) {
-          const timeoutReport = await this.buildTimeoutReport(error, input.worktreePath, input.branchName, "revision");
+        if (isProviderTimeout(error)) {
+          const timeoutReport = await buildTimeoutReportInner(error, input.worktreePath, input.branchName, "revision", this.logger);
           for (const chunk of splitPlainTextForDiscord(timeoutReport, `**Revision timed out during ${stage}**`)) {
             await threadChannel.send({ content: chunk, allowedMentions: { parse: [] } });
           }
@@ -4114,8 +4121,8 @@ Output the result of the command or the link to the created issue.`;
       markFailed();
       const message = this.describeExecutionError(error);
       if (threadChannel && threadChannel.isThread()) {
-        if (this.isProviderTimeout(error)) {
-          const timeoutReport = await this.buildTimeoutReport(error, worktreePath, branchName, providerLabel);
+        if (isProviderTimeout(error)) {
+          const timeoutReport = await buildTimeoutReportInner(error, worktreePath, branchName, providerLabel, this.logger);
           for (const chunk of splitPlainTextForDiscord(timeoutReport, `**${providerLabel} execution timed out**`)) {
             await threadChannel.send({ content: chunk, allowedMentions: { parse: [] } });
           }
@@ -4184,7 +4191,7 @@ Output the result of the command or the link to the created issue.`;
     return "Unknown execution error.";
   }
 
-  private isProviderTimeout(error: unknown): boolean {
+  public isProviderTimeout(error: unknown): boolean {
     return (
       (error instanceof ClaudeExecutionError && error.code === "TIMEOUT") ||
       (error instanceof CodexExecutionError && error.code === "TIMEOUT") ||
@@ -4193,75 +4200,13 @@ Output the result of the command or the link to the created issue.`;
     );
   }
 
-  private async buildTimeoutReport(
+  public async buildTimeoutReport(
     error: unknown,
     worktreePath: string | null,
     branchName: string | null,
     providerLabel: string
   ): Promise<string> {
-    if (!this.isProviderTimeout(error)) {
-      return "";
-    }
-
-    const err = error as { partialStdout?: string; partialStderr?: string };
-    const lines: string[] = [];
-
-    const partialStdout = err.partialStdout?.trim();
-    const partialStderr = err.partialStderr?.trim();
-
-    if (partialStdout) {
-      lines.push("**Partial output (stdout):**");
-      lines.push(clipForDiscord(partialStdout, 1800));
-      lines.push("");
-    }
-
-    if (partialStderr) {
-      lines.push("**Partial error output (stderr):**");
-      lines.push(clipForDiscord(partialStderr, 1800));
-      lines.push("");
-    }
-
-    if (worktreePath && branchName) {
-      const baseRef = await getDefaultBranchBaseRef(worktreePath);
-      if (baseRef) {
-        const commits = await getCommitsSinceBaseRef(worktreePath, baseRef);
-        if (commits.length > 0) {
-          lines.push(`**Commits on \`${branchName}\` (since ${baseRef}):**`);
-          for (const c of commits) {
-            lines.push(c);
-          }
-          lines.push("");
-        }
-      }
-
-      const status = await getShortStatus(worktreePath);
-      if (status) {
-        lines.push("**Working tree status:**");
-        lines.push(`\`\`\`\n${clipForDiscord(status, 1800)}\n\`\`\``);
-        lines.push("");
-      }
-
-      const diff = await getUnstagedDiffSummary(worktreePath);
-      if (diff) {
-        lines.push("**Unstaged changes:**");
-        lines.push(`\`\`\`diff\n${clipForDiscord(diff, 1800)}\n\`\`\``);
-        lines.push("");
-      }
-
-      const stagedDiff = await getStagedDiffSummary(worktreePath);
-      if (stagedDiff) {
-        lines.push("**Staged changes:**");
-        lines.push(`\`\`\`diff\n${clipForDiscord(stagedDiff, 1800)}\n\`\`\``);
-        lines.push("");
-      }
-    }
-
-    const report = lines.join("\n").trim();
-    if (!report) {
-      return `${providerLabel} execution timed out. No partial output or worktree changes were captured.`;
-    }
-
-    return report;
+    return buildTimeoutReportInner(error, worktreePath, branchName, providerLabel, this.logger);
   }
 
   private describeInstallTarget(packageId: string, packageVersion?: string): string {
@@ -4332,4 +4277,88 @@ Output the result of the command or the link to the created issue.`;
   public getCommandNames(): string[] {
     return commandBuilders.map((command) => command.name);
   }
+}
+
+// Module-level exports for testing — class methods delegate to these.
+export function isProviderTimeout(error: unknown): boolean {
+  return (
+    (error instanceof ClaudeExecutionError && error.code === "TIMEOUT") ||
+    (error instanceof CodexExecutionError && error.code === "TIMEOUT") ||
+    (error instanceof GeminiExecutionError && error.code === "TIMEOUT") ||
+    (error instanceof OpencodeExecutionError && error.code === "TIMEOUT")
+  );
+}
+
+export async function buildTimeoutReportInner(
+  error: unknown,
+  worktreePath: string | null,
+  branchName: string | null,
+  providerLabel: string,
+  logger?: pino.Logger
+): Promise<string> {
+  const err = error as { partialStdout?: string; partialStderr?: string };
+  const lines: string[] = [];
+
+  const partialStdout = err.partialStdout?.trim();
+  const partialStderr = err.partialStderr?.trim();
+
+  if (partialStdout) {
+    lines.push("**Partial output (stdout):**");
+    lines.push("```");
+    lines.push(clipForDiscord(partialStdout, 1800));
+    lines.push("```");
+    lines.push("");
+  }
+
+  if (partialStderr) {
+    lines.push("**Partial error output (stderr):**");
+    lines.push("```");
+    lines.push(clipForDiscord(partialStderr, 1800));
+    lines.push("```");
+    lines.push("");
+  }
+
+  if (worktreePath) {
+    if (branchName) {
+      const baseRef = await getDefaultBranchBaseRef(worktreePath, logger);
+      if (baseRef) {
+        const commits = await getCommitsSinceBaseRef(worktreePath, baseRef, logger);
+        if (commits.length > 0) {
+          lines.push(`**Commits on \`${branchName}\` (since ${baseRef}):**`);
+          for (const c of commits) {
+            lines.push(c);
+          }
+          lines.push("");
+        }
+      }
+    }
+
+    const status = await getShortStatus(worktreePath, logger);
+    if (status) {
+      lines.push("**Working tree status:**");
+      lines.push(`\`\`\`\n${clipForDiscord(status, 1800)}\n\`\`\``);
+      lines.push("");
+    }
+
+    const diff = await getUnstagedDiffSummary(worktreePath);
+    if (diff) {
+      lines.push("**Unstaged changes:**");
+      lines.push(`\`\`\`diff\n${clipForDiscord(diff, 1800)}\n\`\`\``);
+      lines.push("");
+    }
+
+    const stagedDiff = await getStagedDiffSummary(worktreePath);
+    if (stagedDiff) {
+      lines.push("**Staged changes:**");
+      lines.push(`\`\`\`diff\n${clipForDiscord(stagedDiff, 1800)}\n\`\`\``);
+      lines.push("");
+    }
+  }
+
+  const report = lines.join("\n").trim();
+  if (!report) {
+    return `${providerLabel} execution timed out. No partial output or worktree changes were captured.`;
+  }
+
+  return report;
 }
