@@ -51,6 +51,7 @@ import {
   getHeadSha,
   getReviewDiff,
   getShortStatus,
+  getStagedDiffSummary,
   getUnstagedDiffSummary,
   hasUncommittedChanges,
   hasUncommittedChangesExcluding,
@@ -285,6 +286,17 @@ function splitPlainTextForDiscord(text: string, header?: string): string[] {
       }
       if (splitAt <= 0) {
         splitAt = maxLength;
+      }
+
+      const fenceStart = remaining.lastIndexOf("\n```", splitAt);
+      if (fenceStart >= 0) {
+        const afterOpen = remaining.slice(fenceStart + 1, splitAt);
+        if (!/\n```\s*(?:\n|$)/.test(afterOpen)) {
+          const sectionStart = remaining.lastIndexOf("\n", fenceStart - 1);
+          if (sectionStart > 0) {
+            splitAt = sectionStart;
+          }
+        }
       }
     }
 
@@ -3678,8 +3690,8 @@ Output the result of the command or the link to the created issue.`;
       markFailed();
       const message = this.describeExecutionError(error);
       if (threadChannel && threadChannel.isThread()) {
-        const timeoutReport = await this.buildTimeoutReport(error, worktreePath, branchName, "plan");
-        if (timeoutReport) {
+        if (this.isProviderTimeout(error)) {
+          const timeoutReport = await this.buildTimeoutReport(error, worktreePath, branchName, "plan");
           for (const chunk of splitPlainTextForDiscord(timeoutReport, `**Plan request timed out during ${stage}**`)) {
             await threadChannel.send({ content: chunk, allowedMentions: { parse: [] } });
           }
@@ -3907,8 +3919,8 @@ Output the result of the command or the link to the created issue.`;
       markFailed();
       const message = this.describeExecutionError(error);
       if (threadChannel && threadChannel.isThread()) {
-        const timeoutReport = await this.buildTimeoutReport(error, input.worktreePath, input.branchName, "revision");
-        if (timeoutReport) {
+        if (this.isProviderTimeout(error)) {
+          const timeoutReport = await this.buildTimeoutReport(error, input.worktreePath, input.branchName, "revision");
           for (const chunk of splitPlainTextForDiscord(timeoutReport, `**Revision timed out during ${stage}**`)) {
             await threadChannel.send({ content: chunk, allowedMentions: { parse: [] } });
           }
@@ -4102,8 +4114,8 @@ Output the result of the command or the link to the created issue.`;
       markFailed();
       const message = this.describeExecutionError(error);
       if (threadChannel && threadChannel.isThread()) {
-        const timeoutReport = await this.buildTimeoutReport(error, worktreePath, branchName, providerLabel);
-        if (timeoutReport) {
+        if (this.isProviderTimeout(error)) {
+          const timeoutReport = await this.buildTimeoutReport(error, worktreePath, branchName, providerLabel);
           for (const chunk of splitPlainTextForDiscord(timeoutReport, `**${providerLabel} execution timed out**`)) {
             await threadChannel.send({ content: chunk, allowedMentions: { parse: [] } });
           }
@@ -4172,20 +4184,22 @@ Output the result of the command or the link to the created issue.`;
     return "Unknown execution error.";
   }
 
+  private isProviderTimeout(error: unknown): boolean {
+    return (
+      (error instanceof ClaudeExecutionError && error.code === "TIMEOUT") ||
+      (error instanceof CodexExecutionError && error.code === "TIMEOUT") ||
+      (error instanceof GeminiExecutionError && error.code === "TIMEOUT") ||
+      (error instanceof OpencodeExecutionError && error.code === "TIMEOUT")
+    );
+  }
+
   private async buildTimeoutReport(
     error: unknown,
     worktreePath: string | null,
     branchName: string | null,
     providerLabel: string
   ): Promise<string> {
-    const isTimeout =
-      (error instanceof ClaudeExecutionError && error.code === "TIMEOUT") ||
-      (error instanceof CodexExecutionError && error.code === "TIMEOUT") ||
-      (error instanceof GeminiExecutionError && error.code === "TIMEOUT") ||
-      (error instanceof OpencodeExecutionError && error.code === "TIMEOUT") ||
-      (error instanceof Error && error.message.toLowerCase().includes("timed out"));
-
-    if (!isTimeout) {
+    if (!this.isProviderTimeout(error)) {
       return "";
     }
 
@@ -4208,49 +4222,46 @@ Output the result of the command or the link to the created issue.`;
     }
 
     if (worktreePath && branchName) {
-      try {
-        const baseRef = await getDefaultBranchBaseRef(worktreePath);
-        if (baseRef) {
-          const commits = await getCommitsSinceBaseRef(worktreePath, baseRef);
-          if (commits.length > 0) {
-            lines.push(`**Commits on \`${branchName}\` (since ${baseRef}):**`);
-            for (const c of commits) {
-              lines.push(c);
-            }
-            lines.push("");
+      const baseRef = await getDefaultBranchBaseRef(worktreePath);
+      if (baseRef) {
+        const commits = await getCommitsSinceBaseRef(worktreePath, baseRef);
+        if (commits.length > 0) {
+          lines.push(`**Commits on \`${branchName}\` (since ${baseRef}):**`);
+          for (const c of commits) {
+            lines.push(c);
           }
+          lines.push("");
         }
-      } catch {
-        lines.push("**Commits:** (unavailable)");
+      }
+
+      const status = await getShortStatus(worktreePath);
+      if (status) {
+        lines.push("**Working tree status:**");
+        lines.push(`\`\`\`\n${clipForDiscord(status, 1800)}\n\`\`\``);
         lines.push("");
       }
 
-      try {
-        const status = await getShortStatus(worktreePath);
-        if (status) {
-          lines.push("**Working tree status:**");
-          lines.push(`\`\`\`\n${clipForDiscord(status, 1800)}\n\`\`\``);
-          lines.push("");
-        }
-      } catch {
-        lines.push("**Working tree status:** (unavailable)");
+      const diff = await getUnstagedDiffSummary(worktreePath);
+      if (diff) {
+        lines.push("**Unstaged changes:**");
+        lines.push(`\`\`\`diff\n${clipForDiscord(diff, 1800)}\n\`\`\``);
         lines.push("");
       }
 
-      try {
-        const diff = await getUnstagedDiffSummary(worktreePath);
-        if (diff) {
-          lines.push("**Unstaged changes:**");
-          lines.push(`\`\`\`diff\n${clipForDiscord(diff, 1800)}\n\`\`\``);
-          lines.push("");
-        }
-      } catch {
-        lines.push("**Unstaged changes:** (unavailable)");
+      const stagedDiff = await getStagedDiffSummary(worktreePath);
+      if (stagedDiff) {
+        lines.push("**Staged changes:**");
+        lines.push(`\`\`\`diff\n${clipForDiscord(stagedDiff, 1800)}\n\`\`\``);
         lines.push("");
       }
     }
 
-    return lines.join("\n").trim();
+    const report = lines.join("\n").trim();
+    if (!report) {
+      return `${providerLabel} execution timed out. No partial output or worktree changes were captured.`;
+    }
+
+    return report;
   }
 
   private describeInstallTarget(packageId: string, packageVersion?: string): string {

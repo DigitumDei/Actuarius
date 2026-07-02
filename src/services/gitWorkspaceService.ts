@@ -656,22 +656,45 @@ export async function getShortStatus(worktreePath: string): Promise<string> {
 
 export async function getUnstagedDiffSummary(worktreePath: string): Promise<string> {
   try {
-    const diff = await runGitDiffWithOverflowFallback(["diff"], worktreePath);
-    if (diff.trim()) {
-      return diff;
+    const result = await runGitWithOutput(["diff"], { cwd: worktreePath });
+    return result.stdout.trim();
+  } catch (error) {
+    const spawnError = error as { code?: string; stdout?: string };
+    if (spawnError.code === "EMSGSIZE") {
+      try {
+        const statResult = await runGitWithOutput(["diff", "--stat"], { cwd: worktreePath });
+        if (statResult.stdout.trim()) {
+          return statResult.stdout.trim();
+        }
+        const nameResult = await runGitWithOutput(["diff", "--name-only"], { cwd: worktreePath });
+        return nameResult.stdout.trim() || "";
+      } catch {
+        return "";
+      }
     }
     return "";
-  } catch {
-    try {
-      const statResult = await runGitWithOutput(["diff", "--stat"], { cwd: worktreePath });
-      if (statResult.stdout.trim()) {
-        return statResult.stdout.trim();
+  }
+}
+
+export async function getStagedDiffSummary(worktreePath: string): Promise<string> {
+  try {
+    const result = await runGitWithOutput(["diff", "--cached"], { cwd: worktreePath });
+    return result.stdout.trim();
+  } catch (error) {
+    const spawnError = error as { code?: string; stdout?: string };
+    if (spawnError.code === "EMSGSIZE") {
+      try {
+        const statResult = await runGitWithOutput(["diff", "--cached", "--stat"], { cwd: worktreePath });
+        if (statResult.stdout.trim()) {
+          return statResult.stdout.trim();
+        }
+        const nameResult = await runGitWithOutput(["diff", "--cached", "--name-only"], { cwd: worktreePath });
+        return nameResult.stdout.trim() || "";
+      } catch {
+        return "";
       }
-      const nameResult = await runGitWithOutput(["diff", "--name-only"], { cwd: worktreePath });
-      return nameResult.stdout.trim() || "";
-    } catch {
-      return "";
     }
+    return "";
   }
 }
 
