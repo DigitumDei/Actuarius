@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { access, appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -62,18 +62,25 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+async function findProjectConfigPath(dir: string): Promise<string | null> {
+  const primaryPath = join(dir, "mempalace.yaml");
+  if (await pathExists(primaryPath)) return primaryPath;
+  const legacyPath = join(dir, "mempal.yaml");
+  if (await pathExists(legacyPath)) return legacyPath;
+  return null;
+}
+
 function sanitizeWingPart(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
   return normalized || "repo";
 }
 
 export function buildRepoMemoryWing(repo: RepoMemoryIdentity): string {
-  const slug = sanitizeWingPart(repo.owner) + "_" + sanitizeWingPart(repo.repo);
-  // Sanitizing collapses "/", "-", "." etc. to "_", so distinct repos such as
-  // `acme-tools/web` and `acme/tools-web` would share a slug. Append a short
-  // digest of the canonical owner/repo so wings can never collide.
-  const digest = createHash("sha256").update(repo.fullName.toLowerCase()).digest("hex").slice(0, 8);
-  return "wing_repo_" + slug + "_" + digest;
+  // Mirrors `mempalace-cli init` naming (wing_<directory-name>) so repo wings
+  // merge by name with palaces initialised locally under MemPalace federation.
+  // Repos with identical names but different owners would share a wing; a
+  // single-guild deployment connects few repos, so this is accepted.
+  return "wing_" + sanitizeWingPart(repo.repo);
 }
 
 export function parseProjectConfigWing(configText: string): string | null {
@@ -210,6 +217,22 @@ export class MemPalaceRemoteService {
 
   public async ensureWorktreeConfig(repo: RepoMemoryIdentity, worktreePath: string): Promise<string> {
     if (!this.config.mempalaceRemoteEnabled) return buildRepoMemoryWing(repo);
+    // A tracked config checked out into the worktree wins outright.
+    const worktreeExisting = await findProjectConfigPath(worktreePath);
+    if (worktreeExisting) return this.ensureProjectConfig(repo, worktreePath);
+    // Otherwise copy the main checkout's config (generated or hand-tuned, e.g.
+    // via `mempalace-cli init`) so worktrees share the repo's wing and rooms.
+    const checkoutPath = buildRepoCheckoutPath(this.config.reposRootPath, repo.owner, repo.repo);
+    if (await pathExists(checkoutPath)) {
+      const wing = await this.ensureProjectConfig(repo, checkoutPath);
+      const sourcePath = await findProjectConfigPath(checkoutPath);
+      if (sourcePath) {
+        await mkdir(worktreePath, { recursive: true });
+        await writeFile(join(worktreePath, "mempalace.yaml"), await readFile(sourcePath, "utf8"), "utf8");
+        await this.ignoreGeneratedProjectConfig(worktreePath);
+        return wing;
+      }
+    }
     return this.ensureProjectConfig(repo, worktreePath);
   }
 
@@ -229,11 +252,19 @@ export class MemPalaceRemoteService {
   private async ensureProjectConfig(repo: RepoMemoryIdentity, checkoutPath: string): Promise<string> {
     await mkdir(checkoutPath, { recursive: true });
     const primaryPath = join(checkoutPath, "mempalace.yaml");
-    const legacyPath = join(checkoutPath, "mempal.yaml");
-    const existingPath = (await pathExists(primaryPath)) ? primaryPath : (await pathExists(legacyPath)) ? legacyPath : null;
+    const existingPath = await findProjectConfigPath(checkoutPath);
     if (existingPath) {
-      const wing = parseProjectConfigWing(await readFile(existingPath, "utf8"));
+      const contents = await readFile(existingPath, "utf8");
+      const wing = parseProjectConfigWing(contents);
       if (!wing) throw new MemPalaceRemoteConfigError("Existing MemPalace project config has no wing: " + existingPath);
+      // Regenerate configs we previously generated under the old hashed wing
+      // naming; configs authored outside Actuarius are honored as-is.
+      const expected = buildRepoMemoryWing(repo);
+      if (wing !== expected && contents.startsWith(GENERATED_HEADER)) {
+        this.logger.info({ repo: repo.fullName, oldWing: wing, wing: expected }, "Migrating generated MemPalace project config to new wing name");
+        await writeFile(primaryPath, renderGeneratedProjectConfig(expected, this.config.mempalaceRemoteName), "utf8");
+        return expected;
+      }
       return wing;
     }
     const wing = buildRepoMemoryWing(repo);
