@@ -110,6 +110,10 @@ if [ "$ENABLE_MEMPALACE_REMOTE" = "true" ]; then
   case "$REMOTE_PORT" in
     ''|*[!0-9]*) REMOTE_PORT="8765" ;;
   esac
+  # The in-container server must listen on all container interfaces for the
+  # published port to reach it; a container-loopback bind is unreachable from
+  # docker-proxy. Host exposure is still governed by the 127.0.0.1 publish.
+  MEMPALACE_REMOTE_BIND="0.0.0.0:$REMOTE_PORT"
   EXTRA_ARGS+=(-p "127.0.0.1:$REMOTE_PORT:$REMOTE_PORT")
 fi
 if [ -n "$MEMPALACE_REMOTE_URL" ]; then
