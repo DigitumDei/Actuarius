@@ -104,6 +104,17 @@ fi
 if [ "$ENABLE_MEMPALACE_REMOTE" = "true" ]; then
   EXTRA_ARGS+=(-e "MEMPALACE_ENABLED=true")
   EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_ENABLED=true")
+  # Publish the federation server on the VM's loopback only. Remote access
+  # goes through an IAP SSH tunnel; the port is never exposed publicly.
+  REMOTE_PORT="${MEMPALACE_REMOTE_BIND##*:}"
+  case "$REMOTE_PORT" in
+    ''|*[!0-9]*) REMOTE_PORT="8765" ;;
+  esac
+  # The in-container server must listen on all container interfaces for the
+  # published port to reach it; a container-loopback bind is unreachable from
+  # docker-proxy. Host exposure is still governed by the 127.0.0.1 publish.
+  MEMPALACE_REMOTE_BIND="0.0.0.0:$REMOTE_PORT"
+  EXTRA_ARGS+=(-p "127.0.0.1:$REMOTE_PORT:$REMOTE_PORT")
 fi
 if [ -n "$MEMPALACE_REMOTE_URL" ]; then
   EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_URL=$MEMPALACE_REMOTE_URL")
