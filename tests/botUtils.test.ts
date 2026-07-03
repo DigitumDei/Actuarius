@@ -247,6 +247,11 @@ describe("buildTimeoutReportInner", () => {
     expect(report).toBe("Codex execution timed out. No partial output or worktree changes were captured.");
   });
 
+  it("returns fallback for a null error without workspace details", async () => {
+    const report = await buildTimeoutReportInner(null, null, null, "Codex");
+    expect(report).toBe("Codex execution timed out. No partial output or worktree changes were captured.");
+  });
+
   it("escapes embedded triple backticks in partial output", async () => {
     const err = { partialStdout: "some text with ``` in it", partialStderr: "" };
     const report = await buildTimeoutReportInner(err, null, null, "Codex");

@@ -4314,11 +4314,11 @@ export async function buildTimeoutReportInner(
   providerLabel: string,
   logger?: pino.Logger
 ): Promise<string> {
-  const err = error as { partialStdout?: string; partialStderr?: string };
+  const err = error as { partialStdout?: string; partialStderr?: string } | null;
   const lines: string[] = [];
 
-  const partialStdout = err.partialStdout?.trim();
-  const partialStderr = err.partialStderr?.trim();
+  const partialStdout = err?.partialStdout?.trim();
+  const partialStderr = err?.partialStderr?.trim();
 
   if (partialStdout) {
     lines.push("**Partial output (stdout):**");

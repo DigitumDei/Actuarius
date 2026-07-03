@@ -666,7 +666,6 @@ export async function getUnstagedDiffSummary(worktreePath: string, logger?: Logg
     }
     return trimmed;
   } catch (error) {
-    const spawnError = error as { code?: string; stdout?: string };
     logger?.warn({ error, worktreePath }, "getUnstagedDiffSummary primary diff failed — falling back to --stat/--name-only");
     const fallback = await fallbackToStatOrNames(worktreePath, logger);
     if (fallback) return fallback;
@@ -683,7 +682,6 @@ export async function getStagedDiffSummary(worktreePath: string, logger?: Logger
     }
     return trimmed;
   } catch (error) {
-    const spawnError = error as { code?: string; stdout?: string };
     logger?.warn({ error, worktreePath }, "getStagedDiffSummary primary diff failed — falling back to --stat/--name-only");
     const fallback = await fallbackToCachedStatOrNames(worktreePath, logger);
     if (fallback) return fallback;
