@@ -104,6 +104,11 @@ fi
 if [ "$ENABLE_MEMPALACE_REMOTE" = "true" ]; then
   EXTRA_ARGS+=(-e "MEMPALACE_ENABLED=true")
   EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_ENABLED=true")
+  # Publish the federation server on the VM's loopback only. Remote access
+  # goes through an IAP SSH tunnel; the port is never exposed publicly.
+  REMOTE_PORT="${MEMPALACE_REMOTE_BIND##*:}"
+  REMOTE_PORT="${REMOTE_PORT:-8765}"
+  EXTRA_ARGS+=(-p "127.0.0.1:$REMOTE_PORT:$REMOTE_PORT")
 fi
 if [ -n "$MEMPALACE_REMOTE_URL" ]; then
   EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_URL=$MEMPALACE_REMOTE_URL")
