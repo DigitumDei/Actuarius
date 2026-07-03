@@ -10,6 +10,7 @@ import {
   parseProjectConfigWing,
   type RepoMemoryIdentity
 } from "../src/services/memPalaceRemoteService.js";
+import { buildRepoCheckoutPath } from "../src/services/gitWorkspaceService.js";
 
 vi.mock("../src/utils/spawnCollect.js", () => ({
   spawnCollect: vi.fn()
@@ -197,7 +198,10 @@ describe("MemPalaceRemoteService", () => {
     const homeDir = join(root, "home");
     const config = makeConfig(root);
     const repo = makeRepo();
-    const checkoutPath = join(config.reposRootPath, repo.owner, repo.repo);
+    // ensureWorktreeConfig derives the main checkout via buildRepoCheckoutPath
+    // (which sanitizes/lowercases), so the test must create that same path —
+    // a mixed-case literal only works on case-insensitive filesystems.
+    const checkoutPath = buildRepoCheckoutPath(config.reposRootPath, repo.owner, repo.repo);
     const worktreePath = join(root, "worktrees", "42");
     mkdirSync(join(checkoutPath, ".git", "info"), { recursive: true });
     mkdirSync(join(worktreePath, ".git", "info"), { recursive: true });
