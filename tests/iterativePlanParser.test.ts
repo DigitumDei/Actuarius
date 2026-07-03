@@ -84,6 +84,24 @@ describe("iterative plan parsing", () => {
     });
   });
 
+  it("parses fenced JSON with CRLF line endings", () => {
+    const text = [
+      "```json",
+      "{",
+      '  "overview": "Plan",',
+      '  "tasks": [',
+      '    { "title": "Task", "description": "Do it" }',
+      "  ]",
+      "}",
+      "```"
+    ].join("\r\n");
+
+    expect(parseIterativePlan(text)).toEqual({
+      overview: "Plan",
+      tasks: [{ title: "Task", description: "Do it" }]
+    });
+  });
+
   it("extracts a balanced plan object from surrounding prose", () => {
     const plan = JSON.stringify({
       overview: "Fix parser recovery",
