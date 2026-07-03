@@ -15,6 +15,8 @@ export interface ClaudeExecutionResult {
 
 export class ClaudeExecutionError extends Error {
   public readonly code: "CLAUDE_UNAVAILABLE" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT";
+  public partialStdout?: string;
+  public partialStderr?: string;
 
   public constructor(code: "CLAUDE_UNAVAILABLE" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT", message: string) {
     super(message);
@@ -92,7 +94,14 @@ export async function runClaudeRequest(input: ClaudeExecutionInput, logger: Logg
       extraArgs: ["--output-format", "json", "--permission-mode", "bypassPermissions"],
       supportsStdinFallback: true,
       logLabel: "Claude",
-      makeError: (code, message) => new ClaudeExecutionError(code as ClaudeExecutionError["code"], message),
+      makeError: (code, message, details) => {
+        const err = new ClaudeExecutionError(code as ClaudeExecutionError["code"], message);
+        if (details) {
+          if (details.partialStdout) err.partialStdout = details.partialStdout;
+          if (details.partialStderr) err.partialStderr = details.partialStderr;
+        }
+        return err;
+      },
       unavailableCode: "CLAUDE_UNAVAILABLE",
       timeoutCode: "TIMEOUT",
       failedCode: "FAILED",

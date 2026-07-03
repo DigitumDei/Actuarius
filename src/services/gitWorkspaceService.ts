@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { access, constants } from "node:fs/promises";
 import { join } from "node:path";
+import type { Logger } from "pino";
 import {
   configureRepositoryGitAuth,
   ensureGitHubCliAuthenticated,
@@ -633,5 +634,103 @@ export async function getDiffSinceRef(
     }
     const message = error instanceof Error ? error.message : `Could not compute diff since ${baseRef}.`;
     throw new GitWorkspaceError("DIFF_FAILED", message);
+  }
+}
+
+export async function getCommitsSinceBaseRef(worktreePath: string, baseRef: string, logger?: Logger): Promise<string[]> {
+  try {
+    const result = await runGitWithOutput(["log", "--oneline", `${baseRef}..HEAD`], { cwd: worktreePath });
+    return result.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  } catch (error) {
+    logger?.warn({ error, worktreePath, baseRef }, "getCommitsSinceBaseRef failed");
+    return [];
+  }
+}
+
+export async function getShortStatus(worktreePath: string, logger?: Logger): Promise<string> {
+  try {
+    const result = await runGitWithOutput(["status", "--short"], { cwd: worktreePath });
+    return result.stdout.replace(/\s+$/u, "");
+  } catch (error) {
+    logger?.warn({ error, worktreePath }, "getShortStatus failed");
+    return "";
+  }
+}
+
+export async function getUnstagedDiffSummary(worktreePath: string, logger?: Logger): Promise<string> {
+  try {
+    const result = await runGitWithOutput(["diff"], { cwd: worktreePath });
+    const trimmed = result.stdout.trim();
+    if (trimmed.length > 1800) {
+      return await fallbackToStatOrNames(worktreePath, logger) || "";
+    }
+    return trimmed;
+  } catch (error) {
+    logger?.warn({ error, worktreePath }, "getUnstagedDiffSummary primary diff failed — falling back to --stat/--name-only");
+    const fallback = await fallbackToStatOrNames(worktreePath, logger);
+    if (fallback) return fallback;
+    return "";
+  }
+}
+
+export async function getStagedDiffSummary(worktreePath: string, logger?: Logger): Promise<string> {
+  try {
+    const result = await runGitWithOutput(["diff", "--cached"], { cwd: worktreePath });
+    const trimmed = result.stdout.trim();
+    if (trimmed.length > 1800) {
+      return await fallbackToCachedStatOrNames(worktreePath, logger) || "";
+    }
+    return trimmed;
+  } catch (error) {
+    logger?.warn({ error, worktreePath }, "getStagedDiffSummary primary diff failed — falling back to --stat/--name-only");
+    const fallback = await fallbackToCachedStatOrNames(worktreePath, logger);
+    if (fallback) return fallback;
+    return "";
+  }
+}
+
+async function fallbackToStatOrNames(worktreePath: string, logger?: Logger): Promise<string> {
+  try {
+    const statResult = await runGitWithOutput(["diff", "--stat"], { cwd: worktreePath });
+    if (statResult.stdout.trim()) {
+      return statResult.stdout.trim();
+    }
+  } catch (error) {
+    logger?.warn({ error, worktreePath }, "fallbackToStatOrNames --stat failed");
+  }
+  try {
+    const nameResult = await runGitWithOutput(["diff", "--name-only"], { cwd: worktreePath });
+    return nameResult.stdout.trim() || "";
+  } catch (error) {
+    logger?.warn({ error, worktreePath }, "fallbackToStatOrNames --name-only failed");
+    return "";
+  }
+}
+
+async function fallbackToCachedStatOrNames(worktreePath: string, logger?: Logger): Promise<string> {
+  try {
+    const statResult = await runGitWithOutput(["diff", "--cached", "--stat"], { cwd: worktreePath });
+    if (statResult.stdout.trim()) {
+      return statResult.stdout.trim();
+    }
+  } catch (error) {
+    logger?.warn({ error, worktreePath }, "fallbackToCachedStatOrNames --cached --stat failed");
+  }
+  try {
+    const nameResult = await runGitWithOutput(["diff", "--cached", "--name-only"], { cwd: worktreePath });
+    return nameResult.stdout.trim() || "";
+  } catch (error) {
+    logger?.warn({ error, worktreePath }, "fallbackToCachedStatOrNames --cached --name-only failed");
+    return "";
+  }
+}
+
+export async function getDefaultBranchBaseRef(worktreePath: string, logger?: Logger): Promise<string> {
+  try {
+    const defaultBranch = await detectDefaultBranch(worktreePath);
+    return defaultBranch.remoteRef;
+  } catch (error) {
+    logger?.warn({ error, worktreePath }, "getDefaultBranchBaseRef failed");
+    return "";
   }
 }

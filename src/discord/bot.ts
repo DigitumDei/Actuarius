@@ -45,9 +45,14 @@ import {
   cleanupDeletedRemoteBranches,
   detectDefaultBranch,
   ensureRepoCheckedOutToMaster,
+  getCommitsSinceBaseRef,
+  getDefaultBranchBaseRef,
   getDiffSinceRef,
   getHeadSha,
   getReviewDiff,
+  getShortStatus,
+  getStagedDiffSummary,
+  getUnstagedDiffSummary,
   hasUncommittedChanges,
   hasUncommittedChangesExcluding,
   listBranches,
@@ -130,6 +135,20 @@ function isActiveRequestStatus(status: RequestStatus): boolean {
   return status === "queued" || status === "running" || status === "install_approved" || status === "install_running";
 }
 
+export function escapeDiscordFence(input: string): string {
+  return input.replace(/`{3,}/gu, (match) => {
+    if (match.length === 3) return "`\u200B``";
+    let result = "";
+    for (let i = 0; i < match.length; i++) {
+      result += "`";
+      if (i < match.length - 1) {
+        result += "\u200B";
+      }
+    }
+    return result;
+  });
+}
+
 function clipForDiscord(input: string, maxLength: number): string {
   const text = input.trim();
   if (text.length <= maxLength) {
@@ -137,6 +156,14 @@ function clipForDiscord(input: string, maxLength: number): string {
   }
 
   return `${text.slice(0, maxLength - 15).trimEnd()}\n...(truncated)`;
+}
+
+export function clipTailForDiscord(input: string, maxLength: number): string {
+  const text = input.trim();
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `...(truncated)\n${text.slice(text.length - maxLength + 15).trimStart()}`;
 }
 
 function clipForPullRequestTitle(input: string): string {
@@ -330,7 +357,7 @@ export function parseIterativePlan(text: string): { overview: string; tasks: Ite
   return null;
 }
 
-function splitPlainTextForDiscord(text: string, header?: string): string[] {
+export function splitPlainTextForDiscord(text: string, header?: string): string[] {
   const trimmedBody = text.trim();
   const normalizedHeader = header?.trim();
   const firstChunkLimit = DISCORD_MESSAGE_LIMIT - (normalizedHeader ? normalizedHeader.length + 2 : 0);
@@ -355,6 +382,39 @@ function splitPlainTextForDiscord(text: string, header?: string): string[] {
       }
       if (splitAt <= 0) {
         splitAt = maxLength;
+      }
+
+      const prefix = remaining.slice(0, splitAt);
+      let fenceCount = 0;
+      let idx = 0;
+      while (true) {
+        const pos = prefix.indexOf("```", idx);
+        if (pos === -1) break;
+        fenceCount++;
+        idx = pos + 3;
+      }
+      if (fenceCount % 2 === 1) {
+        const fenceStart = prefix.lastIndexOf("```");
+        const sectionStart = prefix.lastIndexOf("\n", fenceStart - 2);
+        if (sectionStart > 0) {
+          splitAt = sectionStart;
+        } else if (fenceStart > 0) {
+          splitAt = fenceStart;
+        } else {
+          // Fence opens at offset 0 and can't be closed in this chunk:
+          // hard-split at maxLength, close the fence, and reopen in the next chunk.
+          // Reserve 4 chars for the appended "\n```" closing fence so chunks never exceed DISCORD_MESSAGE_LIMIT.
+          splitAt = maxLength - 4;
+          const chunkBody = remaining.slice(0, splitAt) + "\n```";
+          remaining = "```\n" + remaining.slice(splitAt).trimStart();
+          if (isFirst && normalizedHeader) {
+            chunks.push(`${normalizedHeader}\n\n${chunkBody}`);
+          } else {
+            chunks.push(chunkBody);
+          }
+          isFirst = false;
+          continue;
+        }
       }
     }
 
@@ -541,7 +601,7 @@ export class ActuariusBot {
     this.memPalaceRemote = memPalaceRemote;
     this.client = new Client({
       // MessageContent is a privileged intent — must be enabled in the Discord Developer Portal
-      intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
+      intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
     });
   }
 
@@ -3747,8 +3807,16 @@ Output the result of the command or the link to the created issue.`;
       markFailed();
       const message = this.describeExecutionError(error);
       if (threadChannel && threadChannel.isThread()) {
-        await threadChannel.send(`**Plan request failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 60)}`);
-        await sendPreservedWorktreeNotice();
+        if (isProviderTimeout(error)) {
+          const timeoutReport = await buildTimeoutReportInner(error, worktreePath, branchName, "plan", this.logger);
+          for (const chunk of splitPlainTextForDiscord(timeoutReport, `**Plan request timed out during ${stage}**`)) {
+            await threadChannel.send({ content: chunk, allowedMentions: { parse: [] } });
+          }
+          await sendPreservedWorktreeNotice();
+        } else {
+          await threadChannel.send(`**Plan request failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 60)}`);
+          await sendPreservedWorktreeNotice();
+        }
       }
       this.logger.error({ error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage }, "Plan request failed");
     }
@@ -3968,7 +4036,14 @@ Output the result of the command or the link to the created issue.`;
       markFailed();
       const message = this.describeExecutionError(error);
       if (threadChannel && threadChannel.isThread()) {
-        await threadChannel.send(`**Revision failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 60)}`);
+        if (isProviderTimeout(error)) {
+          const timeoutReport = await buildTimeoutReportInner(error, input.worktreePath, input.branchName, "revision", this.logger);
+          for (const chunk of splitPlainTextForDiscord(timeoutReport, `**Revision timed out during ${stage}**`)) {
+            await threadChannel.send({ content: chunk, allowedMentions: { parse: [] } });
+          }
+        } else {
+          await threadChannel.send(`**Revision failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 60)}`);
+        }
       }
       this.logger.error({ error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage }, "Revise request failed");
     }
@@ -4156,7 +4231,14 @@ Output the result of the command or the link to the created issue.`;
       markFailed();
       const message = this.describeExecutionError(error);
       if (threadChannel && threadChannel.isThread()) {
-        await threadChannel.send(`**${providerLabel} execution failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
+        if (isProviderTimeout(error)) {
+          const timeoutReport = await buildTimeoutReportInner(error, worktreePath, branchName, providerLabel, this.logger);
+          for (const chunk of splitPlainTextForDiscord(timeoutReport, `**${providerLabel} execution timed out**`)) {
+            await threadChannel.send({ content: chunk, allowedMentions: { parse: [] } });
+          }
+        } else {
+          await threadChannel.send(`**${providerLabel} execution failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
+        }
       }
       this.logger.error(
         { error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage, provider: input.provider },
@@ -4287,4 +4369,88 @@ Output the result of the command or the link to the created issue.`;
   public getCommandNames(): string[] {
     return commandBuilders.map((command) => command.name);
   }
+}
+
+// Module-level exports for testing — class methods delegate to these.
+export function isProviderTimeout(error: unknown): boolean {
+  return (
+    (error instanceof ClaudeExecutionError && error.code === "TIMEOUT") ||
+    (error instanceof CodexExecutionError && error.code === "TIMEOUT") ||
+    (error instanceof GeminiExecutionError && error.code === "TIMEOUT") ||
+    (error instanceof OpencodeExecutionError && error.code === "TIMEOUT")
+  );
+}
+
+export async function buildTimeoutReportInner(
+  error: unknown,
+  worktreePath: string | null,
+  branchName: string | null,
+  providerLabel: string,
+  logger?: pino.Logger
+): Promise<string> {
+  const err = error as { partialStdout?: string; partialStderr?: string } | null;
+  const lines: string[] = [];
+
+  const partialStdout = err?.partialStdout?.trim();
+  const partialStderr = err?.partialStderr?.trim();
+
+  if (partialStdout) {
+    lines.push("**Partial output (stdout):**");
+    lines.push("```");
+    lines.push(escapeDiscordFence(clipForDiscord(partialStdout, 1800)));
+    lines.push("```");
+    lines.push("");
+  }
+
+  if (partialStderr) {
+    lines.push("**Partial error output (stderr):**");
+    lines.push("```");
+    lines.push(escapeDiscordFence(clipTailForDiscord(partialStderr, 1800)));
+    lines.push("```");
+    lines.push("");
+  }
+
+  if (worktreePath) {
+    if (branchName) {
+      const baseRef = await getDefaultBranchBaseRef(worktreePath, logger);
+      if (baseRef) {
+        const commits = await getCommitsSinceBaseRef(worktreePath, baseRef, logger);
+        if (commits.length > 0) {
+          lines.push(`**Commits on \`${branchName}\` (since ${baseRef}):**`);
+          for (const c of commits) {
+            lines.push(c);
+          }
+          lines.push("");
+        }
+      }
+    }
+
+    const status = await getShortStatus(worktreePath, logger);
+    if (status) {
+      lines.push("**Working tree status:**");
+      lines.push(`\`\`\`\n${escapeDiscordFence(clipForDiscord(status, 1800))}\n\`\`\``);
+      lines.push("");
+    }
+
+    const diff = await getUnstagedDiffSummary(worktreePath, logger);
+    if (diff) {
+      lines.push("**Unstaged changes:**");
+      lines.push(`\`\`\`diff\n${escapeDiscordFence(clipForDiscord(diff, 1800))}\n\`\`\``);
+      lines.push("");
+    }
+
+    const stagedDiff = await getStagedDiffSummary(worktreePath, logger);
+    if (stagedDiff) {
+      lines.push("**Staged changes:**");
+      lines.push(`\`\`\`diff\n${escapeDiscordFence(clipForDiscord(stagedDiff, 1800))}\n\`\`\``);
+      lines.push("");
+    }
+  }
+
+  const report = lines.join("\n").trim();
+  if (!report) {
+    return `${providerLabel} execution timed out. No partial output or worktree changes were captured.`;
+  }
+
+  return report;
 }

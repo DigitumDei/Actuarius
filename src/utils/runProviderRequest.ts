@@ -9,6 +9,11 @@ export interface ProviderRequestInput {
   env?: NodeJS.ProcessEnv;
 }
 
+export interface ProviderErrorDetails {
+  partialStdout?: string;
+  partialStderr?: string;
+}
+
 export interface ProviderRunnerConfig {
   /** CLI binary name, e.g. "codex" or "gemini". */
   binary: string;
@@ -27,7 +32,7 @@ export interface ProviderRunnerConfig {
   cwdFlag?: string;
   /** Human-readable label used in log messages, e.g. "Codex". */
   logLabel: string;
-  makeError: (code: string, message: string) => Error;
+  makeError: (code: string, message: string, details?: ProviderErrorDetails) => Error;
   unavailableCode: string;
   notAuthenticatedCode?: string;
   /** Regex tested against stderr to detect authentication failures. */
@@ -204,19 +209,6 @@ export async function runProviderRequest(
       throw config.makeError(config.unavailableCode, `${config.logLabel} CLI is not installed or not available in PATH.`);
     }
 
-    if (config.authFailurePattern && config.notAuthenticatedCode) {
-      const combined = [
-        nodeError.stderr,
-        ...(config.authCheckOnlyStderr ? [] : [nodeError.stdout]),
-        message,
-      ].filter(Boolean).join("\n");
-      if (config.authFailurePattern.test(combined)) {
-        const hint = config.authHint ? ` ${config.authHint}` : "";
-        logger.warn({ stderr: nodeError.stderr, stdout: nodeError.stdout?.slice(0, 1000) }, `${config.logLabel} auth failure pattern matched on process error — logging output to assist diagnosis`);
-        throw config.makeError(config.notAuthenticatedCode, `${config.logLabel} is not authenticated.${hint}`);
-      }
-    }
-
     if (nodeError.code === "EMSGSIZE") {
       throw config.makeError(config.failedCode, `${config.logLabel} output exceeded the buffer limit.`);
     }
@@ -226,7 +218,23 @@ export async function runProviderRequest(
       (nodeError.killed === true && nodeError.signal === "SIGTERM") ||
       message.toLowerCase().includes("timed out")
     ) {
-      throw config.makeError(config.timeoutCode, `${config.logLabel} execution timed out after ${input.timeoutMs}ms.`);
+      const errorDetails: ProviderErrorDetails = {};
+      if (nodeError.stdout) errorDetails.partialStdout = nodeError.stdout;
+      if (nodeError.stderr) errorDetails.partialStderr = nodeError.stderr;
+      throw config.makeError(config.timeoutCode, `${config.logLabel} execution timed out after ${input.timeoutMs}ms.`, errorDetails);
+    }
+
+    if (config.authFailurePattern && config.notAuthenticatedCode) {
+      const combined = [
+        nodeError.stderr,
+        ...(config.authCheckOnlyStderr ? [] : [nodeError.stdout]),
+        message,
+      ].filter(Boolean).join("\n");
+      if (config.authFailurePattern.test(combined)) {
+        const hint = config.authHint ? ` ${config.authHint}` : "";
+        logger.warn({ stderr: nodeError.stderr, stdout: nodeError.stdout?.slice(0, 1000) }, `${config.logLabel} auth failure pattern matched on process error \u2014 logging output to assist diagnosis`);
+        throw config.makeError(config.notAuthenticatedCode, `${config.logLabel} is not authenticated.${hint}`);
+      }
     }
 
     const stderrLines = nodeError.stderr?.trim().split("\n") ?? [];

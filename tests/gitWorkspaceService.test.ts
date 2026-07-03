@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type pino from "pino";
 
 vi.mock("../src/utils/spawnCollect.js");
 vi.mock("../src/services/githubAuthService.js", () => ({
@@ -17,9 +18,14 @@ const {
   cleanupDeletedRemoteBranches,
   detectDefaultBranch,
   GitWorkspaceError,
+  getCommitsSinceBaseRef,
+  getDefaultBranchBaseRef,
   getDiffSinceRef,
   getHeadSha,
   getReviewDiff,
+  getShortStatus,
+  getStagedDiffSummary,
+  getUnstagedDiffSummary,
   hasUncommittedChanges,
   listBranches,
   pushBranch
@@ -596,5 +602,230 @@ describe("gitWorkspaceService", () => {
     await expect(autoCommitAll("/tmp/repo", "test commit", ["docs/reviews/"])).rejects.toThrow();
     expect(mockSpawnCollect).toHaveBeenCalledTimes(3);
     expect(mockSpawnCollect).toHaveBeenNthCalledWith(3, "git", ["diff", "--cached", "--quiet"], expect.any(Object));
+  });
+
+  it("getCommitsSinceBaseRef returns commit list", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "abc123 first\n123def second\n", stderr: "" });
+
+    const commits = await getCommitsSinceBaseRef("/tmp/repo", "origin/main");
+    expect(commits).toEqual(["abc123 first", "123def second"]);
+  });
+
+  it("getCommitsSinceBaseRef returns empty array on failure", async () => {
+    mockSpawnCollect.mockRejectedValueOnce(new Error("git failed"));
+
+    const commits = await getCommitsSinceBaseRef("/tmp/repo", "origin/main");
+    expect(commits).toEqual([]);
+  });
+
+  it("getShortStatus returns porcelain status", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: " M src/index.ts\n?? new.txt\n", stderr: "" });
+
+    const status = await getShortStatus("/tmp/repo");
+    expect(status).toBe(" M src/index.ts\n?? new.txt");
+  });
+
+  it("getShortStatus returns empty string on failure", async () => {
+    mockSpawnCollect.mockRejectedValueOnce(new Error("git failed"));
+
+    const status = await getShortStatus("/tmp/repo");
+    expect(status).toBe("");
+  });
+
+  it("getUnstagedDiffSummary returns the diff text", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "diff --git a/src/index.ts b/src/index.ts\n+change", stderr: "" });
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("diff --git a/src/index.ts b/src/index.ts\n+change");
+  });
+
+  it("getUnstagedDiffSummary falls back to --stat when raw diff exceeds 1800 chars", async () => {
+    const largeDiff = "a".repeat(1801);
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: largeDiff, stderr: "" })
+      .mockResolvedValueOnce({ stdout: " src/index.ts | 2 +-\n", stderr: "" });
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("src/index.ts | 2 +-");
+  });
+
+  it("getUnstagedDiffSummary falls back to --name-only when --stat throws", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "a".repeat(1801), stderr: "" })
+      .mockRejectedValueOnce(new Error("stat failed"))
+      .mockResolvedValueOnce({ stdout: "src/index.ts\nsrc/new.ts\n", stderr: "" });
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("src/index.ts\nsrc/new.ts");
+  });
+
+  it("getUnstagedDiffSummary falls back to --stat on EMSGSIZE (non-empty overflow stdout)", async () => {
+    const overflowError = new Error("Process output exceeded maxBuffer") as Error & { code: string; stdout: string };
+    overflowError.code = "EMSGSIZE";
+    overflowError.stdout = "diff --git a/src/index.ts b/src/index.ts\n+large".repeat(10000);
+
+    mockSpawnCollect
+      .mockRejectedValueOnce(overflowError)
+      .mockResolvedValueOnce({ stdout: "src/index.ts | 1 +\n", stderr: "" });
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("src/index.ts | 1 +");
+    expect(diff).not.toContain("truncated");
+    expect(diff).not.toContain("diff --git");
+  });
+
+  it("getUnstagedDiffSummary falls back to --name-only when --stat throws on EMSGSIZE (non-empty overflow stdout)", async () => {
+    const overflowError = new Error("Process output exceeded maxBuffer") as Error & { code: string; stdout: string };
+    overflowError.code = "EMSGSIZE";
+    overflowError.stdout = "diff --git a/src/index.ts b/src/index.ts\n+large".repeat(10000);
+
+    mockSpawnCollect
+      .mockRejectedValueOnce(overflowError)
+      .mockRejectedValueOnce(new Error("stat failed"))
+      .mockResolvedValueOnce({ stdout: "src/index.ts\n", stderr: "" });
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("src/index.ts");
+    expect(diff).not.toContain("truncated");
+  });
+
+  it("getUnstagedDiffSummary returns empty string on total failure", async () => {
+    mockSpawnCollect
+      .mockRejectedValueOnce(new Error("git failed"))
+      .mockRejectedValueOnce(new Error("stat failed"))
+      .mockRejectedValueOnce(new Error("name-only failed"));
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("");
+  });
+
+  it("getUnstagedDiffSummary logs warn on EMSGSIZE when logger is provided", async () => {
+    const logger = { warn: vi.fn() } as unknown as pino.Logger;
+    const overflowError = new Error("overflow") as Error & { code: string; stdout: string };
+    overflowError.code = "EMSGSIZE";
+    overflowError.stdout = "diff".repeat(10000);
+    mockSpawnCollect
+      .mockRejectedValueOnce(overflowError)
+      .mockResolvedValueOnce({ stdout: "src/index.ts | 1 +\n", stderr: "" });
+
+    await getUnstagedDiffSummary("/tmp/repo", logger);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: overflowError }),
+      "getUnstagedDiffSummary primary diff failed — falling back to --stat/--name-only"
+    );
+  });
+
+  it("getStagedDiffSummary logs warn on EMSGSIZE when logger is provided", async () => {
+    const logger = { warn: vi.fn() } as unknown as pino.Logger;
+    const overflowError = new Error("overflow") as Error & { code: string; stdout: string };
+    overflowError.code = "EMSGSIZE";
+    overflowError.stdout = "diff".repeat(10000);
+    mockSpawnCollect
+      .mockRejectedValueOnce(overflowError)
+      .mockResolvedValueOnce({ stdout: "src/index.ts | 2 +-\n", stderr: "" });
+
+    await getStagedDiffSummary("/tmp/repo", logger);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: overflowError }),
+      "getStagedDiffSummary primary diff failed — falling back to --stat/--name-only"
+    );
+  });
+
+  it("getStagedDiffSummary returns staged diff", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "diff --git a/src/index.ts b/src/index.ts\n+staged", stderr: "" });
+
+    const diff = await getStagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("diff --git a/src/index.ts b/src/index.ts\n+staged");
+  });
+
+  it("getStagedDiffSummary falls back to --stat for large staged diff", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "a".repeat(1801), stderr: "" })
+      .mockResolvedValueOnce({ stdout: " src/index.ts | 1 +\n", stderr: "" });
+
+    const diff = await getStagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("src/index.ts | 1 +");
+  });
+
+  it("getStagedDiffSummary falls back to --name-only when --cached --stat throws", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "a".repeat(1801), stderr: "" })
+      .mockRejectedValueOnce(new Error("stat failed"))
+      .mockResolvedValueOnce({ stdout: "src/index.ts\n", stderr: "" });
+
+    const diff = await getStagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("src/index.ts");
+  });
+
+  it("getStagedDiffSummary falls back to --stat on EMSGSIZE for cached diff (non-empty overflow stdout)", async () => {
+    const overflowError = new Error("overflow") as Error & { code: string; stdout: string };
+    overflowError.code = "EMSGSIZE";
+    overflowError.stdout = "diff --git a/src/staged.ts b/src/staged.ts\n+large".repeat(10000);
+
+    mockSpawnCollect
+      .mockRejectedValueOnce(overflowError)
+      .mockResolvedValueOnce({ stdout: "src/index.ts | 2 +-\n", stderr: "" });
+
+    const diff = await getStagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("src/index.ts | 2 +-");
+    expect(diff).not.toContain("truncated");
+  });
+
+  it("getDefaultBranchBaseRef returns the remote ref", async () => {
+    mockSpawnCollect
+      .mockResolvedValueOnce({ stdout: "refs/remotes/origin/main\n", stderr: "" });
+
+    const ref = await getDefaultBranchBaseRef("/tmp/repo");
+    expect(ref).toBe("origin/main");
+  });
+
+  it("getDefaultBranchBaseRef returns empty string on failure", async () => {
+    mockSpawnCollect
+      .mockRejectedValueOnce(new Error("no HEAD"))
+      .mockRejectedValueOnce(new Error("no main"))
+      .mockRejectedValueOnce(new Error("no master"));
+
+    const ref = await getDefaultBranchBaseRef("/tmp/repo");
+    expect(ref).toBe("");
+  });
+
+  it("getUnstagedDiffSummary logs warn on non-EMSGSIZE primary failure", async () => {
+    const logger = { warn: vi.fn() } as unknown as pino.Logger;
+    const primaryError = new Error("fatal: bad revision");
+    mockSpawnCollect
+      .mockRejectedValueOnce(primaryError)
+      .mockResolvedValueOnce({ stdout: "src/index.ts | 1 +\n", stderr: "" });
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo", logger);
+    expect(diff).toBe("src/index.ts | 1 +");
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: primaryError }),
+      "getUnstagedDiffSummary primary diff failed — falling back to --stat/--name-only"
+    );
+  });
+
+  it("getStagedDiffSummary logs warn on non-EMSGSIZE primary failure", async () => {
+    const logger = { warn: vi.fn() } as unknown as pino.Logger;
+    const primaryError = new Error("fatal: bad revision");
+    mockSpawnCollect
+      .mockRejectedValueOnce(primaryError)
+      .mockResolvedValueOnce({ stdout: "src/index.ts | 2 +-\n", stderr: "" });
+
+    const diff = await getStagedDiffSummary("/tmp/repo", logger);
+    expect(diff).toBe("src/index.ts | 2 +-");
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: primaryError }),
+      "getStagedDiffSummary primary diff failed — falling back to --stat/--name-only"
+    );
+  });
+
+  it("getUnstagedDiffSummary falls back to empty string when fallback also fails", async () => {
+    mockSpawnCollect
+      .mockRejectedValueOnce(new Error("primary failed"))
+      .mockRejectedValueOnce(new Error("stat failed"))
+      .mockRejectedValueOnce(new Error("name-only failed"));
+
+    const diff = await getUnstagedDiffSummary("/tmp/repo");
+    expect(diff).toBe("");
   });
 });
