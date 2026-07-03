@@ -34,6 +34,12 @@ isolated git worktrees on a branch created for the request.
 - Use \`gh\` for author-sensitive GitHub actions (pull requests, comments,
   review replies) so the bot identity is used.
 
+## Build & validation rules
+- This VM is small. Do not run heavy builds (Gradle, Android, large native
+  compiles) locally — they starve the machine and time out.
+- Run lightweight checks locally (lint, type-check, focused unit tests), then
+  push your branch and let the repository's CI validate the full build.
+
 ## Memory rules
 - Repo knowledge belongs in the repo's wing (see mempalace.yaml in your
   worktree); use the branch name as the room.
