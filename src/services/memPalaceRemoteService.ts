@@ -435,6 +435,14 @@ export class MemPalaceRemoteService {
       wings[wing] = { mode: "combined", remote: this.config.mempalaceRemoteName, write: "remote" };
     }
 
+    // Route the knowledge graph through the remote store so KG facts recorded
+    // by container agents are visible to federated peers. KG routing is a
+    // single global rule in mempalace (not per-wing); an operator-authored
+    // rule already present in the config is preserved.
+    const kg = isRecord(federation.kg)
+      ? federation.kg
+      : { mode: "combined", remote: this.config.mempalaceRemoteName, write: "remote" };
+
     const nextConfig = {
       ...current,
       version: 1,
@@ -449,7 +457,8 @@ export class MemPalaceRemoteService {
         ...federation,
         remotes,
         default_mode: typeof federation.default_mode === "string" ? federation.default_mode : "local",
-        wings
+        wings,
+        kg
       }
     };
     await writeFile(configPath, JSON.stringify(nextConfig, null, 2) + "\n", "utf8");
