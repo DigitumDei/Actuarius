@@ -6,7 +6,7 @@ import { ActuariusBot } from "./discord/bot.js";
 import { logger } from "./logger.js";
 import { runCapabilityChecks } from "./services/capabilityService.js";
 import { initializeGitHubAuth } from "./services/githubAuthService.js";
-import { MemPalaceClient } from "./services/memPalaceClient.js";
+import { ensurePalaceIdentity, MemPalaceClient } from "./services/memPalaceClient.js";
 import { MemPalaceRemoteService } from "./services/memPalaceRemoteService.js";
 import { startMemPalaceRemoteWithRetry } from "./services/memPalaceRemoteStartup.js";
 
@@ -55,6 +55,7 @@ async function main(): Promise<void> {
 
   let memPalace: MemPalaceClient | null = null;
   if (appConfig.mempalaceEnabled) {
+    await ensurePalaceIdentity(logger);
     memPalace = new MemPalaceClient(appConfig.mempalaceBinaryPath, appConfig.mempalacePalacePath, logger);
     try {
       await memPalace.start();

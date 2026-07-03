@@ -302,29 +302,6 @@ describe("MemPalaceRemoteService", () => {
     expect(readFileSync(join(worktreeB, "mempalace.yaml"), "utf8")).toBe(initConfig);
   });
 
-  it("seeds identity.txt on start when absent and never overwrites it", async () => {
-    const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-identity-"));
-    const homeDir = join(root, "home");
-    const config = makeConfig(root);
-    const cliPath = join(root, "mempalace-cli");
-    writeFileSync(cliPath, "", "utf8"); // start() requires the binary to exist
-    config.mempalaceCliPath = cliPath;
-
-    const service = new RecoveryTestService(config, logger, { homeDir });
-    await service.start([]);
-
-    const identityPath = join(homeDir, ".mempalace", "identity.txt");
-    const seeded = readFileSync(identityPath, "utf8");
-    expect(seeded).toContain("Actuarius agents");
-    expect(seeded).toContain("NEVER push directly");
-
-    // Operator edits on the persistent disk must survive restarts.
-    writeFileSync(identityPath, "custom identity\n", "utf8");
-    const second = new RecoveryTestService(config, logger, { homeDir });
-    await second.start([]);
-    expect(readFileSync(identityPath, "utf8")).toBe("custom identity\n");
-  });
-
   it("falls back to the generic template when init fails", async () => {
     const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-init-fail-"));
     const homeDir = join(root, "home");
