@@ -263,6 +263,45 @@ describe("MemPalaceRemoteService", () => {
     );
   });
 
+  it("serializes concurrent config creation for the same checkout — init runs once", async () => {
+    const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-init-race-"));
+    const homeDir = join(root, "home");
+    const config = makeConfig(root);
+    config.mempalaceCliPath = join(root, "mempalace-cli");
+    writeFileSync(config.mempalaceCliPath, "", "utf8");
+    const repo = makeRepo();
+    const checkoutPath = buildRepoCheckoutPath(config.reposRootPath, repo.owner, repo.repo);
+    const worktreeA = join(root, "worktrees", "44");
+    const worktreeB = join(root, "worktrees", "45");
+    mkdirSync(join(checkoutPath, ".git", "info"), { recursive: true });
+    mkdirSync(join(worktreeA, ".git", "info"), { recursive: true });
+    mkdirSync(join(worktreeB, ".git", "info"), { recursive: true });
+    const initConfig = "wing: wing_actuarius\nrooms:\n- name: discord\n  keywords: [discord]\n";
+    let initCalls = 0;
+    mockSpawnCollect.mockImplementation(async (_file, args) => {
+      if ((args as string[]).includes("init")) {
+        initCalls += 1;
+        // Simulate a slow init so a racing second caller would observe the
+        // missing file and spawn a duplicate init without serialization.
+        await new Promise((r) => setTimeout(r, 20));
+        writeFileSync(join(checkoutPath, "mempalace.yaml"), initConfig, "utf8");
+      }
+      return { stdout: ".git\n", stderr: "" };
+    });
+
+    const service = new MemPalaceRemoteService(config, logger, { homeDir });
+    const [wingA, wingB] = await Promise.all([
+      service.ensureWorktreeConfig(repo, worktreeA),
+      service.ensureWorktreeConfig(repo, worktreeB)
+    ]);
+
+    expect(wingA).toBe("wing_actuarius");
+    expect(wingB).toBe("wing_actuarius");
+    expect(initCalls).toBe(1);
+    expect(readFileSync(join(worktreeA, "mempalace.yaml"), "utf8")).toBe(initConfig);
+    expect(readFileSync(join(worktreeB, "mempalace.yaml"), "utf8")).toBe(initConfig);
+  });
+
   it("falls back to the generic template when init fails", async () => {
     const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-init-fail-"));
     const homeDir = join(root, "home");

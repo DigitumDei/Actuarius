@@ -148,6 +148,7 @@ export class MemPalaceRemoteService {
   private readonly repoCheckouts = new Map<string, string>();
   private readonly repoWings = new Map<string, string>();
   private readonly mineJobs = new Map<string, Promise<void>>();
+  private readonly projectConfigOps = new Map<string, Promise<string>>();
   private static readonly SERVER_RETRY_DELAY_MS = 30_000;
   private server: ChildProcess | null = null;
   private serverRunning = false;
@@ -249,7 +250,29 @@ export class MemPalaceRemoteService {
     this.mineJobs.set(checkoutPath, job);
   }
 
-  private async ensureProjectConfig(
+  private ensureProjectConfig(
+    repo: RepoMemoryIdentity,
+    checkoutPath: string,
+    options: { allowInit?: boolean } = {}
+  ): Promise<string> {
+    // Serialize per checkout path: concurrent requests for the same repo
+    // would otherwise race `mempalace-cli init` / template writes against the
+    // same mempalace.yaml. Each queued call still re-reads the file, so later
+    // callers observe whatever the earlier one wrote.
+    const prev = this.projectConfigOps.get(checkoutPath) ?? Promise.resolve();
+    const op = prev
+      .catch(() => undefined)
+      .then(() => this.ensureProjectConfigUnlocked(repo, checkoutPath, options));
+    this.projectConfigOps.set(checkoutPath, op);
+    op
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.projectConfigOps.get(checkoutPath) === op) this.projectConfigOps.delete(checkoutPath);
+      });
+    return op;
+  }
+
+  private async ensureProjectConfigUnlocked(
     repo: RepoMemoryIdentity,
     checkoutPath: string,
     options: { allowInit?: boolean } = {}
