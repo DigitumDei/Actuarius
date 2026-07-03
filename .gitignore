@@ -25,6 +25,3 @@ infra/*.tfplan
 
 # Request worktrees from local bot runs
 .worktrees/
-
-# MemPalace
-mempalace.yaml

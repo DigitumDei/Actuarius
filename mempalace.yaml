@@ -1,0 +1,82 @@
+wing: wing_actuarius
+rooms:
+- name: .claude
+  description: Files from .claude/
+  keywords:
+  - .claude
+  - .claude
+- name: .github
+  description: Files from .github/
+  keywords:
+  - .github
+  - .github
+- name: .terraform
+  description: Files from .terraform/
+  keywords:
+  - .terraform
+  - .terraform
+- name: backend
+  description: Files from db, services/
+  keywords:
+  - backend
+  - db
+  - services
+- name: configuration
+  description: Files from infra/
+  keywords:
+  - configuration
+  - infra
+- name: discord
+  description: Files from discord/
+  keywords:
+  - discord
+  - discord
+- name: docker
+  description: Files from docker/
+  keywords:
+  - docker
+  - docker
+- name: documentation
+  description: Files from docs/
+  keywords:
+  - documentation
+  - docs
+- name: general
+  description: Files that don't fit other rooms
+  keywords: []
+- name: llm_user_instructions
+  description: Files from llm-user-instructions/
+  keywords:
+  - llm_user_instructions
+  - llm-user-instructions
+- name: reviews
+  description: Files from reviews/
+  keywords:
+  - reviews
+  - reviews
+- name: scripts
+  description: Files from scripts, utils/
+  keywords:
+  - scripts
+  - scripts
+  - utils
+- name: src
+  description: Files from src/
+  keywords:
+  - src
+  - src
+- name: testing
+  description: Files from tests/
+  keywords:
+  - testing
+  - tests
+- name: todo
+  description: Files from todo/
+  keywords:
+  - todo
+  - todo
+- name: workflows
+  description: Files from workflows/
+  keywords:
+  - workflows
+  - workflows
