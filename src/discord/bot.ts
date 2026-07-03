@@ -72,7 +72,7 @@ import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
 import { InstallService, InstallServiceError } from "../services/installService.js";
 import { buildAptPackageId, getAptPackageSpec, isAptPackageId } from "../services/installerRegistry.js";
 import { createRequestWorktree, deleteRequestBranch, RequestWorktreeError } from "../services/requestWorktreeService.js";
-import { MemPalaceClient } from "../services/memPalaceClient.js";
+import { BOT_MEMORY_WING, MemPalaceClient } from "../services/memPalaceClient.js";
 import { MemPalaceRemoteService, type RepoMemoryIdentity } from "../services/memPalaceRemoteService.js";
 import { createDraftPullRequest, PullRequestServiceError } from "../services/pullRequestService.js";
 import {
@@ -627,7 +627,7 @@ export class ActuariusBot {
       }
 
       if (this.memPalace) {
-        this.memPalace.wakeUp("wing_actuarius").then((ctx) => {
+        this.memPalace.wakeUp(BOT_MEMORY_WING).then((ctx) => {
           this.logger.info({ contextLength: ctx.length }, "MemPalace wake-up complete");
         }).catch((err: unknown) => {
           this.logger.warn({ error: err }, "MemPalace wake-up failed");
@@ -3457,7 +3457,7 @@ Output the result of the command or the link to the created issue.`;
     try {
       if (subcommand === "search") {
         const query = interaction.options.getString("query", true);
-        const result = await this.memPalace.search(query, { wing: "wing_actuarius" });
+        const result = await this.memPalace.search(query, { wing: BOT_MEMORY_WING });
         const body = result.trim() || "No results found.";
         for (const chunk of splitIntoDiscordMessages(body, "MemPalace")) {
           await interaction.followUp({ content: chunk, ephemeral: true });
@@ -3745,7 +3745,7 @@ Output the result of the command or the link to the created issue.`;
             "",
             taskSummaries
           ].join("\n");
-          this.memPalace.addDrawer(drawerContent, "wing_actuarius", "requests").catch((err: unknown) => {
+          this.memPalace.addDrawer(drawerContent, BOT_MEMORY_WING, "requests").catch((err: unknown) => {
             this.logger.warn({ error: err, requestId: input.requestId }, "MemPalace addDrawer failed");
           });
         }
@@ -3798,7 +3798,7 @@ Output the result of the command or the link to the created issue.`;
             "",
             implementationText
           ].join("\n");
-          this.memPalace.addDrawer(drawerContent, "wing_actuarius", "requests").catch((err: unknown) => {
+          this.memPalace.addDrawer(drawerContent, BOT_MEMORY_WING, "requests").catch((err: unknown) => {
             this.logger.warn({ error: err, requestId: input.requestId }, "MemPalace addDrawer failed");
           });
         }
@@ -4028,7 +4028,7 @@ Output the result of the command or the link to the created issue.`;
           "",
           taskSummaries
         ].join("\n");
-        this.memPalace.addDrawer(drawerContent, "wing_actuarius", "requests").catch((err: unknown) => {
+        this.memPalace.addDrawer(drawerContent, BOT_MEMORY_WING, "requests").catch((err: unknown) => {
           this.logger.warn({ error: err, requestId: input.requestId }, "MemPalace addDrawer failed");
         });
       }
@@ -4223,7 +4223,7 @@ Output the result of the command or the link to the created issue.`;
           "",
           resultText,
         ].join("\n");
-        this.memPalace.addDrawer(drawerContent, "wing_actuarius", "requests").catch((err: unknown) => {
+        this.memPalace.addDrawer(drawerContent, BOT_MEMORY_WING, "requests").catch((err: unknown) => {
           this.logger.warn({ error: err, requestId: input.requestId }, "MemPalace addDrawer failed");
         });
       }

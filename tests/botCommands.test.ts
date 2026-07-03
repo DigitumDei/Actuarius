@@ -3662,7 +3662,7 @@ describe("ActuariusBot plan runner", () => {
 
     expect(addDrawer).toHaveBeenCalledWith(
       expect.stringContaining("## Task Results"),
-      "wing_actuarius",
+      "wing_actuarius_agent",
       "requests"
     );
     expect(addDrawer.mock.calls[0]![0]).toContain("Test overview");

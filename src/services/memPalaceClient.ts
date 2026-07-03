@@ -3,6 +3,14 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { Logger } from "pino";
 
+/**
+ * Wing for the bot's own operational memory (wake-up context, request
+ * summaries, diary). Deliberately distinct from the repo memory wing the
+ * repo named `Actuarius` derives (`wing_actuarius`), and from mempalace's
+ * reserved shared diary wing (`wing_agents`).
+ */
+export const BOT_MEMORY_WING = "wing_actuarius_agent";
+
 interface PendingRequest {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
@@ -123,7 +131,7 @@ export class MemPalaceClient {
       content,
       topic,
       scope: "project",
-      wing: "wing_actuarius",
+      wing: BOT_MEMORY_WING,
     });
   }
 

@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { access, appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -62,18 +62,25 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+async function findProjectConfigPath(dir: string): Promise<string | null> {
+  const primaryPath = join(dir, "mempalace.yaml");
+  if (await pathExists(primaryPath)) return primaryPath;
+  const legacyPath = join(dir, "mempal.yaml");
+  if (await pathExists(legacyPath)) return legacyPath;
+  return null;
+}
+
 function sanitizeWingPart(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
   return normalized || "repo";
 }
 
 export function buildRepoMemoryWing(repo: RepoMemoryIdentity): string {
-  const slug = sanitizeWingPart(repo.owner) + "_" + sanitizeWingPart(repo.repo);
-  // Sanitizing collapses "/", "-", "." etc. to "_", so distinct repos such as
-  // `acme-tools/web` and `acme/tools-web` would share a slug. Append a short
-  // digest of the canonical owner/repo so wings can never collide.
-  const digest = createHash("sha256").update(repo.fullName.toLowerCase()).digest("hex").slice(0, 8);
-  return "wing_repo_" + slug + "_" + digest;
+  // Mirrors `mempalace-cli init` naming (wing_<directory-name>) so repo wings
+  // merge by name with palaces initialised locally under MemPalace federation.
+  // Repos with identical names but different owners would share a wing; a
+  // single-guild deployment connects few repos, so this is accepted.
+  return "wing_" + sanitizeWingPart(repo.repo);
 }
 
 export function parseProjectConfigWing(configText: string): string | null {
@@ -141,6 +148,7 @@ export class MemPalaceRemoteService {
   private readonly repoCheckouts = new Map<string, string>();
   private readonly repoWings = new Map<string, string>();
   private readonly mineJobs = new Map<string, Promise<void>>();
+  private readonly projectConfigOps = new Map<string, Promise<string>>();
   private static readonly SERVER_RETRY_DELAY_MS = 30_000;
   private server: ChildProcess | null = null;
   private serverRunning = false;
@@ -210,7 +218,23 @@ export class MemPalaceRemoteService {
 
   public async ensureWorktreeConfig(repo: RepoMemoryIdentity, worktreePath: string): Promise<string> {
     if (!this.config.mempalaceRemoteEnabled) return buildRepoMemoryWing(repo);
-    return this.ensureProjectConfig(repo, worktreePath);
+    // A tracked config checked out into the worktree wins outright.
+    const worktreeExisting = await findProjectConfigPath(worktreePath);
+    if (worktreeExisting) return this.ensureProjectConfig(repo, worktreePath, { allowInit: false });
+    // Otherwise copy the main checkout's config (generated or hand-tuned, e.g.
+    // via `mempalace-cli init`) so worktrees share the repo's wing and rooms.
+    const checkoutPath = buildRepoCheckoutPath(this.config.reposRootPath, repo.owner, repo.repo);
+    if (await pathExists(checkoutPath)) {
+      const wing = await this.ensureProjectConfig(repo, checkoutPath);
+      const sourcePath = await findProjectConfigPath(checkoutPath);
+      if (sourcePath) {
+        await mkdir(worktreePath, { recursive: true });
+        await writeFile(join(worktreePath, "mempalace.yaml"), await readFile(sourcePath, "utf8"), "utf8");
+        await this.ignoreGeneratedProjectConfig(worktreePath);
+        return wing;
+      }
+    }
+    return this.ensureProjectConfig(repo, worktreePath, { allowInit: false });
   }
 
   public queueMainBranchMine(repo: RepoMemoryIdentity, checkoutPath: string, wing: string): void {
@@ -226,19 +250,110 @@ export class MemPalaceRemoteService {
     this.mineJobs.set(checkoutPath, job);
   }
 
-  private async ensureProjectConfig(repo: RepoMemoryIdentity, checkoutPath: string): Promise<string> {
+  private ensureProjectConfig(
+    repo: RepoMemoryIdentity,
+    checkoutPath: string,
+    options: { allowInit?: boolean } = {}
+  ): Promise<string> {
+    // Serialize per checkout path: concurrent requests for the same repo
+    // would otherwise race `mempalace-cli init` / template writes against the
+    // same mempalace.yaml. Each queued call still re-reads the file, so later
+    // callers observe whatever the earlier one wrote.
+    const prev = this.projectConfigOps.get(checkoutPath) ?? Promise.resolve();
+    const op = prev
+      .catch(() => undefined)
+      .then(() => this.ensureProjectConfigUnlocked(repo, checkoutPath, options));
+    this.projectConfigOps.set(checkoutPath, op);
+    op
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.projectConfigOps.get(checkoutPath) === op) this.projectConfigOps.delete(checkoutPath);
+      });
+    return op;
+  }
+
+  private async ensureProjectConfigUnlocked(
+    repo: RepoMemoryIdentity,
+    checkoutPath: string,
+    options: { allowInit?: boolean } = {}
+  ): Promise<string> {
+    // Init derives the wing from the directory leaf, which for request
+    // worktrees is the request id — callers pass allowInit: false there.
+    const allowInit = options.allowInit ?? true;
     await mkdir(checkoutPath, { recursive: true });
     const primaryPath = join(checkoutPath, "mempalace.yaml");
-    const legacyPath = join(checkoutPath, "mempal.yaml");
-    const existingPath = (await pathExists(primaryPath)) ? primaryPath : (await pathExists(legacyPath)) ? legacyPath : null;
+    const existingPath = await findProjectConfigPath(checkoutPath);
     if (existingPath) {
-      const wing = parseProjectConfigWing(await readFile(existingPath, "utf8"));
+      const contents = await readFile(existingPath, "utf8");
+      const wing = parseProjectConfigWing(contents);
       if (!wing) throw new MemPalaceRemoteConfigError("Existing MemPalace project config has no wing: " + existingPath);
+      // Regenerate configs we previously generated under the old hashed wing
+      // naming; configs authored outside Actuarius are honored as-is.
+      const expected = buildRepoMemoryWing(repo);
+      if (wing !== expected && contents.startsWith(GENERATED_HEADER)) {
+        this.logger.info({ repo: repo.fullName, oldWing: wing, wing: expected }, "Migrating generated MemPalace project config to new wing name");
+        return this.writeProjectConfig(repo, checkoutPath, primaryPath, allowInit, { overwrite: true });
+      }
       return wing;
+    }
+    return this.writeProjectConfig(repo, checkoutPath, primaryPath, allowInit, {});
+  }
+
+  /**
+   * Create the project config, preferring `mempalace-cli init` (which detects
+   * rooms from the repo structure) and falling back to the generic template
+   * when init is unavailable or fails.
+   */
+  private async writeProjectConfig(
+    repo: RepoMemoryIdentity,
+    checkoutPath: string,
+    primaryPath: string,
+    allowInit: boolean,
+    options: { overwrite?: boolean }
+  ): Promise<string> {
+    if (allowInit) {
+      const initWing = await this.runProjectInit(repo, checkoutPath, options);
+      if (initWing) {
+        await this.ignoreGeneratedProjectConfig(checkoutPath);
+        return initWing;
+      }
     }
     const wing = buildRepoMemoryWing(repo);
     await writeFile(primaryPath, renderGeneratedProjectConfig(wing, this.config.mempalaceRemoteName), "utf8");
     await this.ignoreGeneratedProjectConfig(checkoutPath);
+    return wing;
+  }
+
+  private async runProjectInit(
+    repo: RepoMemoryIdentity,
+    checkoutPath: string,
+    options: { overwrite?: boolean }
+  ): Promise<string | null> {
+    if (!existsSync(this.config.mempalaceCliPath)) return null;
+    const args = ["--palace", this.config.mempalacePalacePath, "init", checkoutPath];
+    if (options.overwrite) args.push("--yes");
+    try {
+      await spawnCollect(this.config.mempalaceCliPath, args, {
+        cwd: checkoutPath,
+        env: this.buildProcessEnv(),
+        timeoutMs: this.config.mempalaceRemoteMineTimeoutMs,
+        maxBuffer: 4 * 1024 * 1024
+      });
+    } catch (error) {
+      this.logger.warn({ error, repo: repo.fullName, checkoutPath }, "mempalace-cli init failed; falling back to generated project config");
+      return null;
+    }
+    const configPath = join(checkoutPath, "mempalace.yaml");
+    if (!(await pathExists(configPath))) {
+      this.logger.warn({ repo: repo.fullName, checkoutPath }, "mempalace-cli init succeeded but wrote no mempalace.yaml; falling back to generated project config");
+      return null;
+    }
+    const wing = parseProjectConfigWing(await readFile(configPath, "utf8"));
+    if (!wing) {
+      this.logger.warn({ repo: repo.fullName, checkoutPath }, "mempalace-cli init config has no wing; falling back to generated project config");
+      return null;
+    }
+    this.logger.info({ repo: repo.fullName, wing, checkoutPath }, "MemPalace project config created via mempalace-cli init");
     return wing;
   }
 
