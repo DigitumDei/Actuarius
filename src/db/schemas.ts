@@ -17,7 +17,7 @@ const reviewRunStatusSchema = z.enum(["running", "completed", "failed"]);
 
 const reviewVerdictSchema = z.enum(["ready_for_pr", "revise"]);
 
-const installRequestStatusSchema = z.enum(["approved", "running", "succeeded", "failed"]);
+const installRequestStatusSchema = z.enum(["approved", "running", "succeeded", "failed", "invalidated"]);
 
 const installScopeSchema = z.enum(["repo", "request"]);
 

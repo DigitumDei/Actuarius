@@ -714,6 +714,17 @@ export class ActuariusBot {
     const parentId = message.channel.parentId;
     if (!parentId) return;
 
+    if (this.requestQueue.hasResourceWork(message.guildId, message.channelId)) {
+      await message.reply("Another operation in this thread is already queued or running. Wait for it to finish before sending a follow-up.");
+      return;
+    }
+
+    const currentRequest = this.db.getRequestByThreadId(message.channelId);
+    if (currentRequest && isActiveRequestStatus(currentRequest.status)) {
+      await message.reply("Another request in this thread is already queued or running. Wait for it to finish before sending a follow-up.");
+      return;
+    }
+
     const latestRequest = this.db.getLatestRequestWithWorkspaceByThreadId(message.channelId);
     const existingWorktreePath = latestRequest?.worktree_path;
     if (!existingWorktreePath) {
@@ -799,7 +810,7 @@ export class ActuariusBot {
       if (latestRequest.branch_name) followUpInput.existingBranchName = latestRequest.branch_name;
       if (pendingAttachments.length > 0) followUpInput.attachments = pendingAttachments;
       await this.runQueuedRequest(followUpInput);
-    });
+    }, message.channelId);
   }
 
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -833,6 +844,9 @@ export class ActuariusBot {
         return;
       case "install":
         await this.handleInstall(interaction);
+        return;
+      case "uninstall":
+        await this.handleUninstall(interaction);
         return;
       case "bug":
         await this.handleIssueCreate(interaction, "bug");
@@ -2281,8 +2295,10 @@ export class ActuariusBot {
     const channel = interaction.channel?.isTextBased() && !interaction.channel.isDMBased() ? interaction.channel : null;
     const userId = interaction.user.id;
 
-    void this.runQueuedGuildTask(interaction.guildId, async () =>
-      this.installService.runInstall(installRequest.id)
+    void this.runQueuedGuildTask(
+      interaction.guildId,
+      async () => this.installService.runInstall(installRequest.id),
+      threadId ?? undefined
     ).then(async (completedInstall) => {
       await channel?.send(
         [
@@ -2297,7 +2313,82 @@ export class ActuariusBot {
     });
   }
 
-  private async runQueuedGuildTask<T>(guildId: string, task: () => Promise<T>): Promise<T> {
+  private async handleUninstall(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to invalidate tools.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const selectedPackageId = interaction.options.getString("package");
+    const aptPackage = interaction.options.getString("apt-package");
+    const scope = interaction.options.getString("scope", true);
+    if (scope !== "repo" && scope !== "request") {
+      await interaction.reply({ content: "Invalid uninstall scope.", ephemeral: true });
+      return;
+    }
+    if ((!selectedPackageId && !aptPackage) || (selectedPackageId && aptPackage)) {
+      await interaction.reply({ content: "Specify exactly one of `package` or `apt-package`.", ephemeral: true });
+      return;
+    }
+
+    let packageId: string;
+    try {
+      packageId = selectedPackageId ?? buildAptPackageId(aptPackage!);
+    } catch (error) {
+      await interaction.reply({ content: `Uninstall failed: ${this.describeExecutionError(error)}`, ephemeral: true });
+      return;
+    }
+
+    const repo = this.resolveRepoFromInteraction(interaction);
+    if (!repo) {
+      await interaction.reply({
+        content: "No connected repo could be resolved. Run this in a mapped repo channel or thread.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    let threadId: string | null = null;
+    if (scope === "request") {
+      if (!interaction.channel?.isThread()) {
+        await interaction.reply({
+          content: "Request-scoped installs must be invalidated from the request thread that owns them.",
+          ephemeral: true
+        });
+        return;
+      }
+      threadId = interaction.channelId;
+    }
+
+    try {
+      const invalidated = await this.installService.invalidateInstall({
+        repoId: repo.id,
+        threadId,
+        packageId,
+        scope,
+        invalidatedByUserId: interaction.user.id
+      });
+      const aptNote = isAptPackageId(packageId)
+        ? " The system APT package remains installed; only its Actuarius install record and managed marker files were removed."
+        : "";
+      await interaction.reply({
+        content: `Invalidated install request #${invalidated.id} for ${this.describeInstallTarget(packageId)} in \`${scope}\` scope.${aptNote}`,
+        ephemeral: true
+      });
+    } catch (error) {
+      await interaction.reply({ content: `Uninstall failed: ${this.describeExecutionError(error)}`, ephemeral: true });
+    }
+  }
+
+  private async runQueuedGuildTask<T>(guildId: string, task: () => Promise<T>, resourceKey?: string): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       this.requestQueue.enqueue(guildId, async () => {
         try {
@@ -2305,7 +2396,7 @@ export class ActuariusBot {
         } catch (error) {
           reject(error);
         }
-      });
+      }, resourceKey);
     });
   }
 
@@ -2428,7 +2519,7 @@ export class ActuariusBot {
       if (options.detachWorktree) queuedInput.detachWorktree = true;
       if (options.attachments?.length) queuedInput.attachments = options.attachments;
       await this.runQueuedRequest(queuedInput);
-    });
+    }, thread.id);
 
     await interaction.editReply(
       `Created ${options.label} thread <#${thread.id}>. Request queued for ${AI_PROVIDER_LABELS[provider]} execution.`
@@ -2539,7 +2630,7 @@ export class ActuariusBot {
         implementer: roles.implementer,
         iterative
       });
-    });
+    }, thread.id);
 
     const iterativeSuffix = iterative ? " (iterative)" : "";
     await interaction.editReply(
@@ -2851,6 +2942,7 @@ Output the result of the command or the link to the created issue.`;
     timeoutMs?: number;
     model?: string;
     env?: NodeJS.ProcessEnv;
+    role?: "implementation" | "planner" | "verification";
   }): Promise<string> {
     const request = {
       prompt: input.prompt,
@@ -2891,7 +2983,10 @@ Output the result of the command or the link to the created issue.`;
           );
         }
 
-        const result = await runOpencodeRequest(request, this.logger);
+        const result = await runOpencodeRequest({
+          ...request,
+          ...(input.role ? { role: input.role } : {})
+        }, this.logger);
         return result.text;
       }
       case "claude":
@@ -2974,6 +3069,17 @@ Output the result of the command or the link to the created issue.`;
 
     await interaction.deferReply({ ephemeral: true });
 
+    if (this.requestQueue.hasResourceWork(interaction.guildId, interaction.channelId)) {
+      await interaction.editReply("Another operation in this thread is already queued or running. Wait for it to finish before reviewing.");
+      return;
+    }
+
+    const currentRequest = this.db.getRequestByThreadId(interaction.channelId);
+    if (currentRequest && isActiveRequestStatus(currentRequest.status)) {
+      await interaction.editReply("The latest request in this thread is still queued or running. Wait for it to finish before reviewing.");
+      return;
+    }
+
     const latestRequest = this.db.getLatestRequestWithWorkspaceByThreadId(interaction.channelId);
     if (!latestRequest?.worktree_path || !latestRequest.branch_name) {
       await interaction.editReply("This thread does not have a tracked request branch. Run `/ask` first and keep the worktree attached.");
@@ -2984,11 +3090,6 @@ Output the result of the command or the link to the created issue.`;
     const canManageGuild = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
     if (!isOwner && !canManageGuild) {
       await interaction.editReply("Only the original requester or a user with `Manage Server` can run `/review` for this branch.");
-      return;
-    }
-
-    if (isActiveRequestStatus(latestRequest.status)) {
-      await interaction.editReply("The latest request in this thread is still queued or running. Wait for it to finish before reviewing.");
       return;
     }
 
@@ -3009,41 +3110,22 @@ Output the result of the command or the link to the created issue.`;
       return;
     }
 
-    await reviewThread.send("Adversarial review started.");
-
-    let autoCommitted = false;
     try {
-      autoCommitted = await autoCommitDirtyWorktree(latestRequest.worktree_path);
-    } catch (error) {
-      const detail = error instanceof GitWorkspaceError && error.code === "AUTO_COMMIT_FAILED"
-        ? "The worktree has changes that could not be auto-committed. This usually means the repository has a pre-existing conflict or an unexpected git state. Commit or stash changes manually and try again."
-        : error instanceof GitWorkspaceError && error.code === "GIT_UNAVAILABLE"
-          ? "Git is not available on this server. The review cannot prepare the worktree. Contact the server administrator."
-          : `An unexpected git error occurred: ${error instanceof Error ? error.message : "Unknown error"}`;
-      const preflightMessage = error instanceof GitWorkspaceError && error.code === "AUTO_COMMIT_FAILED"
-        ? "Review preflight failed: The worktree could not be auto-committed. Commit or stash changes manually and try again."
-        : error instanceof GitWorkspaceError && error.code === "GIT_UNAVAILABLE"
-          ? "Review preflight failed: Git is not available on this server. Contact the server administrator."
-          : `Review preflight failed: ${error instanceof Error ? error.message : "Unknown git error"}`;
-      await reviewThread.send(`**Auto-commit failed** — ${detail}`);
-      await interaction.editReply(preflightMessage);
-      return;
-    }
-
-    if (autoCommitted) {
-      await reviewThread.send("Uncommitted changes in the worktree were auto-committed for review.");
-    }
-
-    try {
-      const runners = this.buildReviewRunners({
-        guildId: interaction.guildId,
-        repoId: repo.id,
-        threadId: interaction.channelId
-      });
-      const threadHistory = await this.buildThreadHistory(reviewThread);
       const result = await new Promise<Awaited<ReturnType<typeof runAdversarialReview>>>((resolve, reject) => {
         this.requestQueue.enqueue(interaction.guildId!, async () => {
           try {
+            await reviewThread.send("Adversarial review started.");
+            const autoCommitted = await autoCommitDirtyWorktree(latestRequest.worktree_path!);
+            if (autoCommitted) {
+              await reviewThread.send("Uncommitted changes in the worktree were auto-committed for review.");
+            }
+
+            const runners = this.buildReviewRunners({
+              guildId: interaction.guildId!,
+              repoId: repo.id,
+              threadId: interaction.channelId
+            });
+            const threadHistory = await this.buildThreadHistory(reviewThread);
             resolve(await runAdversarialReview({
               db: this.db,
               logger: this.logger,
@@ -3060,6 +3142,7 @@ Output the result of the command or the link to the created issue.`;
               summarizer: runners.summarizer,
               stageTimeoutMs: this.config.askExecutionTimeoutMs,
               totalTimeoutMs: this.config.askExecutionTimeoutMs * 2,
+              reviewConcurrency: this.config.reviewConcurrency,
               maxConsensusRounds: this.getReviewRounds(interaction.guildId!),
               onProgress: async (event: ReviewProgressEvent) => {
                 switch (event.type) {
@@ -3088,7 +3171,7 @@ Output the result of the command or the link to the created issue.`;
           } catch (error) {
             reject(error);
           }
-        });
+        }, interaction.channelId);
       });
 
       for (const chunk of this.formatReviewSummaryMessage({
@@ -3103,13 +3186,46 @@ Output the result of the command or the link to the created issue.`;
       })) {
         await interaction.channel.send(chunk);
       }
-      await interaction.editReply(
-        `Review completed for \`${repo.full_name}\` at \`${result.diffHeadSha}\` with verdict \`${result.summary.verdict}\`.`
+      await this.bestEffortLongRunningEditReply(
+        interaction,
+        `Review completed for \`${repo.full_name}\` at \`${result.diffHeadSha}\` with verdict \`${result.summary.verdict}\`.`,
+        "review completion acknowledgement"
       );
     } catch (error) {
+      if (error instanceof GitWorkspaceError) {
+        const detail = error.code === "AUTO_COMMIT_FAILED"
+          ? "The worktree has changes that could not be auto-committed. This usually means the repository has a pre-existing conflict or an unexpected git state. Commit or stash changes manually and try again."
+          : "Git is not available on this server. The review cannot prepare the worktree. Contact the server administrator.";
+        const preflightMessage = error.code === "AUTO_COMMIT_FAILED"
+          ? "Review preflight failed: The worktree could not be auto-committed. Commit or stash changes manually and try again."
+          : "Review preflight failed: Git is not available on this server. Contact the server administrator.";
+        await interaction.channel.send(`**Auto-commit failed** — ${detail}`);
+        await this.bestEffortLongRunningEditReply(interaction, preflightMessage, "review preflight acknowledgement");
+        return;
+      }
+
       const message = this.describeExecutionError(error);
       await interaction.channel.send(`**Adversarial review failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
-      await interaction.editReply(`Review failed: ${message}`);
+      await this.bestEffortLongRunningEditReply(
+        interaction,
+        `Review failed: ${message}`,
+        "review failure acknowledgement"
+      );
+    }
+  }
+
+  private async bestEffortLongRunningEditReply(
+    interaction: ChatInputCommandInteraction,
+    content: string,
+    operation: string
+  ): Promise<void> {
+    try {
+      await interaction.editReply(content);
+    } catch (error) {
+      this.logger.warn(
+        { error, interactionId: interaction.id, operation },
+        "Long-running interaction acknowledgement expired after durable thread delivery"
+      );
     }
   }
 
@@ -3181,6 +3297,14 @@ Output the result of the command or the link to the created issue.`;
       return;
     }
 
+    if (this.requestQueue.hasResourceWork(interaction.guildId, interaction.channelId)) {
+      await interaction.reply({
+        content: "Another operation in this thread is already queued or running. Wait for it to finish before revising.",
+        ephemeral: true
+      });
+      return;
+    }
+
     await interaction.deferReply({ ephemeral: true });
 
     let revisionRequestId: number | null = null;
@@ -3219,7 +3343,7 @@ Output the result of the command or the link to the created issue.`;
           implementer: roles.implementer,
           findings
         });
-      });
+      }, interaction.channelId);
     } catch (error) {
       if (revisionRequestId !== null) {
         try {
@@ -3262,9 +3386,19 @@ Output the result of the command or the link to the created issue.`;
       return;
     }
 
-    const parentId = interaction.channel.parentId;
+    const prThread = interaction.channel;
+    const parentId = prThread.parentId;
     if (!parentId) {
       await interaction.reply({ content: "Could not resolve the parent repo channel for this thread.", ephemeral: true });
+      return;
+    }
+
+    const currentRequest = this.db.getRequestByThreadId(interaction.channelId);
+    if (currentRequest && isActiveRequestStatus(currentRequest.status)) {
+      await interaction.reply({
+        content: "The latest request in this thread is still queued or running. Wait for it to finish before opening a PR.",
+        ephemeral: true
+      });
       return;
     }
 
@@ -3282,14 +3416,6 @@ Output the result of the command or the link to the created issue.`;
     if (!isOwner && !canManageGuild) {
       await interaction.reply({
         content: "Only the original requester or a user with `Manage Server` can open a PR for this branch.",
-        ephemeral: true
-      });
-      return;
-    }
-
-    if (isActiveRequestStatus(latestRequest.status)) {
-      await interaction.reply({
-        content: "The latest request in this thread is still queued or running. Wait for it to finish before opening a PR.",
         ephemeral: true
       });
       return;
@@ -3331,50 +3457,66 @@ Output the result of the command or the link to the created issue.`;
 
     await interaction.deferReply({ ephemeral: true });
 
+    if (this.requestQueue.hasResourceWork(interaction.guildId, interaction.channelId)) {
+      await interaction.editReply("Another operation in this thread is already queued or running. Wait for it to finish before opening a PR.");
+      return;
+    }
+
     try {
-      if (await hasUncommittedChangesExcluding(latestRequest.worktree_path, ["docs/reviews/"])) {
-        await interaction.editReply(
-          "The worktree has uncommitted changes. `/review` includes working-tree changes, but `/pr` can only push commits. Commit the reviewed changes, then run `/review` again before `/pr`."
-        );
-        return;
-      }
+      await new Promise<void>((resolve, reject) => {
+        this.requestQueue.enqueue(interaction.guildId!, async () => {
+          try {
+            if (await hasUncommittedChangesExcluding(latestRequest.worktree_path!, ["docs/reviews/"])) {
+              await interaction.editReply(
+                "The worktree has uncommitted changes. `/review` includes working-tree changes, but `/pr` can only push commits. Commit the reviewed changes, then run `/review` again before `/pr`."
+              );
+              resolve();
+              return;
+            }
 
-      const currentHeadSha = await getHeadSha(latestRequest.worktree_path, latestRequest.branch_name);
-      if (currentHeadSha !== latestReview.diff_head) {
-        await interaction.editReply(
-          `The branch has changed since review. Latest review checked \`${latestReview.diff_head}\`, but current HEAD is \`${currentHeadSha}\`. Run \`/review\` again before \`/pr\`.`
-        );
-        return;
-      }
+            const currentHeadSha = await getHeadSha(latestRequest.worktree_path!, latestRequest.branch_name!);
+            if (currentHeadSha !== latestReview.diff_head) {
+              await interaction.editReply(
+                `The branch has changed since review. Latest review checked \`${latestReview.diff_head}\`, but current HEAD is \`${currentHeadSha}\`. Run \`/review\` again before \`/pr\`.`
+              );
+              resolve();
+              return;
+            }
 
-      await interaction.channel.send(`Creating draft PR for \`${latestRequest.branch_name}\`.`);
-      const base = await detectDefaultBranch(latestRequest.worktree_path);
-      await pushBranch(latestRequest.worktree_path, latestRequest.branch_name);
+            await prThread.send(`Creating draft PR for \`${latestRequest.branch_name}\`.`);
+            const base = await detectDefaultBranch(latestRequest.worktree_path!);
+            await pushBranch(latestRequest.worktree_path!, latestRequest.branch_name!);
 
-      const firstPromptLine = latestRequest.prompt.split("\n").map((line) => line.trim()).find(Boolean) ?? `Request #${latestRequest.id}`;
-      const title = clipForPullRequestTitle(firstPromptLine);
-      const body = [
-        `Request: #${latestRequest.id}`,
-        `Thread: ${interaction.channel.url}`,
-        `Review run: #${latestReview.id}`,
-        `Reviewed SHA: ${latestReview.diff_head}`,
-        latestReview.artifact_path ? `Review artifact: \`${latestReview.artifact_path}\`` : null,
-        "",
-        "Original prompt:",
-        "",
-        latestRequest.prompt
-      ].filter((line): line is string => line !== null).join("\n");
+            const firstPromptLine = latestRequest.prompt.split("\n").map((line) => line.trim()).find(Boolean) ?? `Request #${latestRequest.id}`;
+            const title = clipForPullRequestTitle(firstPromptLine);
+            const body = [
+              `Request: #${latestRequest.id}`,
+              `Thread: ${prThread.url}`,
+              `Review run: #${latestReview.id}`,
+              `Reviewed SHA: ${latestReview.diff_head}`,
+              latestReview.artifact_path ? `Review artifact: \`${latestReview.artifact_path}\`` : null,
+              "",
+              "Original prompt:",
+              "",
+              latestRequest.prompt
+            ].filter((line): line is string => line !== null).join("\n");
 
-      const prUrl = await createDraftPullRequest({
-        worktreePath: latestRequest.worktree_path,
-        head: latestRequest.branch_name,
-        base: base.branchName,
-        title,
-        body
+            const prUrl = await createDraftPullRequest({
+              worktreePath: latestRequest.worktree_path!,
+              head: latestRequest.branch_name!,
+              base: base.branchName,
+              title,
+              body
+            });
+
+            await prThread.send(`Draft PR opened: ${prUrl}`);
+            await interaction.editReply(`Draft PR opened for \`${repo.full_name}\`: ${prUrl}`);
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        }, interaction.channelId);
       });
-
-      await interaction.channel.send(`Draft PR opened: ${prUrl}`);
-      await interaction.editReply(`Draft PR opened for \`${repo.full_name}\`: ${prUrl}`);
     } catch (error) {
       const message = this.describeExecutionError(error);
       await interaction.channel.send(`**Draft PR creation failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
@@ -3486,6 +3628,7 @@ Output the result of the command or the link to the created issue.`;
     implementer: ResolvedModelRole;
     env: NodeJS.ProcessEnv | undefined;
     timeoutMs: number;
+    verificationTimeoutMs: number;
   }): Promise<{
     tasks: IterativePlanTask[];
     overview: string;
@@ -3530,6 +3673,7 @@ Output the result of the command or the link to the created issue.`;
       implementerModel: input.implementer.model,
       runProviderText: async (opts) => this.runProviderText(opts),
       timeoutMs: input.timeoutMs,
+      verificationTimeoutMs: input.verificationTimeoutMs,
       env: input.env,
       getHeadSha,
       getDiffSinceRef,
@@ -3681,6 +3825,7 @@ Output the result of the command or the link to the created issue.`;
         prompt: planPrompt,
         cwd: worktreePath,
         timeoutMs: this.config.askExecutionTimeoutMs,
+        role: "planner",
         ...(input.planner.model ? { model: input.planner.model } : {}),
         env
       });
@@ -3707,7 +3852,8 @@ Output the result of the command or the link to the created issue.`;
           planner: input.planner,
           implementer: input.implementer,
           env,
-          timeoutMs: this.config.askExecutionTimeoutMs
+          timeoutMs: this.config.askExecutionTimeoutMs,
+          verificationTimeoutMs: this.config.iterativeVerificationTimeoutMs
         });
 
         this.db.updateRequestStatus(input.requestId, "succeeded");
@@ -3769,6 +3915,7 @@ Output the result of the command or the link to the created issue.`;
           prompt: implementationPrompt,
           cwd: worktreePath,
           timeoutMs: this.config.askExecutionTimeoutMs,
+          role: "implementation",
           ...(input.implementer.model ? { model: input.implementer.model } : {}),
           env
         });
@@ -3950,6 +4097,7 @@ Output the result of the command or the link to the created issue.`;
         prompt: planPrompt,
         cwd: input.worktreePath,
         timeoutMs: this.config.askExecutionTimeoutMs,
+        role: "planner",
         ...(input.planner.model ? { model: input.planner.model } : {}),
         env
       });
@@ -3975,7 +4123,8 @@ Output the result of the command or the link to the created issue.`;
         planner: input.planner,
         implementer: input.implementer,
         env,
-        timeoutMs: this.config.askExecutionTimeoutMs
+        timeoutMs: this.config.askExecutionTimeoutMs,
+        verificationTimeoutMs: this.config.iterativeVerificationTimeoutMs
       });
 
       this.db.updateRequestStatus(input.requestId, "succeeded");

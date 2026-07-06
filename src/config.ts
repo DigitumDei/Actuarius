@@ -53,6 +53,16 @@ const envSchema = z.object({
     .default("2700000")
     .transform((value) => Number.parseInt(value, 10))
     .refine((value) => Number.isFinite(value) && value > 0, "ASK_EXECUTION_TIMEOUT_MS must be a positive number"),
+  ITERATIVE_VERIFICATION_TIMEOUT_MS: z
+    .string()
+    .default("300000")
+    .transform((value) => Number.parseInt(value, 10))
+    .refine((value) => Number.isFinite(value) && value > 0, "ITERATIVE_VERIFICATION_TIMEOUT_MS must be a positive number"),
+  REVIEW_CONCURRENCY: z
+    .string()
+    .default("1")
+    .transform((value) => Number.parseInt(value, 10))
+    .refine((value) => Number.isFinite(value) && value > 0, "REVIEW_CONCURRENCY must be a positive number"),
   INSTALL_STEP_TIMEOUT_MS: z
     .string()
     .default("3600000")
@@ -177,6 +187,8 @@ export const appConfig = {
   threadAutoArchiveMinutes: normalizeArchiveDuration(rawConfig.THREAD_AUTO_ARCHIVE_MINUTES),
   askConcurrencyPerGuild: rawConfig.ASK_CONCURRENCY_PER_GUILD,
   askExecutionTimeoutMs: rawConfig.ASK_EXECUTION_TIMEOUT_MS,
+  iterativeVerificationTimeoutMs: rawConfig.ITERATIVE_VERIFICATION_TIMEOUT_MS,
+  reviewConcurrency: rawConfig.REVIEW_CONCURRENCY,
   installStepTimeoutMs: rawConfig.INSTALL_STEP_TIMEOUT_MS,
   aptInstallHelperPath: rawConfig.APT_INSTALL_HELPER_PATH,
   enableCodexExecution: rawConfig.ENABLE_CODEX_EXECUTION,

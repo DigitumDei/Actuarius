@@ -27,6 +27,24 @@ variable "ask_concurrency" {
   default     = 1
 }
 
+variable "container_memory" {
+  type        = string
+  description = "Docker memory and memory+swap limit. Keep below VM RAM to preserve host headroom."
+  default     = "700m"
+}
+
+variable "container_cpus" {
+  type        = string
+  description = "Maximum CPUs available to the Actuarius container."
+  default     = "0.8"
+}
+
+variable "container_pids_limit" {
+  type        = number
+  description = "Maximum process count inside the Actuarius container."
+  default     = 256
+}
+
 variable "discord_token" {
   type      = string
   sensitive = true

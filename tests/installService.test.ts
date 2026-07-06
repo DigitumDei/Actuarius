@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -69,13 +69,16 @@ describe("InstallService", () => {
         threadAutoArchiveMinutes: 1440,
         askConcurrencyPerGuild: 1,
         askExecutionTimeoutMs: 1000,
+        iterativeVerificationTimeoutMs: 300,
+        reviewConcurrency: 1,
         installStepTimeoutMs: 1000,
         aptInstallHelperPath: undefined,
         enableCodexExecution: false,
         enableGeminiExecution: false
       },
       pino({ level: "silent" }),
-      db
+      db,
+      () => true
     );
   });
 
@@ -613,13 +616,16 @@ describe("InstallService", () => {
           threadAutoArchiveMinutes: 1440,
           askConcurrencyPerGuild: 1,
           askExecutionTimeoutMs: 1000,
+          iterativeVerificationTimeoutMs: 300,
+          reviewConcurrency: 1,
           installStepTimeoutMs: 1000,
           aptInstallHelperPath: helperPath,
           enableCodexExecution: false,
           enableGeminiExecution: false
         },
         pino({ level: "silent" }),
-        db
+        db,
+        () => true
       );
 
       const install = db.createInstallRequest({
@@ -867,5 +873,113 @@ describe("InstallService", () => {
 
       expect(fullResult.env.INSTALL_STEP_VAR).toBe("needed-by-install-script");
     });
+  });
+
+  it("skips stale installs from both execution environment builders and logs the missing path", () => {
+    const logger = { warn: vi.fn(), info: vi.fn() };
+    const staleRoot = "/data/tool-installs/repo/1/java-temurin";
+    const install = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "java-temurin",
+      packageVersion: "21",
+      scope: "repo",
+      status: "approved",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1",
+      installRoot: staleRoot
+    });
+    db.updateInstallRequest({
+      installRequestId: install.id,
+      status: "succeeded",
+      binPath: `${staleRoot}/bin`,
+      envJson: JSON.stringify({ JAVA_HOME: staleRoot }),
+      completedAt: "2026-03-31T00:00:00.000Z"
+    });
+    const validatingService = new InstallService(
+      (service as any).config,
+      logger as never,
+      db,
+      () => false
+    );
+
+    expect(validatingService.buildExecutionEnvironment({ repoId: 1 }).packages).toEqual([]);
+    expect(validatingService.buildMinimalExecutionEnvironment({ repoId: 1 }).packages).toEqual([]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ installRequestId: install.id, missingPath: staleRoot }),
+      "Skipping stale managed install"
+    );
+  });
+
+  it("skips an install when an absolute filesystem-valued environment entry is stale", () => {
+    const root = "/data/tool-installs/repo/1/android-sdk";
+    const binPath = `${root}/bin`;
+    const missingSdk = `${root}/sdk`;
+    const install = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "android-sdk",
+      packageVersion: "latest",
+      scope: "repo",
+      status: "approved",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1",
+      installRoot: root
+    });
+    db.updateInstallRequest({
+      installRequestId: install.id,
+      status: "succeeded",
+      binPath,
+      envJson: JSON.stringify({ ANDROID_HOME: missingSdk }),
+      completedAt: "2026-03-31T00:00:00.000Z"
+    });
+    const validatingService = new InstallService(
+      (service as any).config,
+      pino({ level: "silent" }),
+      db,
+      (path) => path === root || path === binPath
+    );
+
+    const result = validatingService.buildMinimalExecutionEnvironment({ repoId: 1 });
+    expect(result.packages).toEqual([]);
+    expect(result.env.ANDROID_HOME).toBeUndefined();
+    expect(result.pathEntries).toEqual([]);
+  });
+
+  it("invalidates a successful install and removes its managed files", async () => {
+    const installsRoot = mkdtempSync(join(tmpdir(), "actuarius-invalidate-install-"));
+    const installRoot = join(installsRoot, "repo", "1", "npm-prettier");
+    mkdirSync(join(installRoot, "bin"), { recursive: true });
+    const install = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "npm-prettier",
+      packageVersion: "3",
+      scope: "repo",
+      status: "approved",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1",
+      installRoot
+    });
+    db.updateInstallRequest({
+      installRequestId: install.id,
+      status: "succeeded",
+      binPath: join(installRoot, "bin"),
+      envJson: "{}",
+      completedAt: "2026-03-31T00:00:00.000Z"
+    });
+    (service as any).config.installsRootPath = installsRoot;
+
+    const invalidated = await service.invalidateInstall({
+      repoId: 1,
+      packageId: "npm-prettier",
+      scope: "repo",
+      invalidatedByUserId: "admin-1"
+    });
+
+    expect(invalidated.status).toBe("invalidated");
+    expect(invalidated.error_message).toContain("admin-1");
+    expect(existsSync(installRoot)).toBe(false);
+    expect(db.listSuccessfulInstallRequestsForScope({ repoId: 1 })).toEqual([]);
   });
 });

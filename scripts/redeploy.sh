@@ -26,6 +26,13 @@ GITHUB_APP_PRIVATE_KEY=$(get_meta "env-github-app-private-key" || true)
 GITHUB_APP_PRIVATE_KEY_B64=$(get_meta "env-github-app-private-key-b64" || true)
 CLAUDE_CODE_OAUTH_TOKEN=$(get_meta env-claude-oauth-token)
 ASK_CONCURRENCY=$(get_meta env-ask-concurrency)
+CONTAINER_MEMORY=$(get_meta env-container-memory || true)
+CONTAINER_CPUS=$(get_meta env-container-cpus || true)
+CONTAINER_PIDS_LIMIT=$(get_meta env-container-pids-limit || true)
+
+CONTAINER_MEMORY="${CONTAINER_MEMORY:-700m}"
+CONTAINER_CPUS="${CONTAINER_CPUS:-0.8}"
+CONTAINER_PIDS_LIMIT="${CONTAINER_PIDS_LIMIT:-256}"
 
 HAS_GITHUB_APP_ID=false
 HAS_GITHUB_APP_INSTALLATION_ID=false
@@ -152,6 +159,10 @@ chown -R 1001:1001 "$DATA_ROOT/home"
 docker run -d \
   --name actuarius \
   --restart unless-stopped \
+  --memory "$CONTAINER_MEMORY" \
+  --memory-swap "$CONTAINER_MEMORY" \
+  --cpus "$CONTAINER_CPUS" \
+  --pids-limit "$CONTAINER_PIDS_LIMIT" \
   -v "$DATA_ROOT:/data" \
   -e DISCORD_TOKEN="$DISCORD_TOKEN" \
   -e DISCORD_CLIENT_ID="$DISCORD_CLIENT_ID" \

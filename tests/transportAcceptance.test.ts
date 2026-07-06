@@ -214,7 +214,7 @@ describe("Transport behavior acceptance", () => {
 
     const [file, args] = mockSpawn.mock.calls[0]!;
     expect(file).toBe("opencode");
-    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--dangerously-skip-permissions"]);
+    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--agent", "build", "--dangerously-skip-permissions"]);
     expect(args).not.toContain("--file");
 
     const transportLog = records.find(

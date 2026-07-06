@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -36,9 +36,10 @@ function shellSingleQuote(value: string): string {
   return `'${value.replaceAll("'", `'\"'\"'`)}'`;
 }
 
-function createExecutable(path: string, contents: string) {
-  writeFileSync(path, contents);
-  chmodSync(path, 0o755);
+function toBashPath(path: string): string {
+  if (process.platform !== "win32") return path;
+  const normalized = path.replaceAll("\\", "/");
+  return normalized.replace(/^([A-Za-z]):/u, (_match, drive: string) => `/${drive.toLowerCase()}`);
 }
 
 function createCurlMock(metadata: Metadata): string {
@@ -60,6 +61,16 @@ function createCurlMock(metadata: Metadata): string {
   lines.push("esac");
   lines.push("");
   return `${lines.join("\n")}\n`;
+}
+
+function asBashFunction(name: string, script: string): string {
+  const body = script
+    .split("\n")
+    .filter((line) => !line.startsWith("#!"))
+    .join("\n")
+    .replaceAll("exit 22", "return 22")
+    .replaceAll("exit 0", "return 0");
+  return `${name}() {\n${body}\n}\n`;
 }
 
 function createDockerMock(logPath: string): string {
@@ -89,17 +100,22 @@ function runRedeploy(metadata: Metadata): RunResult {
   const dockerLogPath = join(tempDir, "docker.log");
   const mkdirLogPath = join(tempDir, "mkdir.log");
   const chownLogPath = join(tempDir, "chown.log");
+  const bashEnvPath = join(tempDir, "bash-env.sh");
+  writeFileSync(bashEnvPath, [
+    asBashFunction("curl", createCurlMock(metadata)),
+    asBashFunction("docker", createDockerMock(toBashPath(dockerLogPath))),
+    asBashFunction("mkdir", createNoopMock(toBashPath(mkdirLogPath), "mkdir")),
+    asBashFunction("chown", createNoopMock(toBashPath(chownLogPath), "chown"))
+  ].join("\n"));
 
-  createExecutable(join(binDir, "curl"), createCurlMock(metadata));
-  createExecutable(join(binDir, "docker"), createDockerMock(dockerLogPath));
-  createExecutable(join(binDir, "mkdir"), createNoopMock(mkdirLogPath, "mkdir"));
-  createExecutable(join(binDir, "chown"), createNoopMock(chownLogPath, "chown"));
-
-  const result = spawnSync("bash", [scriptPath, "test-tag"], {
+  const bashExecutable = process.platform === "win32"
+    ? join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe")
+    : "bash";
+  const result = spawnSync(bashExecutable, [toBashPath(scriptPath), "test-tag"], {
     cwd: repoRoot,
     env: {
       ...process.env,
-      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      BASH_ENV: toBashPath(bashEnvPath),
     },
     encoding: "utf8",
   });
@@ -113,6 +129,35 @@ function runRedeploy(metadata: Metadata): RunResult {
 }
 
 describe("scripts/redeploy.sh auth validation", () => {
+  it("applies safe default container resource limits", () => {
+    const result = runRedeploy({
+      ...baseMetadata,
+      "env-gh-token": "gh-token",
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dockerLog).toContain("--memory\n700m");
+    expect(result.dockerLog).toContain("--memory-swap\n700m");
+    expect(result.dockerLog).toContain("--cpus\n0.8");
+    expect(result.dockerLog).toContain("--pids-limit\n256");
+  });
+
+  it("forwards configured container resource limits", () => {
+    const result = runRedeploy({
+      ...baseMetadata,
+      "env-gh-token": "gh-token",
+      "env-container-memory": "600m",
+      "env-container-cpus": "0.5",
+      "env-container-pids-limit": "128",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.dockerLog).toContain("--memory\n600m");
+    expect(result.dockerLog).toContain("--memory-swap\n600m");
+    expect(result.dockerLog).toContain("--cpus\n0.5");
+    expect(result.dockerLog).toContain("--pids-limit\n128");
+  });
+
   it("accepts GH_TOKEN-only auth and forwards only GH_TOKEN", () => {
     const result = runRedeploy({
       ...baseMetadata,

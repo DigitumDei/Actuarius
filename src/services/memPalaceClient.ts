@@ -33,6 +33,9 @@ isolated git worktrees on a branch created for the request.
   on work you did not create in this request.
 - Use \`gh\` for author-sensitive GitHub actions (pull requests, comments,
   review replies) so the bot identity is used.
+- Pushing the request branch and opening a draft PR for CI validation is part
+  of the standard workflow and needs no additional approval. Only merging, or
+  anything that touches \`main\` or \`master\` directly, requires the operator.
 
 ## Build & validation rules
 - This VM is small. Do not run heavy builds (Gradle, Android, large native

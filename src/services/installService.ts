@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { mkdir, writeFile, chmod } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, writeFile, chmod, rm } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type { Logger } from "pino";
 import type { AppConfig } from "../config.js";
 import type { AppDatabase } from "../db/database.js";
@@ -95,6 +95,7 @@ export class InstallServiceError extends Error {
     | "CONFIG_INVALID"
     | "INSTALL_FAILED"
     | "INSTALL_UNAVAILABLE"
+    | "INSTALL_NOT_FOUND"
     | "VERIFY_FAILED";
 
   public constructor(
@@ -107,6 +108,7 @@ export class InstallServiceError extends Error {
       | "CONFIG_INVALID"
       | "INSTALL_FAILED"
       | "INSTALL_UNAVAILABLE"
+      | "INSTALL_NOT_FOUND"
       | "VERIFY_FAILED",
     message: string
   ) {
@@ -126,11 +128,18 @@ export class InstallService {
   private readonly config: AppConfig;
   private readonly logger: Logger;
   private readonly db: AppDatabase;
+  private readonly pathExists: (path: string) => boolean;
 
-  public constructor(config: AppConfig, logger: Logger, db: AppDatabase) {
+  public constructor(
+    config: AppConfig,
+    logger: Logger,
+    db: AppDatabase,
+    pathExists: (path: string) => boolean = existsSync
+  ) {
     this.config = config;
     this.logger = logger;
     this.db = db;
+    this.pathExists = pathExists;
   }
 
   public listAllowedPackages(): Array<{ packageId: string; summary: string }> {
@@ -343,26 +352,19 @@ export class InstallService {
   }
 
   public buildExecutionEnvironment(input: { repoId: number; threadId?: string | null }): InstallExecutionEnvironment {
-    const installs = this.db.listSuccessfulInstallRequestsForScope(input);
+    const installs = this.getUsableInstalls(input);
     const pathEntries = new Set<string>();
     const packages: string[] = [];
     const env: NodeJS.ProcessEnv = { ...process.env };
 
-    for (const install of installs) {
+    for (const { install, envVars } of installs) {
       packages.push(install.package_id);
       if (install.bin_path) {
         pathEntries.add(install.bin_path);
       }
 
-      if (install.env_json) {
-        try {
-          const parsed = JSON.parse(install.env_json) as Record<string, string>;
-          for (const [key, value] of Object.entries(parsed)) {
-            env[key] = value;
-          }
-        } catch (error) {
-          this.logger.warn({ error, installRequestId: install.id }, "Failed to parse install request env_json");
-        }
+      for (const [key, value] of Object.entries(envVars)) {
+        env[key] = value;
       }
     }
 
@@ -397,7 +399,7 @@ export class InstallService {
     baseEnv?: NodeJS.ProcessEnv;
   }): InstallExecutionEnvironment {
     const sourceEnv = input.baseEnv ?? process.env;
-    const installs = this.db.listSuccessfulInstallRequestsForScope(input);
+    const installs = this.getUsableInstalls(input);
     const pathEntries = new Set<string>();
     const packages: string[] = [];
     const env: NodeJS.ProcessEnv = {};
@@ -417,21 +419,14 @@ export class InstallService {
       }
     }
 
-    for (const install of installs) {
+    for (const { install, envVars } of installs) {
       packages.push(install.package_id);
       if (install.bin_path) {
         pathEntries.add(install.bin_path);
       }
 
-      if (install.env_json) {
-        try {
-          const parsed = JSON.parse(install.env_json) as Record<string, string>;
-          for (const [key, value] of Object.entries(parsed)) {
-            env[key] = value;
-          }
-        } catch (error) {
-          this.logger.warn({ error, installRequestId: install.id }, "Failed to parse install request env_json");
-        }
+      for (const [key, value] of Object.entries(envVars)) {
+        env[key] = value;
       }
     }
 
@@ -453,6 +448,99 @@ export class InstallService {
       pathEntries: orderedPathEntries,
       packages
     };
+  }
+
+  public async invalidateInstall(input: {
+    repoId: number;
+    threadId?: string | null;
+    packageId: string;
+    scope: InstallScope;
+    invalidatedByUserId: string;
+  }): Promise<InstallRequestRow> {
+    const install = this.db.getLatestSuccessfulInstallRequest(input);
+    if (!install) {
+      throw new InstallServiceError(
+        "INSTALL_NOT_FOUND",
+        `No active successful install of \`${input.packageId}\` was found in \`${input.scope}\` scope.`
+      );
+    }
+
+    const activeInstall = this.db.getActiveInstallRequestByRoot(install.install_root);
+    if (activeInstall) {
+      throw new InstallServiceError(
+        "INSTALL_ALREADY_ACTIVE",
+        `Install request #${activeInstall.id} is still active for \`${input.packageId}\`.`
+      );
+    }
+
+    const installsRoot = resolve(this.config.installsRootPath);
+    const installRoot = resolve(install.install_root);
+    const relativeInstallRoot = relative(installsRoot, installRoot);
+    if (!relativeInstallRoot || relativeInstallRoot.startsWith("..") || isAbsolute(relativeInstallRoot)) {
+      throw new InstallServiceError("INSTALL_FAILED", `Refusing to remove unmanaged install path \`${install.install_root}\`.`);
+    }
+
+    await rm(installRoot, { recursive: true, force: true });
+    const completedAt = new Date().toISOString();
+    this.db.updateInstallRequest({
+      installRequestId: install.id,
+      status: "invalidated",
+      errorMessage: `Invalidated by Discord user ${input.invalidatedByUserId}.`,
+      completedAt
+    });
+
+    this.logger.info(
+      { installRequestId: install.id, packageId: install.package_id, installRoot, invalidatedByUserId: input.invalidatedByUserId },
+      "Managed install invalidated"
+    );
+    return this.db.getInstallRequestById(install.id)!;
+  }
+
+  private getUsableInstalls(input: { repoId: number; threadId?: string | null }): Array<{
+    install: InstallRequestRow;
+    envVars: Record<string, string>;
+  }> {
+    const usable: Array<{ install: InstallRequestRow; envVars: Record<string, string> }> = [];
+
+    for (const install of this.db.listSuccessfulInstallRequestsForScope(input)) {
+      let envVars: Record<string, string> = {};
+      if (install.env_json) {
+        try {
+          const parsed = JSON.parse(install.env_json) as unknown;
+          if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+            throw new Error("env_json must contain an object");
+          }
+          envVars = Object.fromEntries(
+            Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string")
+          );
+        } catch (error) {
+          this.logger.warn({ error, installRequestId: install.id }, "Failed to parse install request env_json");
+        }
+      }
+
+      const managedPaths = [
+        install.install_root,
+        ...(install.bin_path ? [install.bin_path] : []),
+        ...Object.values(envVars).filter((value) => isAbsolute(value))
+      ];
+      const missingPath = managedPaths.find((managedPath) => !this.pathExists(managedPath));
+      if (missingPath) {
+        this.logger.warn(
+          {
+            installRequestId: install.id,
+            packageId: install.package_id,
+            scope: install.scope,
+            missingPath
+          },
+          "Skipping stale managed install"
+        );
+        continue;
+      }
+
+      usable.push({ install, envVars });
+    }
+
+    return usable;
   }
 
   private getScopedPackageRoot(input: {

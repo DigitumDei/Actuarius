@@ -22,6 +22,17 @@ function makeTempDir(prefix: string): string {
   return dir;
 }
 
+function toBashPath(path: string): string {
+  if (process.platform !== "win32") return path;
+  return path
+    .replaceAll("\\", "/")
+    .replace(/^([A-Za-z]):/u, (_match, drive: string) => `/${drive.toLowerCase()}`);
+}
+
+const shellExecutable = process.platform === "win32"
+  ? join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe")
+  : "sh";
+
 describe("install-llm-user-instructions.sh", () => {
   const managedFiles = [
     { dir: ".claude", file: "CLAUDE.md" },
@@ -35,7 +46,11 @@ describe("install-llm-user-instructions.sh", () => {
       mkdirSync(join(homeDir, dir), { recursive: true });
     }
 
-    const result = spawnSync("sh", [scriptPath, sourceRoot, homeDir], {
+    const result = spawnSync(shellExecutable, [
+      toBashPath(scriptPath),
+      toBashPath(sourceRoot),
+      toBashPath(homeDir)
+    ], {
       cwd: repoRoot,
       encoding: "utf8",
     });
@@ -55,7 +70,11 @@ describe("install-llm-user-instructions.sh", () => {
       writeFileSync(join(homeDir, dir, file), `stale ${file}\n`);
     }
 
-    const result = spawnSync("sh", [scriptPath, sourceRoot, homeDir], {
+    const result = spawnSync(shellExecutable, [
+      toBashPath(scriptPath),
+      toBashPath(sourceRoot),
+      toBashPath(homeDir)
+    ], {
       cwd: repoRoot,
       encoding: "utf8",
     });

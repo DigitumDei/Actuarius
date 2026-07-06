@@ -1186,6 +1186,34 @@ export class AppDatabase {
       .filter((row): row is InstallRequestRow => Boolean(row));
   }
 
+  public getLatestSuccessfulInstallRequest(input: {
+    repoId: number;
+    threadId?: string | null;
+    packageId: string;
+    scope: InstallScope;
+  }): InstallRequestRow | undefined {
+    const raw = installRequestRowRawSchema.optional().parse(
+      this.db
+        .prepare(
+          `SELECT *
+           FROM install_requests
+           WHERE status = 'succeeded'
+             AND repo_id = ?
+             AND package_id = ?
+             AND scope = ?
+             AND (
+               scope = 'repo'
+               OR thread_id = ?
+             )
+           ORDER BY id DESC
+           LIMIT 1`
+        )
+        .get(input.repoId, input.packageId, input.scope, input.threadId ?? null)
+    );
+
+    return this.mapInstallRequestRow(raw);
+  }
+
   public close(): void {
     this.db.close();
   }

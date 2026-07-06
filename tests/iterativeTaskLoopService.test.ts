@@ -24,6 +24,7 @@ const defaultInput: IterativeTaskLoopInput = {
   implementerModel: undefined,
   runProviderText: mockRunProviderText,
   timeoutMs: 1000,
+  verificationTimeoutMs: 250,
   env: undefined,
   getHeadSha: mockGetHeadSha,
   getDiffSinceRef: mockGetDiffSinceRef,
@@ -55,6 +56,8 @@ describe("runIterativeTaskLoop", () => {
     expect(result.taskResults[0]!.approved).toBe(true);
     expect(result.taskResults[1]!.approved).toBe(true);
     expect(mockRunProviderText).toHaveBeenCalledTimes(4);
+    expect(mockRunProviderText.mock.calls[0]![0]).toMatchObject({ role: "implementation", timeoutMs: 1000 });
+    expect(mockRunProviderText.mock.calls[1]![0]).toMatchObject({ role: "verification", timeoutMs: 250 });
   });
 
   it("handles an empty task list without provider calls", async () => {

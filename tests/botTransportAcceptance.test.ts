@@ -174,6 +174,8 @@ describe("Bot entrypoint transport acceptance", () => {
       threadAutoArchiveMinutes: 1440,
       askConcurrencyPerGuild: 1,
       askExecutionTimeoutMs: 5000,
+      iterativeVerificationTimeoutMs: 1000,
+      reviewConcurrency: 1,
       installStepTimeoutMs: 1000,
       aptInstallHelperPath: undefined,
       enableCodexExecution: true,

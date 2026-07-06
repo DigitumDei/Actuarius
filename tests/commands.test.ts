@@ -2,13 +2,14 @@ import { describe, expect, it } from "vitest";
 import { commandBuilders } from "../src/discord/commands.js";
 
 describe("command registration", () => {
-  it("registers the branches, cleanup, issues, plan, install, delete, and pr commands", () => {
+  it("registers the branches, cleanup, issues, plan, install, uninstall, delete, and pr commands", () => {
     const names = commandBuilders.map((builder) => builder.name);
     expect(names).toContain("branches");
     expect(names).toContain("cleanup");
     expect(names).toContain("issues");
     expect(names).toContain("plan");
     expect(names).toContain("install");
+    expect(names).toContain("uninstall");
     expect(names).toContain("delete");
     expect(names).toContain("pr");
     expect(names).not.toContain("gemini-oauth-file");
@@ -170,5 +171,15 @@ describe("command registration", () => {
         })
       ])
     );
+  });
+
+  it("registers /uninstall with package and scope options", () => {
+    const uninstallCommand = commandBuilders.find((builder) => builder.name === "uninstall");
+    expect(uninstallCommand).toBeDefined();
+    expect(uninstallCommand!.toJSON().options).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "package", required: false }),
+      expect.objectContaining({ name: "apt-package", required: false }),
+      expect.objectContaining({ name: "scope", required: true })
+    ]));
   });
 });

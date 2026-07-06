@@ -208,6 +208,16 @@ describe("adversarialReviewService", () => {
     });
 
     const runs: Array<{ label: string; timeoutMs: number }> = [];
+    let activeReviewers = 0;
+    let maxActiveReviewers = 0;
+    const enterReviewer = async (): Promise<void> => {
+      activeReviewers += 1;
+      maxActiveReviewers = Math.max(maxActiveReviewers, activeReviewers);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    };
+    const leaveReviewer = (): void => {
+      activeReviewers -= 1;
+    };
     const progressEvents: ReviewProgressEvent[] = [];
     const progressMarkers: string[] = [];
     const onProgress = vi.fn(async (event: ReviewProgressEvent) => {
@@ -232,8 +242,10 @@ describe("adversarialReviewService", () => {
         model: "claude-sonnet-4",
         label: "Claude",
         run: vi.fn(async ({ timeoutMs }: { timeoutMs: number }) => {
+          await enterReviewer();
           expect(progressMarkers).toContain("awaited:round-start");
           runs.push({ label: "reviewer-1", timeoutMs });
+          leaveReviewer();
           return "Blocking Issues\n- None";
         })
       },
@@ -242,7 +254,9 @@ describe("adversarialReviewService", () => {
         model: "o4-mini",
         label: "Codex",
         run: vi.fn(async ({ timeoutMs }: { timeoutMs: number }) => {
+          await enterReviewer();
           runs.push({ label: "reviewer-2", timeoutMs });
+          leaveReviewer();
           throw new Error(`timed out at ${timeoutMs}`);
         })
       },
@@ -251,8 +265,10 @@ describe("adversarialReviewService", () => {
         model: "gemini-2.5-pro",
         label: "Gemini",
         run: vi.fn(async ({ timeoutMs }: { timeoutMs: number }) => {
+          await enterReviewer();
           expect(progressMarkers).toContain("awaited:round-start");
           runs.push({ label: "reviewer-3", timeoutMs });
+          leaveReviewer();
           return "Missing Tests\n- Add handleReview permission coverage";
         })
       }
@@ -333,11 +349,13 @@ describe("adversarialReviewService", () => {
       summarizer,
       stageTimeoutMs: 1_000,
       totalTimeoutMs: 5_000,
+      reviewConcurrency: 1,
       maxConsensusRounds: 2,
       onProgress
     });
 
     expect(result.reviewRunId).toBe(7);
+    expect(maxActiveReviewers).toBe(1);
     expect(result.reviewersSucceeded).toBe(2);
     expect(result.reviewersAttempted).toBe(3);
     expect(result.summary.verdict).toBe("revise");
