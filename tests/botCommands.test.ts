@@ -3196,6 +3196,35 @@ describe("ActuariusBot pr command", () => {
     expect(createDraftPullRequest).not.toHaveBeenCalled();
   });
 
+  it("keeps the uncommitted-worktree outcome successful when the interaction token has expired", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-dirty-expired-token-"));
+    const bot = createBot(createPrDb(worktreePath));
+    vi.mocked(hasUncommittedChangesExcluding).mockResolvedValue(true);
+    const interaction = createInteraction({
+      editReply: vi.fn().mockRejectedValue(new Error("DiscordAPIError[50027]: Invalid Webhook Token"))
+    });
+
+    await expect((bot as any).handlePr(interaction)).resolves.toBeUndefined();
+
+    expect(pushBranch).not.toHaveBeenCalled();
+    expect(createDraftPullRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps the branch-changed outcome successful when the interaction token has expired", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-changed-expired-token-"));
+    const bot = createBot(createPrDb(worktreePath));
+    vi.mocked(hasUncommittedChangesExcluding).mockResolvedValue(false);
+    vi.mocked(getHeadSha).mockResolvedValue("new-head-sha");
+    const interaction = createInteraction({
+      editReply: vi.fn().mockRejectedValue(new Error("DiscordAPIError[50027]: Invalid Webhook Token"))
+    });
+
+    await expect((bot as any).handlePr(interaction)).resolves.toBeUndefined();
+
+    expect(pushBranch).not.toHaveBeenCalled();
+    expect(createDraftPullRequest).not.toHaveBeenCalled();
+  });
+
   it("pushes and opens a draft PR when the reviewed worktree is clean", async () => {
     const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-clean-"));
     const channelSend = vi.fn().mockResolvedValue(undefined);
@@ -3230,6 +3259,35 @@ describe("ActuariusBot pr command", () => {
     }));
     expect(channelSend).toHaveBeenCalledWith(expect.stringContaining("Draft PR opened"));
     expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Draft PR opened for `octocat/hello-world`"));
+  });
+
+  it("keeps a created draft PR successful when the deferred interaction token has expired", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-expired-token-"));
+    const channelSend = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot(createPrDb(worktreePath));
+    vi.mocked(hasUncommittedChangesExcluding).mockResolvedValue(false);
+    vi.mocked(getHeadSha).mockResolvedValue("reviewed-sha");
+    vi.mocked(detectDefaultBranch).mockResolvedValue({ branchName: "main", remoteRef: "origin/main" });
+    vi.mocked(pushBranch).mockResolvedValue(undefined);
+    vi.mocked(createDraftPullRequest).mockResolvedValue("https://github.com/octocat/hello-world/pull/1");
+
+    const interaction = createInteraction({
+      editReply: vi.fn().mockRejectedValue(new Error("DiscordAPIError[50027]: Invalid Webhook Token")),
+      channel: {
+        isThread: () => true,
+        isTextBased: () => true,
+        isDMBased: () => false,
+        parentId: "channel-1",
+        url: "https://discord.test/thread-1",
+        send: channelSend
+      }
+    });
+
+    await expect((bot as any).handlePr(interaction)).resolves.toBeUndefined();
+
+    expect(createDraftPullRequest).toHaveBeenCalledTimes(1);
+    expect(channelSend).toHaveBeenCalledWith("Draft PR opened: https://github.com/octocat/hello-world/pull/1");
+    expect(channelSend).not.toHaveBeenCalledWith(expect.stringContaining("Draft PR creation failed"));
   });
 
   it("opens a draft PR even when docs/reviews/ artifacts exist from a previous /review", async () => {

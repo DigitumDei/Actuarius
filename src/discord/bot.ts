@@ -3467,8 +3467,10 @@ Output the result of the command or the link to the created issue.`;
         this.requestQueue.enqueue(interaction.guildId!, async () => {
           try {
             if (await hasUncommittedChangesExcluding(latestRequest.worktree_path!, ["docs/reviews/"])) {
-              await interaction.editReply(
-                "The worktree has uncommitted changes. `/review` includes working-tree changes, but `/pr` can only push commits. Commit the reviewed changes, then run `/review` again before `/pr`."
+              await this.bestEffortLongRunningEditReply(
+                interaction,
+                "The worktree has uncommitted changes. `/review` includes working-tree changes, but `/pr` can only push commits. Commit the reviewed changes, then run `/review` again before `/pr`.",
+                "pr uncommitted changes warning"
               );
               resolve();
               return;
@@ -3476,8 +3478,10 @@ Output the result of the command or the link to the created issue.`;
 
             const currentHeadSha = await getHeadSha(latestRequest.worktree_path!, latestRequest.branch_name!);
             if (currentHeadSha !== latestReview.diff_head) {
-              await interaction.editReply(
-                `The branch has changed since review. Latest review checked \`${latestReview.diff_head}\`, but current HEAD is \`${currentHeadSha}\`. Run \`/review\` again before \`/pr\`.`
+              await this.bestEffortLongRunningEditReply(
+                interaction,
+                `The branch has changed since review. Latest review checked \`${latestReview.diff_head}\`, but current HEAD is \`${currentHeadSha}\`. Run \`/review\` again before \`/pr\`.`,
+                "pr branch changed warning"
               );
               resolve();
               return;
@@ -3510,7 +3514,11 @@ Output the result of the command or the link to the created issue.`;
             });
 
             await prThread.send(`Draft PR opened: ${prUrl}`);
-            await interaction.editReply(`Draft PR opened for \`${repo.full_name}\`: ${prUrl}`);
+            await this.bestEffortLongRunningEditReply(
+              interaction,
+              `Draft PR opened for \`${repo.full_name}\`: ${prUrl}`,
+              "pr creation success acknowledgement"
+            );
             resolve();
           } catch (error) {
             reject(error);
@@ -3520,7 +3528,11 @@ Output the result of the command or the link to the created issue.`;
     } catch (error) {
       const message = this.describeExecutionError(error);
       await interaction.channel.send(`**Draft PR creation failed**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 40)}`);
-      await interaction.editReply(`PR creation failed: ${message}`);
+      await this.bestEffortLongRunningEditReply(
+        interaction,
+        `PR creation failed: ${message}`,
+        "pr creation failure acknowledgement"
+      );
     }
   }
 
