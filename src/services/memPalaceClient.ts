@@ -1,6 +1,9 @@
 import { existsSync } from "node:fs";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Logger } from "pino";
 
 /**
@@ -10,6 +13,62 @@ import type { Logger } from "pino";
  * reserved shared diary wing (`wing_agents`).
  */
 export const BOT_MEMORY_WING = "wing_actuarius_agent";
+
+/**
+ * Seeded into the palace when no identity.txt exists, so agents waking up via
+ * mempalace_wake_up receive baseline conduct rules. Written once; operator
+ * edits on the persistent disk are never overwritten.
+ */
+const IDENTITY_TEMPLATE = `# Identity — Actuarius agents
+
+You are an AI agent (Claude, Codex, Gemini, or OpenCode) executing requests
+for the Actuarius Discord bot. Requests arrive from Discord threads and run in
+isolated git worktrees on a branch created for the request.
+
+## Git rules
+- NEVER push directly to \`main\` or \`master\`. Work on the request branch you
+  were given; changes reach main through pull requests.
+- Do not force-push or rewrite published history.
+- Do not run destructive git commands (\`git reset --hard\`, \`git checkout --\`)
+  on work you did not create in this request.
+- Use \`gh\` for author-sensitive GitHub actions (pull requests, comments,
+  review replies) so the bot identity is used.
+
+## Build & validation rules
+- This VM is small. Do not run heavy builds (Gradle, Android, large native
+  compiles) locally — they starve the machine and time out.
+- Run lightweight checks locally (lint, type-check, focused unit tests), then
+  push your branch and let the repository's CI validate the full build.
+
+## Memory rules
+- Repo knowledge belongs in the repo's wing (see mempalace.yaml in your
+  worktree); use the branch name as the room.
+- Verify facts about people, projects, or past events with mempalace search
+  or kg queries before asserting them. Never guess.
+`;
+
+/**
+ * Seed the palace identity file agents receive from mempalace_wake_up. Runs
+ * for every MemPalace-enabled deployment (local-only or remote). Only writes
+ * when the file is absent so operator edits persist; failure is non-fatal —
+ * agents just wake up without an identity, as before.
+ */
+export async function ensurePalaceIdentity(logger: Logger, homeDir: string = homedir()): Promise<void> {
+  const identityPath = join(homeDir, ".mempalace", "identity.txt");
+  try {
+    await access(identityPath);
+    return;
+  } catch {
+    // absent — seed below
+  }
+  try {
+    await mkdir(dirname(identityPath), { recursive: true });
+    await writeFile(identityPath, IDENTITY_TEMPLATE, "utf8");
+    logger.info({ identityPath }, "Seeded MemPalace identity file");
+  } catch (error) {
+    logger.warn({ error, identityPath }, "Could not seed MemPalace identity file");
+  }
+}
 
 interface PendingRequest {
   resolve: (result: unknown) => void;

@@ -144,11 +144,33 @@ describe("MemPalaceRemoteService", () => {
       })
     );
     expect(globalConfig.federation.wings[wing]).toEqual({ mode: "combined", remote: "actuarius", write: "remote" });
+    expect(globalConfig.federation.kg).toEqual({ mode: "combined", remote: "actuarius", write: "remote" });
     expect(globalConfig.federation.remotes[0]).not.toHaveProperty("token");
 
     const tokenEntries = JSON.parse(readFileSync(config.mempalaceRemoteTokenFile, "utf8"));
     expect(tokenEntries[0]).toMatchObject({ name: "actuarius-local", token: "test-token", enabled: true });
     expect(readFileSync(join(checkoutPath, ".git", "info", "exclude"), "utf8")).toContain("mempalace.yaml");
+  });
+
+  it("preserves an operator-authored kg routing rule", async () => {
+    const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-kg-"));
+    const homeDir = join(root, "home");
+    const config = makeConfig(root);
+    const repo = makeRepo();
+    const checkoutPath = join(config.reposRootPath, repo.owner, repo.repo);
+    mkdirSync(join(checkoutPath, ".git", "info"), { recursive: true });
+    mkdirSync(join(homeDir, ".mempalace"), { recursive: true });
+    writeFileSync(
+      join(homeDir, ".mempalace", "config.json"),
+      JSON.stringify({ federation: { kg: { mode: "local" } } }),
+      "utf8"
+    );
+
+    const service = new MemPalaceRemoteService(config, logger, { homeDir });
+    await service.registerRepository(repo, checkoutPath);
+
+    const globalConfig = JSON.parse(readFileSync(join(homeDir, ".mempalace", "config.json"), "utf8"));
+    expect(globalConfig.federation.kg).toEqual({ mode: "local" });
   });
 
   it("honors an existing repo MemPalace wing instead of overwriting it", async () => {
