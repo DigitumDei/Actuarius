@@ -152,6 +152,47 @@ describe("MemPalaceRemoteService", () => {
     expect(readFileSync(join(checkoutPath, ".git", "info", "exclude"), "utf8")).toContain("mempalace.yaml");
   });
 
+  it("prunes stale bot-managed wing rules and checkouts, preserving operator-authored rules", async () => {
+    const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-prune-"));
+    const homeDir = join(root, "home");
+    const config = makeConfig(root);
+    const repo = makeRepo();
+    const checkoutPath = join(config.reposRootPath, repo.owner, repo.repo);
+    mkdirSync(join(checkoutPath, ".git", "info"), { recursive: true });
+    mkdirSync(join(homeDir, ".mempalace"), { recursive: true });
+    writeFileSync(
+      join(homeDir, ".mempalace", "config.json"),
+      JSON.stringify({
+        server: {
+          checkouts: {
+            wing_repo_digitumdei_actuarius_5936a0ce: "/data/repos/digitumdei/actuarius"
+          }
+        },
+        federation: {
+          wings: {
+            // Stale bot-managed rule from the old hashed naming — must be dropped.
+            wing_repo_digitumdei_actuarius_5936a0ce: { mode: "combined", remote: "actuarius", write: "remote" },
+            // Operator-authored rules — must survive (different shape / extra keys).
+            wing_custom: { mode: "local" },
+            wing_tuned: { mode: "combined", remote: "actuarius", write: "remote", note: "keep me" }
+          }
+        }
+      }),
+      "utf8"
+    );
+
+    const service = new MemPalaceRemoteService(config, logger, { homeDir });
+    const wing = await service.registerRepository(repo, checkoutPath);
+
+    const globalConfig = JSON.parse(readFileSync(join(homeDir, ".mempalace", "config.json"), "utf8"));
+    expect(globalConfig.federation.wings).toEqual({
+      wing_custom: { mode: "local" },
+      wing_tuned: { mode: "combined", remote: "actuarius", write: "remote", note: "keep me" },
+      [wing]: { mode: "combined", remote: "actuarius", write: "remote" }
+    });
+    expect(globalConfig.server.checkouts).toEqual({ [wing]: checkoutPath });
+  });
+
   it("preserves an operator-authored kg routing rule", async () => {
     const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-kg-"));
     const homeDir = join(root, "home");

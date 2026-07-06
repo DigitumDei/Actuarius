@@ -407,6 +407,21 @@ export class MemPalaceRemoteService {
     await write;
   }
 
+  /**
+   * True when a wing rule has exactly the shape this service writes, and can
+   * therefore be safely dropped once its wing is no longer tracked. Anything
+   * else is treated as operator-authored and preserved.
+   */
+  private isManagedWingRule(rule: unknown): boolean {
+    return (
+      isRecord(rule) &&
+      rule.mode === "combined" &&
+      rule.remote === this.config.mempalaceRemoteName &&
+      rule.write === "remote" &&
+      Object.keys(rule).length === 3
+    );
+  }
+
   private async writeGlobalConfigOnce(): Promise<void> {
     await this.ensureToken();
     const configDir = join(this.homeDir, ".mempalace");
@@ -415,8 +430,10 @@ export class MemPalaceRemoteService {
     const current = await readJsonObject(configPath);
 
     const server = isRecord(current.server) ? { ...current.server } : {};
-    const existingCheckouts = isRecord(server.checkouts) ? server.checkouts : {};
-    const checkouts: Record<string, string> = { ...existingCheckouts } as Record<string, string>;
+    // server.checkouts is wholly bot-managed: rebuild rather than merge, so
+    // entries for wings we no longer track (renames, disconnected repos)
+    // don't accumulate forever.
+    const checkouts: Record<string, string> = {};
     for (const [wing, checkoutPath] of this.repoCheckouts.entries()) checkouts[wing] = checkoutPath;
 
     const federation = isRecord(current.federation) ? { ...current.federation } : {};
@@ -429,8 +446,14 @@ export class MemPalaceRemoteService {
       timeout_ms: this.config.mempalaceRemoteTimeoutMs
     });
 
+    // Keep operator-authored wing rules, but drop bot-managed rules for wings
+    // we no longer track — each stale rule is a live combined-mode route to a
+    // wing that will never receive new content.
     const existingWings = isRecord(federation.wings) ? federation.wings : {};
-    const wings: Record<string, unknown> = { ...existingWings };
+    const wings: Record<string, unknown> = {};
+    for (const [wing, rule] of Object.entries(existingWings)) {
+      if (!this.isManagedWingRule(rule)) wings[wing] = rule;
+    }
     for (const wing of this.repoCheckouts.keys()) {
       wings[wing] = { mode: "combined", remote: this.config.mempalaceRemoteName, write: "remote" };
     }
