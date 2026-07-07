@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
 type Metadata = Record<string, string | undefined>;
+type Secrets = Record<string, string | undefined>;
 
 type RunResult = {
   status: number | null;
@@ -18,10 +19,13 @@ const scriptPath = join(repoRoot, "scripts", "redeploy.sh");
 
 const baseMetadata: Metadata = {
   "env-docker-image": "ghcr.io/digitumdei/actuarius:latest",
-  "env-discord-token": "discord-token",
   "env-discord-client-id": "discord-client-id",
-  "env-claude-oauth-token": "claude-oauth-token",
   "env-ask-concurrency": "3",
+};
+
+const baseSecrets: Secrets = {
+  "actuarius-discord-token": "discord-token",
+  "actuarius-claude-oauth-token": "claude-oauth-token",
 };
 
 const tempDirs: string[] = [];
@@ -42,24 +46,50 @@ function toBashPath(path: string): string {
   return normalized.replace(/^([A-Za-z]):/u, (_match, drive: string) => `/${drive.toLowerCase()}`);
 }
 
-function createCurlMock(metadata: Metadata): string {
-  const lines = [
-    "#!/usr/bin/env bash",
-    "url=${!#}",
-    "key=${url##*/}",
-    "case \"$key\" in",
-  ];
+function createCurlMock(metadata: Metadata, secrets: Secrets): string {
+  // Secret Manager returns the payload base64-encoded; precompute the encoded
+  // values here so the bash mock stays a static lookup table.
+  const secretCases: string[] = [];
+  for (const [name, value] of Object.entries(secrets)) {
+    if (value === undefined) {
+      continue;
+    }
+    const data = Buffer.from(value, "utf8").toString("base64");
+    secretCases.push(
+      `      ${name}) printf %s ${shellSingleQuote(`{"name":"projects/test-project/secrets/${name}/versions/1","payload":{"data":"${data}"}}`)} ;;`
+    );
+  }
 
+  const metadataCases: string[] = [];
   for (const [key, value] of Object.entries(metadata)) {
     if (value === undefined) {
       continue;
     }
-    lines.push(`  ${key}) printf %s ${shellSingleQuote(value)} ;;`);
+    metadataCases.push(`      ${key}) printf %s ${shellSingleQuote(value)} ;;`);
   }
 
-  lines.push("  *) exit 22 ;;");
-  lines.push("esac");
-  lines.push("");
+  const lines = [
+    "#!/usr/bin/env bash",
+    "url=${!#}",
+    "case \"$url\" in",
+    "  */project/project-id) printf %s 'test-project' ;;",
+    "  */service-accounts/default/token) printf %s '{\"access_token\":\"test-access-token\",\"expires_in\":3599,\"token_type\":\"Bearer\"}' ;;",
+    "  *secretmanager.googleapis.com*)",
+    "    name=\"${url##*/secrets/}\"",
+    "    name=\"${name%%/*}\"",
+    "    case \"$name\" in",
+    ...secretCases,
+    "      *) exit 22 ;;",
+    "    esac ;;",
+    "  *)",
+    "    key=${url##*/}",
+    "    case \"$key\" in",
+    ...metadataCases,
+    "      *) exit 22 ;;",
+    "    esac ;;",
+    "esac",
+    "",
+  ];
   return `${lines.join("\n")}\n`;
 }
 
@@ -91,7 +121,7 @@ exit 0
 `;
 }
 
-function runRedeploy(metadata: Metadata): RunResult {
+function runRedeploy(metadata: Metadata, secrets: Secrets = baseSecrets): RunResult {
   const tempDir = mkdtempSync(join(tmpdir(), "redeploy-test-"));
   tempDirs.push(tempDir);
 
@@ -102,7 +132,7 @@ function runRedeploy(metadata: Metadata): RunResult {
   const chownLogPath = join(tempDir, "chown.log");
   const bashEnvPath = join(tempDir, "bash-env.sh");
   writeFileSync(bashEnvPath, [
-    asBashFunction("curl", createCurlMock(metadata)),
+    asBashFunction("curl", createCurlMock(metadata, secrets)),
     asBashFunction("docker", createDockerMock(toBashPath(dockerLogPath))),
     asBashFunction("mkdir", createNoopMock(toBashPath(mkdirLogPath), "mkdir")),
     asBashFunction("chown", createNoopMock(toBashPath(chownLogPath), "chown"))
@@ -130,9 +160,9 @@ function runRedeploy(metadata: Metadata): RunResult {
 
 describe("scripts/redeploy.sh auth validation", () => {
   it("applies safe default container resource limits", () => {
-    const result = runRedeploy({
-      ...baseMetadata,
-      "env-gh-token": "gh-token",
+    const result = runRedeploy(baseMetadata, {
+      ...baseSecrets,
+      "actuarius-gh-token": "gh-token",
     });
 
     expect(result.status, result.stderr).toBe(0);
@@ -145,10 +175,12 @@ describe("scripts/redeploy.sh auth validation", () => {
   it("forwards configured container resource limits", () => {
     const result = runRedeploy({
       ...baseMetadata,
-      "env-gh-token": "gh-token",
       "env-container-memory": "600m",
       "env-container-cpus": "0.5",
       "env-container-pids-limit": "128",
+    }, {
+      ...baseSecrets,
+      "actuarius-gh-token": "gh-token",
     });
 
     expect(result.status).toBe(0);
@@ -159,9 +191,9 @@ describe("scripts/redeploy.sh auth validation", () => {
   });
 
   it("accepts GH_TOKEN-only auth and forwards only GH_TOKEN", () => {
-    const result = runRedeploy({
-      ...baseMetadata,
-      "env-gh-token": "gh-token",
+    const result = runRedeploy(baseMetadata, {
+      ...baseSecrets,
+      "actuarius-gh-token": "gh-token",
     });
 
     expect(result.status).toBe(0);
@@ -178,7 +210,9 @@ describe("scripts/redeploy.sh auth validation", () => {
       ...baseMetadata,
       "env-github-app-id": "123",
       "env-github-app-installation-id": "456",
-      "env-github-app-private-key": "-----BEGIN KEY-----\\nabc\\n-----END KEY-----",
+    }, {
+      ...baseSecrets,
+      "actuarius-github-app-private-key": "-----BEGIN KEY-----\\nabc\\n-----END KEY-----",
     });
 
     expect(result.status).toBe(0);
@@ -195,7 +229,9 @@ describe("scripts/redeploy.sh auth validation", () => {
       ...baseMetadata,
       "env-github-app-id": "123",
       "env-github-app-installation-id": "456",
-      "env-github-app-private-key-b64": "cGVtCg==",
+    }, {
+      ...baseSecrets,
+      "actuarius-github-app-private-key-b64": "cGVtCg==",
     });
 
     expect(result.status).toBe(0);
@@ -210,7 +246,7 @@ describe("scripts/redeploy.sh auth validation", () => {
     const result = runRedeploy(baseMetadata);
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("either env-gh-token or all GitHub App credentials");
+    expect(result.stderr).toContain("either the actuarius-gh-token secret or all GitHub App credentials");
     expect(result.dockerLog).toBe("");
   });
 
@@ -242,12 +278,40 @@ describe("scripts/redeploy.sh auth validation", () => {
       ...baseMetadata,
       "env-github-app-id": "123",
       "env-github-app-installation-id": "456",
-      "env-github-app-private-key": "raw-key",
-      "env-github-app-private-key-b64": "cmF3LWtleQ==",
+    }, {
+      ...baseSecrets,
+      "actuarius-github-app-private-key": "raw-key",
+      "actuarius-github-app-private-key-b64": "cmF3LWtleQ==",
     });
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("set only one of env-github-app-private-key or env-github-app-private-key-b64");
+    expect(result.stderr).toContain("set only one of secret actuarius-github-app-private-key or actuarius-github-app-private-key-b64");
     expect(result.dockerLog).toBe("");
+  });
+
+  it("fails fast when the discord token secret is missing", () => {
+    const result = runRedeploy(baseMetadata, {
+      "actuarius-claude-oauth-token": "claude-oauth-token",
+      "actuarius-gh-token": "gh-token",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("secret actuarius-discord-token is not set");
+    expect(result.dockerLog).toBe("");
+  });
+
+  it("forwards secret values fetched from Secret Manager to the container", () => {
+    const result = runRedeploy(baseMetadata, {
+      ...baseSecrets,
+      "actuarius-gh-token": "gh-token",
+      "actuarius-gemini-api-key": "gemini-key",
+      "actuarius-mempalace-remote-token": "fed-token",
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dockerLog).toContain("DISCORD_TOKEN=discord-token");
+    expect(result.dockerLog).toContain("CLAUDE_CODE_OAUTH_TOKEN=claude-oauth-token");
+    expect(result.dockerLog).toContain("GEMINI_API_KEY=gemini-key");
+    expect(result.dockerLog).toContain("MEMPALACE_REMOTE_TOKEN=fed-token");
   });
 });

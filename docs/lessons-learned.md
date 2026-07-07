@@ -71,3 +71,12 @@ sudo bash /var/redeploy.sh
 ## Single-guild deployment model
 
 Actuarius is one instance per Discord guild. Multi-guild from a single instance is not supported and would be a major architectural change. Do not add multi-guild abstractions or per-guild isolation for shared resources (credentials, toolchains, etc.).
+
+## Terraform plan/state files contain secrets in cleartext — never in the repo tree
+
+On 2026-07-07 a saved plan file (`terraform plan -out=...`) written into `infra/` was swept into a commit by `git add -A` and pushed to the then-public repo. Plan files embed the full prior state, including every VM metadata value — at the time that meant the Discord token, GitHub App private key, Claude OAuth token, and Gemini API key. Three independent scanners (GitHub secret scanning, Discord, Google) detected it within minutes; all credentials had to be rotated.
+
+**Rules:**
+- Never write `terraform plan -out` files, state files, or state backups inside the repo tree; use a temp/scratch directory. `.gitignore` now blocks `tfplan*` as a backstop.
+- Prefer `git add <specific files>` over `git add -A` after infra work.
+- Secret values must not pass through Terraform at all: they live in Secret Manager (`infra/secrets.tf` creates containers; values added via `gcloud secrets versions add`), so tfvars, state, and plan files stay secret-free by construction.

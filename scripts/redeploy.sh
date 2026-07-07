@@ -4,9 +4,30 @@
 #   ./redeploy.sh <sha>      # roll back to a specific git SHA
 set -euo pipefail
 
-META="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
+MDS="http://metadata.google.internal/computeMetadata/v1"
+META="$MDS/instance/attributes"
 HDR="Metadata-Flavor: Google"
-get_meta() { curl -sf -H "$HDR" "$META/$1"; }
+get_meta() { curl -sf -m 5 -H "$HDR" "$META/$1"; }
+
+# Secrets live in Secret Manager, not metadata (see infra/secrets.tf). They are
+# fetched with the VM service account's access token; only curl/sed/base64 are
+# available on Container-Optimized OS, so the JSON is parsed with sed. Timeouts
+# keep a hung metadata server or API from blocking the deploy indefinitely.
+PROJECT_ID=$(curl -sf -m 5 -H "$HDR" "$MDS/project/project-id")
+if [ -z "$PROJECT_ID" ]; then
+  echo "FATAL: failed to fetch GCP project ID from the metadata server" >&2; exit 1
+fi
+ACCESS_TOKEN=$(curl -sf -m 5 -H "$HDR" "$MDS/instance/service-accounts/default/token" \
+  | sed -n 's/.*"access_token" *: *"\([^"]*\)".*/\1/p')
+if [ -z "$ACCESS_TOKEN" ]; then
+  echo "FATAL: failed to fetch an access token from the metadata server" >&2; exit 1
+fi
+get_secret() {
+  local response
+  response=$(curl -sf -m 10 -H "Authorization: Bearer $ACCESS_TOKEN" \
+    "https://secretmanager.googleapis.com/v1/projects/$PROJECT_ID/secrets/$1/versions/latest:access") || return 1
+  printf '%s' "$response" | sed -n 's/.*"data" *: *"\([^"]*\)".*/\1/p' | base64 -d
+}
 
 IMAGE_TAG="${1:-latest}"
 BASE_IMAGE=$(get_meta "env-docker-image")
@@ -16,15 +37,15 @@ DATA_ROOT="/mnt/disks/data"
 
 echo "Deploying $IMAGE ..."
 
-DISCORD_TOKEN=$(get_meta env-discord-token)
+DISCORD_TOKEN=$(get_secret actuarius-discord-token || true)
 DISCORD_CLIENT_ID=$(get_meta env-discord-client-id)
 GUILD_ID=$(get_meta "env-discord-guild-id" || true)
-GH_TOKEN=$(get_meta "env-gh-token" || true)
+GH_TOKEN=$(get_secret actuarius-gh-token || true)
 GITHUB_APP_ID=$(get_meta "env-github-app-id" || true)
 GITHUB_APP_INSTALLATION_ID=$(get_meta "env-github-app-installation-id" || true)
-GITHUB_APP_PRIVATE_KEY=$(get_meta "env-github-app-private-key" || true)
-GITHUB_APP_PRIVATE_KEY_B64=$(get_meta "env-github-app-private-key-b64" || true)
-CLAUDE_CODE_OAUTH_TOKEN=$(get_meta env-claude-oauth-token)
+GITHUB_APP_PRIVATE_KEY=$(get_secret actuarius-github-app-private-key || true)
+GITHUB_APP_PRIVATE_KEY_B64=$(get_secret actuarius-github-app-private-key-b64 || true)
+CLAUDE_CODE_OAUTH_TOKEN=$(get_secret actuarius-claude-oauth-token || true)
 ASK_CONCURRENCY=$(get_meta env-ask-concurrency)
 CONTAINER_MEMORY=$(get_meta env-container-memory || true)
 CONTAINER_CPUS=$(get_meta env-container-cpus || true)
@@ -51,18 +72,18 @@ if $HAS_GITHUB_APP_ID && $HAS_GITHUB_APP_INSTALLATION_ID && { $HAS_GITHUB_APP_PR
   HAS_COMPLETE_GITHUB_APP_CONFIG=true
 fi
 
-if [ -z "$DISCORD_TOKEN" ];          then echo "FATAL: env-discord-token is not set"      >&2; exit 1; fi
+if [ -z "$DISCORD_TOKEN" ];          then echo "FATAL: secret actuarius-discord-token is not set"      >&2; exit 1; fi
 if [ -z "$DISCORD_CLIENT_ID" ];      then echo "FATAL: env-discord-client-id is not set"  >&2; exit 1; fi
 if $HAS_GITHUB_APP_PRIVATE_KEY && $HAS_GITHUB_APP_PRIVATE_KEY_B64; then
-  echo "FATAL: set only one of env-github-app-private-key or env-github-app-private-key-b64" >&2; exit 1
+  echo "FATAL: set only one of secret actuarius-github-app-private-key or actuarius-github-app-private-key-b64" >&2; exit 1
 fi
 if $HAS_ANY_GITHUB_APP_CONFIG && ! $HAS_COMPLETE_GITHUB_APP_CONFIG; then
-  echo "FATAL: GitHub App credentials must include env-github-app-id, env-github-app-installation-id, and exactly one of env-github-app-private-key or env-github-app-private-key-b64" >&2; exit 1
+  echo "FATAL: GitHub App credentials must include env-github-app-id, env-github-app-installation-id, and exactly one of the secrets actuarius-github-app-private-key or actuarius-github-app-private-key-b64" >&2; exit 1
 fi
 if [ -z "$GH_TOKEN" ] && ! $HAS_COMPLETE_GITHUB_APP_CONFIG; then
-  echo "FATAL: either env-gh-token or all GitHub App credentials (env-github-app-id, env-github-app-installation-id, and exactly one of env-github-app-private-key or env-github-app-private-key-b64) must be set" >&2; exit 1
+  echo "FATAL: either the actuarius-gh-token secret or all GitHub App credentials (env-github-app-id, env-github-app-installation-id, and exactly one of the secrets actuarius-github-app-private-key or actuarius-github-app-private-key-b64) must be set" >&2; exit 1
 fi
-if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ];then echo "FATAL: env-claude-oauth-token is not set" >&2; exit 1; fi
+if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ];then echo "FATAL: secret actuarius-claude-oauth-token is not set" >&2; exit 1; fi
 if [ -z "$ASK_CONCURRENCY" ];        then echo "FATAL: env-ask-concurrency is not set"     >&2; exit 1; fi
 
 ENABLE_CODEX=$(get_meta "env-enable-codex-execution" || true)
@@ -73,12 +94,12 @@ ENABLE_MEMPALACE_REMOTE=$(get_meta "env-enable-mempalace-remote" || true)
 MEMPALACE_REMOTE_URL=$(get_meta "env-mempalace-remote-url" || true)
 MEMPALACE_REMOTE_BIND=$(get_meta "env-mempalace-remote-bind" || true)
 MEMPALACE_REMOTE_NAME=$(get_meta "env-mempalace-remote-name" || true)
-MEMPALACE_REMOTE_TOKEN=$(get_meta "env-mempalace-remote-token" || true)
+MEMPALACE_REMOTE_TOKEN=$(get_secret actuarius-mempalace-remote-token || true)
 MEMPALACE_REMOTE_TIMEOUT_MS=$(get_meta "env-mempalace-remote-timeout-ms" || true)
 MEMPALACE_REMOTE_MINE_ON_SYNC=$(get_meta "env-mempalace-remote-mine-on-sync" || true)
 MEMPALACE_REMOTE_MINE_TIMEOUT_MS=$(get_meta "env-mempalace-remote-mine-timeout-ms" || true)
 MEMPALACE_REMOTE_MINE_BATCH_SIZE=$(get_meta "env-mempalace-remote-mine-batch-size" || true)
-GEMINI_API_KEY=$(get_meta "env-gemini-api-key" || true)
+GEMINI_API_KEY=$(get_secret actuarius-gemini-api-key || true)
 
 EXTRA_ARGS=()
 if [ -n "$GUILD_ID" ]; then

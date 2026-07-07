@@ -21,7 +21,27 @@ cd infra
 terraform apply
 ```
 
-This writes all configuration into [instance metadata](https://cloud.google.com/compute/docs/metadata) — environment variables, secrets, and the redeploy script itself (`env-redeploy-script`). **It does not restart the VM or the container.**
+This writes all **non-secret** configuration into [instance metadata](https://cloud.google.com/compute/docs/metadata) — environment variables and the redeploy script itself (`env-redeploy-script`) — and creates empty [Secret Manager](https://cloud.google.com/secret-manager) containers for the secret values (see below). **It does not restart the VM or the container.**
+
+## Secrets
+
+Secret values (Discord token, GitHub App private key, Claude OAuth token, API
+keys, MemPalace federation token) never pass through Terraform: not in
+`terraform.tfvars`, not in state, not in saved plan files, not in VM metadata.
+Terraform only creates the secret *containers* (`infra/secrets.tf`) and grants
+the VM service account `roles/secretmanager.secretAccessor`. Add or rotate
+values with:
+
+```bash
+gcloud secrets versions add actuarius-discord-token --data-file=-   # paste value, then Ctrl+D
+```
+
+Secret names: `actuarius-discord-token`, `actuarius-claude-oauth-token`,
+`actuarius-github-app-private-key-b64` (or `actuarius-github-app-private-key`
+for a raw PEM — set only one), `actuarius-gh-token`, `actuarius-gemini-api-key`,
+`actuarius-mempalace-remote-token`. `redeploy.sh` always reads
+`versions/latest`, so rotation is: add a new version, run redeploy. Never pass
+secrets as command-line arguments — they end up in shell history and `ps`.
 
 ## Redeploy
 
@@ -48,7 +68,7 @@ sudo reboot
 
 ## What redeploy.sh does
 
-1. Reads metadata env vars (`env-discord-token`, `env-enable-codex-execution`, `env-enable-opencode-execution`, etc.)
+1. Reads non-secret config from metadata (`env-discord-client-id`, `env-enable-codex-execution`, etc.) and secret values from Secret Manager (`actuarius-discord-token`, etc.) using the VM service account's access token
 2. Pulls the Docker image (`ghcr.io/digitumdei/actuarius:latest` or a specific SHA tag)
 3. Stops and removes the old container
 4. Starts a new container with the correct env vars mapped from metadata
@@ -79,7 +99,7 @@ After `terraform apply`, reboot or re-fetch `/var/redeploy.sh` from metadata so 
 
 ## Adding a new env var
 
-Three places need updating:
+**Non-secret config** — three places:
 
 | Step | File | What to add |
 |------|------|-------------|
@@ -87,5 +107,13 @@ Three places need updating:
 | 2. Metadata mapping | `infra/compute.tf` | New `env-<name>` metadata entry referencing the variable |
 | 3. Container env | `scripts/redeploy.sh` | `get_meta` call + `-e` flag in `EXTRA_ARGS` |
 
-After steps 1-2: run `terraform apply` to push the metadata.
-After step 3: the redeploy script must be re-fetched (reboot or manual `curl`).
+**Secret values** — never a Terraform variable:
+
+| Step | Where | What to do |
+|------|-------|------------|
+| 1. Secret container | `infra/secrets.tf` | Add the name to `local.actuarius_secrets` |
+| 2. Secret value | `gcloud` | `gcloud secrets versions add actuarius-<name> --data-file=-` |
+| 3. Container env | `scripts/redeploy.sh` | `get_secret` call + `-e` flag in `EXTRA_ARGS` |
+
+After Terraform changes: run `terraform apply` to push metadata / create containers.
+After `redeploy.sh` changes: the redeploy script must be re-fetched (reboot or manual `curl`).

@@ -45,10 +45,10 @@ variable "container_pids_limit" {
   default     = 256
 }
 
-variable "discord_token" {
-  type      = string
-  sensitive = true
-}
+# Secret values (Discord token, GitHub App private key, Claude OAuth token,
+# API keys, MemPalace federation token) are NOT Terraform variables. They live
+# in Secret Manager (infra/secrets.tf creates the containers) and are added
+# out-of-band: gcloud secrets versions add <name> --data-file=-
 
 variable "discord_client_id" {
   type      = string
@@ -62,12 +62,6 @@ variable "discord_guild_id" {
   description = "Optional: guild-scoped command registration for dev. Leave empty for global commands."
 }
 
-variable "gh_token" {
-  type        = string
-  sensitive   = true
-  default     = ""
-  description = "Optional fallback: GitHub personal access token. Prefer GitHub App auth instead."
-}
 variable "github_app_id" {
   type        = string
   sensitive   = true
@@ -80,19 +74,6 @@ variable "github_app_installation_id" {
   default     = ""
   description = "GitHub App installation ID."
 }
-variable "github_app_private_key_b64" {
-  type        = string
-  sensitive   = true
-  default     = ""
-  description = "Base64-encoded GitHub App private key (.pem)."
-}
-
-variable "claude_oauth_token" {
-  type        = string
-  sensitive   = true
-  description = "Long-lived Claude OAuth token — generate with: claude setup-token"
-}
-
 variable "enable_codex_execution" {
   type        = bool
   default     = false
@@ -141,13 +122,6 @@ variable "mempalace_remote_name" {
   description = "Optional override for MEMPALACE_REMOTE_NAME. Leave empty for the app default."
 }
 
-variable "mempalace_remote_token" {
-  type        = string
-  sensitive   = true
-  default     = ""
-  description = "Optional bearer token for local-to-remote MemPalace federation. Leave empty to generate and persist one."
-}
-
 variable "mempalace_remote_timeout_ms" {
   type        = string
   default     = ""
@@ -170,11 +144,4 @@ variable "mempalace_remote_mine_batch_size" {
   type        = string
   default     = ""
   description = "Optional override for MEMPALACE_REMOTE_MINE_BATCH_SIZE. Leave empty for the app default."
-}
-
-variable "gemini_api_key" {
-  type        = string
-  sensitive   = true
-  default     = ""
-  description = "Gemini API key required when Gemini execution is enabled"
 }
