@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { access, appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
@@ -423,7 +423,7 @@ export class MemPalaceRemoteService {
   }
 
   private async writeGlobalConfigOnce(): Promise<void> {
-    await this.ensureToken();
+    const remoteToken = await this.ensureToken();
     const configDir = join(this.homeDir, ".mempalace");
     const configPath = join(configDir, "config.json");
     await mkdir(configDir, { recursive: true });
@@ -439,10 +439,16 @@ export class MemPalaceRemoteService {
     const federation = isRecord(current.federation) ? { ...current.federation } : {};
     const existingRemotes = Array.isArray(federation.remotes) ? federation.remotes.filter(isRecord) : [];
     const remotes = existingRemotes.filter((remote) => remote.name !== this.config.mempalaceRemoteName);
+    // The token must be a literal here, not a token_env reference: the
+    // mempalace MCP server is spawned by each provider CLI, and several CLIs
+    // launch MCP subprocesses with only their configured env block — the
+    // bot's runtime-set MEMPALACE_REMOTE_TOKEN never crosses that boundary,
+    // so agents got HTTP 401 from the loopback remote. This file is
+    // bot-managed, rewritten on boot, and chmod 0600 below.
     remotes.push({
       name: this.config.mempalaceRemoteName,
       url: this.config.mempalaceRemoteUrl,
-      token_env: "MEMPALACE_REMOTE_TOKEN",
+      token: remoteToken,
       timeout_ms: this.config.mempalaceRemoteTimeoutMs
     });
 
@@ -484,7 +490,10 @@ export class MemPalaceRemoteService {
         kg
       }
     };
-    await writeFile(configPath, JSON.stringify(nextConfig, null, 2) + "\n", "utf8");
+    await writeFile(configPath, JSON.stringify(nextConfig, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+    // mode only applies on create; tighten pre-existing files too since the
+    // config now carries the federation token.
+    await chmod(configPath, 0o600);
   }
 
   private buildProcessEnv(): NodeJS.ProcessEnv {

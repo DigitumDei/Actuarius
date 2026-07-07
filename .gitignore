@@ -28,3 +28,8 @@ infra/*.tfplan
 
 # MemPalace
 mempalace.yaml
+
+# Terraform saved plans (embed sensitive variable values)
+*.tfplan
+tfplan*
+infra/tfplan*
