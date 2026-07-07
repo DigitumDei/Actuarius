@@ -93,11 +93,11 @@ from anywhere with gcloud:
 
 ```bash
 # Last 30 minutes of bot logs
-gcloud logging read 'logName:cos_containers AND jsonPayload.container_name="actuarius"' \
+gcloud logging read 'logName:cos_containers AND jsonPayload."cos.googleapis.com/container_name"="actuarius"' \
   --freshness=30m --limit=100 --order=desc --format='value(timestamp, jsonPayload.message)'
 
 # Live tail
-gcloud alpha logging tail 'jsonPayload.container_name="actuarius"'
+gcloud alpha logging tail 'jsonPayload."cos.googleapis.com/container_name"="actuarius"'
 ```
 
 Or use the Logs Explorer in the GCP Console. The bot logs structured JSON
