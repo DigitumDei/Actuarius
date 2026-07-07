@@ -1186,6 +1186,35 @@ export class AppDatabase {
       .filter((row): row is InstallRequestRow => Boolean(row));
   }
 
+  public listSuccessfulInstallRequestsByPackage(input: {
+    repoId: number;
+    threadId?: string | null;
+    packageId: string;
+    scope: InstallScope;
+  }): InstallRequestRow[] {
+    const rows = z.array(installRequestRowRawSchema).parse(
+      this.db
+        .prepare(
+          `SELECT *
+           FROM install_requests
+           WHERE status = 'succeeded'
+             AND repo_id = ?
+             AND package_id = ?
+             AND scope = ?
+             AND (
+               scope = 'repo'
+               OR thread_id = ?
+             )
+           ORDER BY id DESC`
+        )
+        .all(input.repoId, input.packageId, input.scope, input.threadId ?? null)
+    );
+
+    return rows
+      .map((row) => this.mapInstallRequestRow(row))
+      .filter((row): row is InstallRequestRow => Boolean(row));
+  }
+
   public close(): void {
     this.db.close();
   }

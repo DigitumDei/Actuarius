@@ -23,7 +23,10 @@ export interface OpencodeExecutionInput {
   timeoutMs: number;
   model?: string;
   env?: NodeJS.ProcessEnv;
+  role?: OpencodeExecutionRole;
 }
+
+export type OpencodeExecutionRole = "implementation" | "planner" | "verification";
 
 export interface OpencodeExecutionResult {
   text: string;
@@ -62,32 +65,39 @@ export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: 
     throw new OpencodeExecutionError("NOT_AUTHENTICATED", "Opencode requires an API key. Use `/opencode-auth` to configure keys, or set `DEEPSEEK_API_KEY` on the instance.");
   }
 
+  const role = input.role ?? "implementation";
+  const agent = role === "implementation" ? "build" : `actuarius-${role}`;
+  const extraArgs = ["--agent", agent, ...(role === "implementation" ? ["--dangerously-skip-permissions"] : [])];
+  const request = role === "implementation"
+    ? input
+    : { ...input, env: buildRestrictedRoleEnvironment(input.env, role) };
+
   const text = await runProviderRequest(
-    input,
+    request,
     {
       binary: "opencode",
       prefixArgs: ["run"],
       positionalPrompt: true,
       cwdFlag: "--dir",
-      extraArgs: ["--dangerously-skip-permissions"],
+      extraArgs,
       supportsStdinFallback: false,
       reshapeArgsForTempfile: (_promptText: string, adjustedArgs: string[], tempFilePath: string) => {
         // Re-insert a short directive message (the full prompt lives in the
         // attached file) right after the `run` subcommand so opencode always
         // has a non-empty, unambiguous instruction; then attach the file with
-        // `--file` before `--dangerously-skip-permissions` (order preserved).
+        // `--file` before the role flags (order preserved).
         const runIdx = adjustedArgs.indexOf("run");
         const withMessage = [...adjustedArgs];
         withMessage.splice(runIdx >= 0 ? runIdx + 1 : 0, 0, OPENCODE_TEMPFILE_DIRECTIVE);
 
-        const skipIdx = withMessage.indexOf("--dangerously-skip-permissions");
-        if (skipIdx === -1) {
+        const roleFlagIdx = withMessage.indexOf("--agent");
+        if (roleFlagIdx === -1) {
           return [...withMessage, "--file", tempFilePath];
         }
         return [
-          ...withMessage.slice(0, skipIdx),
+          ...withMessage.slice(0, roleFlagIdx),
           "--file", tempFilePath,
-          ...withMessage.slice(skipIdx),
+          ...withMessage.slice(roleFlagIdx),
         ];
       },
       logLabel: "OpenCode",
@@ -107,4 +117,62 @@ export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: 
     logger
   );
   return { text };
+}
+
+// Role restriction is enforced only for the OpenCode provider; other providers
+// accept `role` but ignore it. This relies on opencode's OPENCODE_CONFIG_CONTENT
+// inline-config env var (second-highest config precedence) and per-agent
+// permission maps with a "*" wildcard. Both must exist in the seeded opencode
+// CLI — an older CLI would ignore this config and run the restricted roles as a
+// default agent that stalls on interactive permission prompts until timeout,
+// because --dangerously-skip-permissions is deliberately omitted here.
+// Note: opencode does NOT apply {env:}/{file:} token substitution to inline
+// config, so only literal values may be written into this JSON.
+function buildRestrictedRoleEnvironment(
+  inputEnv: NodeJS.ProcessEnv | undefined,
+  role: Exclude<OpencodeExecutionRole, "implementation">
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = inputEnv ? { ...inputEnv } : { ...process.env };
+  let inlineConfig: Record<string, unknown> = {};
+  const currentInlineConfig = env.OPENCODE_CONFIG_CONTENT;
+  if (currentInlineConfig) {
+    try {
+      const parsed = JSON.parse(currentInlineConfig) as unknown;
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        inlineConfig = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Replace malformed inline configuration with a valid restrictive role.
+    }
+  }
+
+  const configuredAgents = typeof inlineConfig.agent === "object" && inlineConfig.agent !== null && !Array.isArray(inlineConfig.agent)
+    ? inlineConfig.agent as Record<string, unknown>
+    : {};
+  const agentName = `actuarius-${role}`;
+  const permission: Record<string, "allow" | "deny"> = role === "planner"
+    ? {
+      "*": "deny",
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+      list: "allow",
+      lsp: "allow"
+    }
+    : { "*": "deny" };
+
+  env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+    ...inlineConfig,
+    agent: {
+      ...configuredAgents,
+      [agentName]: {
+        description: role === "planner"
+          ? "Read-only Actuarius planner. Shell, edits, installs, and subagents are denied."
+          : "Actuarius task verifier. All tools are denied; assess only the supplied output and diff.",
+        mode: "primary",
+        permission
+      }
+    }
+  });
+  return env;
 }

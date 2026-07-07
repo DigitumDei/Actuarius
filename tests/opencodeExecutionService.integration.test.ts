@@ -153,7 +153,7 @@ describe("runOpencodeRequest — integration (real transport)", () => {
 
     const [file, args] = mockSpawn.mock.calls[0]!;
     expect(file).toBe("opencode");
-    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--dangerously-skip-permissions"]);
+    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--agent", "build", "--dangerously-skip-permissions"]);
     expect(args).not.toContain("--file");
   });
 
@@ -170,7 +170,7 @@ describe("runOpencodeRequest — integration (real transport)", () => {
     }, logger);
 
     const [, args] = mockSpawn.mock.calls[0]!;
-    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--dangerously-skip-permissions", "--model", "o4-mini"]);
+    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--agent", "build", "--dangerously-skip-permissions", "--model", "o4-mini"]);
     expect(args).not.toContain("--file");
   });
 

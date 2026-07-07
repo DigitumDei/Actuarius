@@ -53,6 +53,17 @@ sudo reboot
 3. Stops and removes the old container
 4. Starts a new container with the correct env vars mapped from metadata
 
+Production deploys constrain the container to 700 MB RAM with no extra swap,
+0.8 CPU, and 256 processes by default. These cgroup limits keep provider builds
+or fork storms from starving the VM host. Override them with Terraform variables
+`container_memory`, `container_cpus`, and `container_pids_limit`; keep the memory
+limit below total VM RAM so Docker, SSH, and system services retain headroom.
+
+Local Docker Compose uses the same defaults. Override them with
+`ACTUARIUS_CONTAINER_MEMORY`, `ACTUARIUS_CONTAINER_CPUS`, and
+`ACTUARIUS_CONTAINER_PIDS_LIMIT` when a development machine has different
+capacity.
+
 ## MemPalace Remote
 
 To run the local MemPalace MCP plus Actuarius' loopback remote repo store in production, set both Terraform switches:

@@ -51,6 +51,66 @@ describe("RequestExecutionQueue", () => {
     expect(new Set(started)).toEqual(new Set(["a", "b"]));
   });
 
+  it("serializes tasks sharing a resource key while other resources use guild capacity", async () => {
+    const queue = new RequestExecutionQueue(2);
+    const runningByResource = new Map<string, number>();
+    let maxSharedRunning = 0;
+    let maxTotalRunning = 0;
+    let totalRunning = 0;
+
+    const enqueue = (resourceKey: string, durationMs: number) => new Promise<void>((resolve) => {
+      queue.enqueue("guild-1", async () => {
+        totalRunning += 1;
+        maxTotalRunning = Math.max(maxTotalRunning, totalRunning);
+        const resourceRunning = (runningByResource.get(resourceKey) ?? 0) + 1;
+        runningByResource.set(resourceKey, resourceRunning);
+        if (resourceKey === "thread-1") maxSharedRunning = Math.max(maxSharedRunning, resourceRunning);
+        await delay(durationMs);
+        runningByResource.set(resourceKey, resourceRunning - 1);
+        totalRunning -= 1;
+        resolve();
+      }, resourceKey);
+    });
+
+    await Promise.all([
+      enqueue("thread-1", 30),
+      enqueue("thread-1", 10),
+      enqueue("thread-2", 20)
+    ]);
+
+    expect(maxSharedRunning).toBe(1);
+    expect(maxTotalRunning).toBe(2);
+  });
+
+  it("reports active and pending work for a resource key", async () => {
+    const queue = new RequestExecutionQueue(1);
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    const first = new Promise<void>((resolve) => {
+      queue.enqueue("guild-1", async () => {
+        await firstGate;
+        resolve();
+      }, "thread-1");
+    });
+    const second = new Promise<void>((resolve) => {
+      queue.enqueue("guild-1", async () => resolve(), "thread-2");
+    });
+
+    expect(queue.hasResourceWork("guild-1", "thread-1")).toBe(true);
+    expect(queue.hasResourceWork("guild-1", "thread-2")).toBe(true);
+    expect(queue.hasResourceWork("guild-1", "thread-3")).toBe(false);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    await delay(0);
+
+    expect(queue.hasResourceWork("guild-1", "thread-1")).toBe(false);
+    expect(queue.hasResourceWork("guild-1", "thread-2")).toBe(false);
+  });
+
   it("reports uncaught task errors via callback", async () => {
     const error = new Error("boom");
     const onTaskError = vi.fn();

@@ -16,6 +16,17 @@ const scriptPath = join(repoRoot, "docker", "seed-provider-clis.sh");
 const entrypointPath = join(repoRoot, "docker", "entrypoint.sh");
 const tempDirs: string[] = [];
 
+function toBashPath(path: string): string {
+  if (process.platform !== "win32") return path;
+  return path
+    .replaceAll("\\", "/")
+    .replace(/^([A-Za-z]):/u, (_match, drive: string) => `/${drive.toLowerCase()}`);
+}
+
+const shellExecutable = process.platform === "win32"
+  ? join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe")
+  : "sh";
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
@@ -32,11 +43,9 @@ function runSeedProviderClis(existingBinaries: string[], failPackages: string[] 
   tempDirs.push(tempDir);
 
   const npmLogPath = join(tempDir, "npm.log");
-  const binDir = join(tempDir, "mock-bin");
   const prefixDir = join(tempDir, "npm-global");
   const prefixBinDir = join(prefixDir, "bin");
 
-  mkdirSync(binDir, { recursive: true });
   mkdirSync(prefixBinDir, { recursive: true });
 
   for (const binary of existingBinaries) {
@@ -46,25 +55,27 @@ function runSeedProviderClis(existingBinaries: string[], failPackages: string[] 
   // Mock npm logs each invocation's args. It exits 1 when the args mention any
   // package listed in failPackages, so tests can exercise the best-effort path.
   const failCases = failPackages
-    .map((pkg) => `    *${pkg}*) exit 1 ;;`)
+    .map((pkg) => `    *${pkg}*) return 1 ;;`)
     .join("\n");
-  createExecutable(
-    join(binDir, "npm"),
-    `#!/usr/bin/env bash
-printf '%s\\n' "$*" >> ${JSON.stringify(npmLogPath)}
+  const bashEnvPath = join(tempDir, "bash-env.sh");
+  writeFileSync(
+    bashEnvPath,
+    `npm() {
+printf '%s\\n' "$*" >> ${JSON.stringify(toBashPath(npmLogPath))}
 case "$*" in
 ${failCases}
 esac
-exit 0
+return 0
+}
 `
   );
 
-  const result = spawnSync("sh", [scriptPath], {
+  const result = spawnSync(shellExecutable, [toBashPath(scriptPath)], {
     cwd: repoRoot,
     env: {
       ...process.env,
-      NPM_CONFIG_PREFIX: prefixDir,
-      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      NPM_CONFIG_PREFIX: toBashPath(prefixDir),
+      BASH_ENV: toBashPath(bashEnvPath),
     },
     encoding: "utf8",
   });

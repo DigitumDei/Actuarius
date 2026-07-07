@@ -94,6 +94,30 @@ type ReviewProgressCallback = (event: ReviewProgressEvent) => Promise<void> | vo
 
 const PROGRESS_CALLBACK_TIMEOUT_MS = 10_000;
 
+async function mapSettledWithConcurrency<T, R>(
+  items: T[],
+  maxConcurrency: number,
+  worker: (item: T) => Promise<R>
+): Promise<Array<PromiseSettledResult<R>>> {
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(items.length, Math.max(1, maxConcurrency));
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      try {
+        results[index] = { status: "fulfilled", value: await worker(items[index]!) };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  }));
+
+  return results;
+}
+
 export class AdversarialReviewError extends Error {
   public readonly code:
     | "INSUFFICIENT_REVIEWERS"
@@ -620,6 +644,7 @@ export async function runAdversarialReview(input: {
   summarizer: ReviewModelRunner;
   stageTimeoutMs: number;
   totalTimeoutMs: number;
+  reviewConcurrency?: number;
   maxConsensusRounds?: number;
   onProgress?: ReviewProgressCallback;
 }): Promise<AdversarialReviewResult> {
@@ -629,6 +654,7 @@ export async function runAdversarialReview(input: {
 
   const startTime = Date.now();
   const maxConsensusRounds = Math.max(1, input.maxConsensusRounds ?? 2);
+  const reviewConcurrency = Math.max(1, input.reviewConcurrency ?? 1);
   const checkBudget = (): void => {
     if (Date.now() - startTime > input.totalTimeoutMs) {
       throw new AdversarialReviewError("PIPELINE_FAILED", `Review pipeline exceeded ${input.totalTimeoutMs}ms.`);
@@ -675,6 +701,7 @@ export async function runAdversarialReview(input: {
       summarizer: { provider: input.summarizer.provider, model: input.summarizer.model ?? null },
       stageTimeoutMs: input.stageTimeoutMs,
       totalTimeoutMs: input.totalTimeoutMs,
+      reviewConcurrency,
       maxConsensusRounds
     }),
     diffBase: diff.baseRef,
@@ -706,8 +733,15 @@ export async function runAdversarialReview(input: {
     for (let round = 1; round <= maxConsensusRounds; round += 1) {
       checkBudget();
       await emitProgress({ type: "round-start", round, maxRounds: maxConsensusRounds });
-      const reviewerResults = await Promise.allSettled(
-        activeReviewers.map(async (reviewer) => {
+      // When reviewConcurrency serializes a fan-out stage, that stage occupies
+      // as many sequential budget slots as it has batches — without this
+      // weighting, a serialized reviewer stage could consume nearly the whole
+      // remaining budget and starve the critique/judge/summarizer stages.
+      const reviewerBatches = Math.ceil(activeReviewers.length / reviewConcurrency);
+      const reviewerResults = await mapSettledWithConcurrency(
+        activeReviewers,
+        reviewConcurrency,
+        async (reviewer) => {
           const priorReview = findLatestReviewerOutput(allReviewerOutputs, reviewer.label);
           const critiqueFeedback = allCritiqueOutputs
             .filter((critique) => critique.round === round - 1 && critique.reviewer !== reviewer.label)
@@ -732,7 +766,12 @@ export async function runAdversarialReview(input: {
               ...(priorJudge ? { judgeSummary: [priorJudge.consensusSummary, reviewerGuidance].filter(Boolean).join("\n") } : {})
             }),
             cwd: input.worktreePath,
-            timeoutMs: getStageTimeout(startTime, input.stageTimeoutMs, input.totalTimeoutMs, (maxConsensusRounds - round + 1) * 3 + 1),
+            timeoutMs: getStageTimeout(
+              startTime,
+              input.stageTimeoutMs,
+              input.totalTimeoutMs,
+              (maxConsensusRounds - round + 1) * (2 * reviewerBatches + 1) + 1
+            ),
             ...(reviewer.model ? { model: reviewer.model } : {})
           });
 
@@ -743,7 +782,7 @@ export async function runAdversarialReview(input: {
             ...(reviewer.model ? { model: reviewer.model } : {}),
             text: reviewerText
           } satisfies ReviewerStageResult;
-        })
+        }
       );
 
       const successfulReviewers = reviewerResults
@@ -781,8 +820,11 @@ export async function runAdversarialReview(input: {
       activeReviewers = input.reviewers.filter((reviewer) => successfulReviewers.some((result) => result.reviewer === reviewer.label));
 
       checkBudget();
-      const critiqueSettled = await Promise.allSettled(
-        activeReviewers.map(async (reviewer) => {
+      const critiqueBatches = Math.ceil(activeReviewers.length / reviewConcurrency);
+      const critiqueSettled = await mapSettledWithConcurrency(
+        activeReviewers,
+        reviewConcurrency,
+        async (reviewer) => {
           const ownReview = successfulReviewers.find((result) => result.reviewer === reviewer.label);
           const peerReviews = successfulReviewers.filter((result) => result.reviewer !== reviewer.label);
           const critiqueText = await reviewer.run({
@@ -796,7 +838,12 @@ export async function runAdversarialReview(input: {
               peerReviews
             }),
             cwd: input.worktreePath,
-            timeoutMs: getStageTimeout(startTime, input.stageTimeoutMs, input.totalTimeoutMs, (maxConsensusRounds - round + 1) * 2 + 1),
+            timeoutMs: getStageTimeout(
+              startTime,
+              input.stageTimeoutMs,
+              input.totalTimeoutMs,
+              (maxConsensusRounds - round + 1) * (critiqueBatches + 1) + 1
+            ),
             ...(reviewer.model ? { model: reviewer.model } : {})
           });
 
@@ -807,7 +854,7 @@ export async function runAdversarialReview(input: {
             ...(reviewer.model ? { model: reviewer.model } : {}),
             text: critiqueText
           } satisfies ReviewCritiqueResult;
-        })
+        }
       );
       const critiqueResults = critiqueSettled
         .filter((result): result is PromiseFulfilledResult<ReviewCritiqueResult> => result.status === "fulfilled")

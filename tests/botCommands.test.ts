@@ -152,6 +152,8 @@ function createBot(dbOverrides: Record<string, unknown> = {}, memPalace: unknown
     threadAutoArchiveMinutes: 1440,
     askConcurrencyPerGuild: 1,
     askExecutionTimeoutMs: 1000,
+    iterativeVerificationTimeoutMs: 300,
+    reviewConcurrency: 1,
     installStepTimeoutMs: 1000,
     aptInstallHelperPath: undefined,
     enableCodexExecution: false,
@@ -284,7 +286,7 @@ describe("ActuariusBot ask command", () => {
       prompt: "Review this log",
       status: "queued"
     }));
-    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function));
+    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function), "thread-ask-1");
 
     await enqueue.mock.calls[0]![1]();
     expect(runQueuedRequest).toHaveBeenCalledWith(expect.objectContaining({
@@ -535,6 +537,33 @@ describe("ActuariusBot thread follow-ups", () => {
       })
     );
     expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function), "thread-1");
+  });
+
+  it("rejects follow-up messages while another request in the thread is active", async () => {
+    const createRequest = vi.fn();
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot({
+      createRequest,
+      getRequestByThreadId: vi.fn().mockReturnValue({ id: 99, status: "running" })
+    });
+    const enqueue = vi.fn();
+    (bot as any).requestQueue.enqueue = enqueue;
+
+    await (bot as any).handleThreadMessage({
+      author: { bot: false, id: "user-1" },
+      guildId: "guild-1",
+      guild: { id: "guild-1" },
+      channelId: "thread-1",
+      channel: { isThread: () => true, parentId: "channel-1" },
+      content: "race this revision",
+      reply,
+      attachments: { size: 0, values: () => [] }
+    });
+
+    expect(reply).toHaveBeenCalledWith(expect.stringContaining("already queued or running"));
+    expect(createRequest).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
   });
 
   it("replies when the latest failed request has no workspace to continue", async () => {
@@ -926,6 +955,7 @@ describe("ActuariusBot thread follow-ups", () => {
         updateRequestWorkspace: vi.fn(),
         listSuccessfulInstallRequestsForScope: vi.fn().mockReturnValue(installRecords)
       });
+      (bot as any).installService.pathExists = () => true;
       (bot as any).client.channels.fetch = vi.fn().mockResolvedValue(thread);
       (bot as any).runProviderText = vi.fn().mockResolvedValue("queued response");
 
@@ -1035,6 +1065,7 @@ describe("ActuariusBot thread follow-ups", () => {
         updateRequestWorkspace: vi.fn(),
         listSuccessfulInstallRequestsForScope: vi.fn().mockReturnValue(installRecords)
       });
+      (bot as any).installService.pathExists = () => true;
       (bot as any).client.user = { id: "bot-1" };
       (bot as any).client.channels.fetch = vi.fn().mockResolvedValue(thread);
       (bot as any).runProviderText = vi.fn().mockResolvedValue("follow-up response");
@@ -1583,6 +1614,10 @@ describe("ActuariusBot review command", () => {
 
   it("rejects review while an install is actively using the worktree", async () => {
     const bot = createBot({
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        status: "install_running"
+      }),
       getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
         id: 41,
         user_id: "user-1",
@@ -1691,6 +1726,58 @@ describe("ActuariusBot review command", () => {
     expect(send).toHaveBeenNthCalledWith(4, "Round 1/4 complete.");
     expect(send).toHaveBeenNthCalledWith(5, "Round 2/4: consensus reached.");
     expect(send).toHaveBeenNthCalledWith(6, "Synthesizing final verdict…");
+  });
+
+  it("keeps a completed review successful when the deferred interaction token has expired", async () => {
+    vi.mocked(autoCommitDirtyWorktree).mockResolvedValue(false);
+    vi.mocked(runAdversarialReview).mockResolvedValue({
+      reviewRunId: 14,
+      diffHeadSha: "expired-token-sha",
+      reviewersSucceeded: 2,
+      reviewersAttempted: 2,
+      artifactPath: "docs/reviews/41/review.md",
+      summary: {
+        executiveSummary: "Review completed after the interaction token expired.",
+        blockingIssues: [],
+        nonBlockingIssues: [],
+        missingTests: [],
+        outstandingConcerns: [],
+        verdict: "ready_for_pr"
+      }
+    });
+    const bot = createBot({
+      getLatestRequestWithWorkspaceByThreadId: vi.fn().mockReturnValue({
+        id: 41,
+        user_id: "user-1",
+        worktree_path: "/tmp",
+        branch_name: "ask/41-123",
+        status: "succeeded"
+      }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
+      }),
+      getGuildModelConfig: vi.fn().mockReturnValue({ provider: "claude", model: null, updated_at: "2026-03-18T00:00:00Z" })
+    });
+    (bot as any).config.enableCodexExecution = true;
+    vi.spyOn((bot as any), "buildReviewRunners").mockReturnValue({
+      analyzer: { provider: "claude", label: "Claude", run: vi.fn() },
+      reviewers: [
+        { provider: "claude", label: "Claude", run: vi.fn() },
+        { provider: "codex", label: "Codex", run: vi.fn() }
+      ],
+      judge: { provider: "claude", label: "Claude", run: vi.fn() },
+      summarizer: { provider: "codex", label: "Codex", run: vi.fn() }
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      editReply: vi.fn().mockRejectedValue(new Error("DiscordAPIError[50027]: Invalid Webhook Token")),
+      channel: { isThread: () => true, parentId: "channel-1", send, messages: { fetch: vi.fn().mockResolvedValue(new Map()) } }
+    });
+
+    await expect((bot as any).handleReview(interaction)).resolves.toBeUndefined();
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Review run: #14"));
+    expect(send).not.toHaveBeenCalledWith(expect.stringContaining("Adversarial review failed"));
   });
 
   it("does not auto-commit review artifacts when running /review a second time on the same worktree", async () => {
@@ -2240,6 +2327,114 @@ describe("ActuariusBot install command", () => {
         "<@user-1> Installed APT package `libssl-dev` in `repo` scope.\nInstall request: #77\nPATH prefix: (none)"
       )
     );
+  });
+});
+
+describe("ActuariusBot uninstall command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  function createUninstallInteraction(scope: string, overrides: Record<string, unknown> = {}) {
+    return createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "package") return "npm-prettier";
+          if (name === "apt-package") return null;
+          if (name === "scope") return scope;
+          return null;
+        }),
+        getInteger: vi.fn().mockReturnValue(null)
+      },
+      ...overrides
+    });
+  }
+
+  function wireUninstallBot(scope: "repo" | "request") {
+    const bot = createBot({
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      })
+    });
+    const invalidateInstall = vi.fn().mockResolvedValue({ id: 55, package_id: "npm-prettier", status: "invalidated" });
+    (bot as any).installService = { invalidateInstall };
+    const enqueue = vi.fn((_guildId: string, task: () => Promise<void>) => {
+      void task();
+    });
+    (bot as any).requestQueue.enqueue = enqueue;
+    return { bot, invalidateInstall, enqueue, scope };
+  }
+
+  it("defers, queues on the owning thread, and invalidates a request-scoped install", async () => {
+    const { bot, invalidateInstall, enqueue } = wireUninstallBot("request");
+    const interaction = createUninstallInteraction("request");
+
+    await (bot as any).handleUninstall(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function), "thread-1");
+    expect(invalidateInstall).toHaveBeenCalledWith({
+      repoId: 1,
+      threadId: "thread-1",
+      packageId: "npm-prettier",
+      scope: "request",
+      invalidatedByUserId: "user-1"
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Invalidated install request #55")
+    );
+    expect(interaction.reply).not.toHaveBeenCalled();
+  });
+
+  it("queues repo-scoped invalidation as a guild task without a thread resource key", async () => {
+    const { bot, invalidateInstall, enqueue } = wireUninstallBot("repo");
+    const interaction = createUninstallInteraction("repo", {
+      channel: {
+        isThread: () => false,
+        isTextBased: () => true,
+        isDMBased: () => false,
+        parentId: null,
+        send: vi.fn().mockResolvedValue(undefined)
+      },
+      channelId: "channel-1"
+    });
+
+    await (bot as any).handleUninstall(interaction);
+
+    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function), undefined);
+    expect(invalidateInstall).toHaveBeenCalledWith(expect.objectContaining({
+      repoId: 1,
+      threadId: null,
+      scope: "repo"
+    }));
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Invalidated install request #55")
+    );
+  });
+
+  it("stays successful when the deferred acknowledgement token has expired", async () => {
+    const { bot, invalidateInstall } = wireUninstallBot("request");
+    const interaction = createUninstallInteraction("request", {
+      editReply: vi.fn().mockRejectedValue(new Error("DiscordAPIError[50027]: Invalid Webhook Token"))
+    });
+
+    await expect((bot as any).handleUninstall(interaction)).resolves.toBeUndefined();
+    expect(invalidateInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports invalidation failures through the deferred reply", async () => {
+    const { bot } = wireUninstallBot("request");
+    (bot as any).installService.invalidateInstall = vi.fn().mockRejectedValue(new Error("boom"));
+    const interaction = createUninstallInteraction("request");
+
+    await (bot as any).handleUninstall(interaction);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Uninstall failed"));
   });
 });
 
@@ -3056,6 +3251,44 @@ describe("ActuariusBot pr command", () => {
     };
   }
 
+  it("blocks PR creation when a newer request is active without a workspace yet", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-active-"));
+    const bot = createBot(createPrDb(worktreePath, {
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 720,
+        status: "queued",
+        worktree_path: null,
+        branch_name: null
+      })
+    }));
+    const interaction = createInteraction();
+
+    await (bot as any).handlePr(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "The latest request in this thread is still queued or running. Wait for it to finish before opening a PR.",
+      ephemeral: true
+    });
+    expect(interaction.deferReply).not.toHaveBeenCalled();
+    expect(pushBranch).not.toHaveBeenCalled();
+  });
+
+  it("blocks PR creation while another operation owns the thread resource", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-resource-busy-"));
+    const bot = createBot(createPrDb(worktreePath));
+    vi.spyOn((bot as any).requestQueue, "hasResourceWork").mockReturnValue(true);
+    const interaction = createInteraction();
+
+    await (bot as any).handlePr(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "Another operation in this thread is already queued or running. Wait for it to finish before opening a PR."
+    );
+    expect(pushBranch).not.toHaveBeenCalled();
+    expect(createDraftPullRequest).not.toHaveBeenCalled();
+  });
+
   it("blocks PR creation when the worktree has uncommitted changes excluding review artifacts", async () => {
     const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-dirty-"));
     const bot = createBot(createPrDb(worktreePath));
@@ -3067,6 +3300,35 @@ describe("ActuariusBot pr command", () => {
 
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("worktree has uncommitted changes"));
+    expect(pushBranch).not.toHaveBeenCalled();
+    expect(createDraftPullRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps the uncommitted-worktree outcome successful when the interaction token has expired", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-dirty-expired-token-"));
+    const bot = createBot(createPrDb(worktreePath));
+    vi.mocked(hasUncommittedChangesExcluding).mockResolvedValue(true);
+    const interaction = createInteraction({
+      editReply: vi.fn().mockRejectedValue(new Error("DiscordAPIError[50027]: Invalid Webhook Token"))
+    });
+
+    await expect((bot as any).handlePr(interaction)).resolves.toBeUndefined();
+
+    expect(pushBranch).not.toHaveBeenCalled();
+    expect(createDraftPullRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps the branch-changed outcome successful when the interaction token has expired", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-changed-expired-token-"));
+    const bot = createBot(createPrDb(worktreePath));
+    vi.mocked(hasUncommittedChangesExcluding).mockResolvedValue(false);
+    vi.mocked(getHeadSha).mockResolvedValue("new-head-sha");
+    const interaction = createInteraction({
+      editReply: vi.fn().mockRejectedValue(new Error("DiscordAPIError[50027]: Invalid Webhook Token"))
+    });
+
+    await expect((bot as any).handlePr(interaction)).resolves.toBeUndefined();
+
     expect(pushBranch).not.toHaveBeenCalled();
     expect(createDraftPullRequest).not.toHaveBeenCalled();
   });
@@ -3105,6 +3367,35 @@ describe("ActuariusBot pr command", () => {
     }));
     expect(channelSend).toHaveBeenCalledWith(expect.stringContaining("Draft PR opened"));
     expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Draft PR opened for `octocat/hello-world`"));
+  });
+
+  it("keeps a created draft PR successful when the deferred interaction token has expired", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "actuarius-pr-expired-token-"));
+    const channelSend = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot(createPrDb(worktreePath));
+    vi.mocked(hasUncommittedChangesExcluding).mockResolvedValue(false);
+    vi.mocked(getHeadSha).mockResolvedValue("reviewed-sha");
+    vi.mocked(detectDefaultBranch).mockResolvedValue({ branchName: "main", remoteRef: "origin/main" });
+    vi.mocked(pushBranch).mockResolvedValue(undefined);
+    vi.mocked(createDraftPullRequest).mockResolvedValue("https://github.com/octocat/hello-world/pull/1");
+
+    const interaction = createInteraction({
+      editReply: vi.fn().mockRejectedValue(new Error("DiscordAPIError[50027]: Invalid Webhook Token")),
+      channel: {
+        isThread: () => true,
+        isTextBased: () => true,
+        isDMBased: () => false,
+        parentId: "channel-1",
+        url: "https://discord.test/thread-1",
+        send: channelSend
+      }
+    });
+
+    await expect((bot as any).handlePr(interaction)).resolves.toBeUndefined();
+
+    expect(createDraftPullRequest).toHaveBeenCalledTimes(1);
+    expect(channelSend).toHaveBeenCalledWith("Draft PR opened: https://github.com/octocat/hello-world/pull/1");
+    expect(channelSend).not.toHaveBeenCalledWith(expect.stringContaining("Draft PR creation failed"));
   });
 
   it("opens a draft PR even when docs/reviews/ artifacts exist from a previous /review", async () => {
@@ -3722,6 +4013,7 @@ describe("ActuariusBot plan runner", () => {
         updateRequestStatus: vi.fn(),
         listSuccessfulInstallRequestsForScope: vi.fn().mockReturnValue(installRecords)
       });
+      (bot as any).installService.pathExists = () => true;
       (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
         isThread: () => true,
         send
@@ -4796,6 +5088,7 @@ describe("ActuariusBot revise command", () => {
         }),
         listSuccessfulInstallRequestsForScope: vi.fn().mockReturnValue(installRecords)
       }));
+      (bot as any).installService.pathExists = () => true;
       (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
         isThread: () => true,
         send

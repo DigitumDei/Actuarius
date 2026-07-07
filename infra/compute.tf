@@ -51,6 +51,9 @@ resource "google_compute_instance" "actuarius" {
     env-claude-oauth-token               = var.claude_oauth_token
     env-docker-image                     = var.docker_image
     env-ask-concurrency                  = var.ask_concurrency
+    env-container-memory                 = var.container_memory
+    env-container-cpus                   = var.container_cpus
+    env-container-pids-limit             = var.container_pids_limit
     env-enable-codex-execution           = var.enable_codex_execution
     env-enable-gemini-execution          = var.enable_gemini_execution
     env-enable-opencode-execution        = var.enable_opencode_execution

@@ -102,6 +102,31 @@ export const commandBuilders = [
         .setRequired(false)
     ),
   new SlashCommandBuilder()
+    .setName("uninstall")
+    .setDescription("Invalidate a managed install and remove its managed files. Requires Manage Server permission.")
+    .addStringOption((option) =>
+      option
+        .setName("scope")
+        .setDescription("Installation scope")
+        .setRequired(true)
+        .addChoices(
+          { name: "Repo", value: "repo" },
+          { name: "Request", value: "request" }
+        )
+    )
+    .addStringOption((option) =>
+      INSTALLER_PACKAGE_CHOICES.reduce(
+        (builder, choice) => builder.addChoices({ name: choice.name, value: choice.value }),
+        option.setName("package").setDescription("Allowlisted package ID to invalidate.").setRequired(false)
+      )
+    )
+    .addStringOption((option) =>
+      option
+        .setName("apt-package")
+        .setDescription("APT package spec whose install record should be invalidated.")
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
     .setName("bug")
     .setDescription("Create a bug report issue on GitHub by analyzing the codebase.")
     .addStringOption((option) => option.setName("prompt").setDescription("Bug details or description.").setRequired(true)),
@@ -285,6 +310,7 @@ export type CommandName =
   | "ask"
   | "plan"
   | "install"
+  | "uninstall"
   | "bug"
   | "issue"
   | "model-select"

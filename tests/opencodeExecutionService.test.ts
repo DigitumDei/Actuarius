@@ -75,13 +75,13 @@ describe("runOpencodeRequest", () => {
     expect(result.text).toBe("opencode output");
   });
 
-  it("passes run subcommand, positional prompt, --dir, and --dangerously-skip-permissions", async () => {
+  it("uses the unrestricted build agent for implementation", async () => {
     mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
     await runOpencodeRequest({ prompt: "my prompt", cwd: "/tmp", timeoutMs: 5000 }, logger);
     expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
       expect.objectContaining({
         file: "opencode",
-        args: ["run", "--dir", "/tmp", "my prompt", "--dangerously-skip-permissions"],
+        args: ["run", "--dir", "/tmp", "my prompt", "--agent", "build", "--dangerously-skip-permissions"],
         cwd: "/tmp",
         timeoutMs: 5000,
         maxBuffer: 4 * 1024 * 1024,
@@ -95,7 +95,7 @@ describe("runOpencodeRequest", () => {
     expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
       expect.objectContaining({
         file: "opencode",
-        args: ["run", "--dir", "/tmp", "hello", "--dangerously-skip-permissions", "--model", "o4-mini"],
+        args: ["run", "--dir", "/tmp", "hello", "--agent", "build", "--dangerously-skip-permissions", "--model", "o4-mini"],
         cwd: "/tmp",
       })
     );
@@ -110,6 +110,41 @@ describe("runOpencodeRequest", () => {
         env: { PATH: "/scoped/bin" },
       })
     );
+  });
+
+  it("uses a read-only planner agent without auto-approval", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    await runOpencodeRequest({
+      prompt: "plan",
+      cwd: "/tmp",
+      timeoutMs: 5000,
+      role: "planner",
+      env: { PATH: "/scoped/bin", DEEPSEEK_API_KEY: "test-key" }
+    }, logger);
+
+    const call = mockSpawnCollectWithTransport.mock.calls[0]![0];
+    expect(call.args).toEqual(["run", "--dir", "/tmp", "plan", "--agent", "actuarius-planner"]);
+    expect(call.args).not.toContain("--dangerously-skip-permissions");
+    const config = JSON.parse(call.env!.OPENCODE_CONFIG_CONTENT!) as any;
+    expect(config.agent["actuarius-planner"].permission).toMatchObject({
+      "*": "deny",
+      read: "allow"
+    });
+  });
+
+  it("uses a tool-free verifier agent without auto-approval", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "APPROVED", stderr: "" });
+    await runOpencodeRequest({
+      prompt: "verify supplied diff",
+      cwd: "/tmp",
+      timeoutMs: 5000,
+      role: "verification",
+      env: { DEEPSEEK_API_KEY: "test-key" }
+    }, logger);
+
+    const call = mockSpawnCollectWithTransport.mock.calls[0]![0];
+    expect(call.args).toEqual(["run", "--dir", "/tmp", "verify supplied diff", "--agent", "actuarius-verification"]);
+    expect(JSON.parse(call.env!.OPENCODE_CONFIG_CONTENT!).agent["actuarius-verification"].permission).toEqual({ "*": "deny" });
   });
 
   it("passes supportsStdinFallback false for tempfile transport", async () => {
@@ -137,26 +172,28 @@ describe("runOpencodeRequest", () => {
     await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
     const { reshapeArgsForTempfile } = mockSpawnCollectWithTransport.mock.calls[0]![0] as { reshapeArgsForTempfile: (promptText: string, adjustedArgs: string[], tempFilePath: string) => string[] };
 
-    const adjusted = ["run", "--dir", "/work", "--dangerously-skip-permissions", "--model", "o4-mini"];
+    const adjusted = ["run", "--dir", "/work", "--agent", "build", "--dangerously-skip-permissions", "--model", "o4-mini"];
     const result = reshapeArgsForTempfile("big prompt", adjusted, "/tmp/prompt.txt");
     expect(result).toEqual([
       "run", OPENCODE_TEMPFILE_DIRECTIVE, "--dir", "/work",
       "--file", "/tmp/prompt.txt",
+      "--agent", "build",
       "--dangerously-skip-permissions",
       "--model", "o4-mini",
     ]);
   });
 
-  it("reshapeArgsForTempfile appends --file and path when --dangerously-skip-permissions is absent", async () => {
+  it("reshapeArgsForTempfile inserts --file before a restricted role flag", async () => {
     mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
     await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
     const { reshapeArgsForTempfile } = mockSpawnCollectWithTransport.mock.calls[0]![0] as { reshapeArgsForTempfile: (promptText: string, adjustedArgs: string[], tempFilePath: string) => string[] };
 
-    const adjusted = ["run", "--dir", "/work", "--model", "o4-mini"];
+    const adjusted = ["run", "--dir", "/work", "--agent", "actuarius-planner", "--model", "o4-mini"];
     const result = reshapeArgsForTempfile("big prompt", adjusted, "/tmp/prompt.txt");
     expect(result).toEqual([
-      "run", OPENCODE_TEMPFILE_DIRECTIVE, "--dir", "/work", "--model", "o4-mini",
+      "run", OPENCODE_TEMPFILE_DIRECTIVE, "--dir", "/work",
       "--file", "/tmp/prompt.txt",
+      "--agent", "actuarius-planner", "--model", "o4-mini",
     ]);
   });
 
@@ -260,7 +297,7 @@ describe("runOpencodeRequest", () => {
     const callArgs = mockSpawnCollectWithTransport.mock.calls[0]![0];
     const reshapeFn = callArgs.reshapeArgsForTempfile as (promptText: string, adjustedArgs: string[], tempFilePath: string) => string[];
     const promptText = "some oversized prompt that would not fit in argv";
-    const adjustedArgs = ["run", "--dir", "/work", "--dangerously-skip-permissions"];
+    const adjustedArgs = ["run", "--dir", "/work", "--agent", "build", "--dangerously-skip-permissions"];
     const reshaped = reshapeFn(promptText, adjustedArgs, "/tmp/actuarius-prompt-xxx/prompt.txt");
     expect(reshaped).not.toContain(promptText);
     expect(reshaped).toContain("--file");

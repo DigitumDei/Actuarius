@@ -33,8 +33,10 @@ export interface IterativeTaskLoopInput {
     timeoutMs: number;
     model?: string;
     env?: NodeJS.ProcessEnv;
+    role?: "implementation" | "planner" | "verification";
   }) => Promise<string>;
   timeoutMs: number;
+  verificationTimeoutMs: number;
   env: NodeJS.ProcessEnv | undefined;
   getHeadSha: (repoPath: string, ref?: string) => Promise<string>;
   getDiffSinceRef: (repoPath: string, baseRef: string) => Promise<string>;
@@ -116,6 +118,7 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
         prompt: implementerPrompt,
         cwd: worktreePath,
         timeoutMs: input.timeoutMs,
+        role: "implementation",
         ...(input.implementerModel ? { model: input.implementerModel } : {}),
         ...(input.env ? { env: input.env } : {})
       });
@@ -161,7 +164,8 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
         provider: input.plannerProvider,
         prompt: verificationPrompt,
         cwd: worktreePath,
-        timeoutMs: input.timeoutMs,
+        timeoutMs: input.verificationTimeoutMs,
+        role: "verification",
         ...(input.plannerModel ? { model: input.plannerModel } : {}),
         ...(input.env ? { env: input.env } : {})
       });

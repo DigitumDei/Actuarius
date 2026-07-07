@@ -41,6 +41,8 @@ function makeConfig(root: string): AppConfig {
     threadAutoArchiveMinutes: 1440,
     askConcurrencyPerGuild: 1,
     askExecutionTimeoutMs: 1000,
+    iterativeVerificationTimeoutMs: 300,
+    reviewConcurrency: 1,
     installStepTimeoutMs: 1000,
     aptInstallHelperPath: undefined,
     enableCodexExecution: false,

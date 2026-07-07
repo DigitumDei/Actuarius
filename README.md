@@ -51,6 +51,8 @@ Copy `.env.example` to `.env` and set:
 - `LOG_LEVEL` (default `info`)
 - `THREAD_AUTO_ARCHIVE_MINUTES` (`60`, `1440`, `4320`, or `10080`)
 - `ASK_CONCURRENCY_PER_GUILD` (default `3`)
+- `ITERATIVE_VERIFICATION_TIMEOUT_MS` (default `300000`, bounds each iterative planner verification)
+- `REVIEW_CONCURRENCY` (default `1`, serialize reviewers on memory-constrained hosts)
 - `ASK_EXECUTION_TIMEOUT_MS` (default `1200000`)
 - `ENABLE_CODEX_EXECUTION` (default `false`, enables Codex/OpenAI provider)
 - `ENABLE_GEMINI_EXECUTION` (default `false`, enables Gemini provider)
@@ -65,6 +67,12 @@ Copy `.env.example` to `.env` and set:
 - `MEMPALACE_REMOTE_MINE_ON_SYNC` (default `true`, queues repo mining after connect/sync/checkouts)
 
 Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global`, with `docker/entrypoint.sh` seeding them on first boot if missing. That keeps Claude and Codex authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. Gemini and OpenCode execution use API keys instead of persisted OAuth state — set `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` as env vars, or use `/opencode-auth` to store per-provider keys in `auth.json` with support for DeepSeek, OpenAI, Anthropic, Google, xAI, Groq, OpenRouter, and Together.
+
+Managed tool installs are validated against the filesystem before Actuarius adds
+their binaries or environment values to provider processes. Use `/uninstall`
+(requires Manage Server) to invalidate a repo- or request-scoped install and
+remove its managed files. For APT installs, the command invalidates Actuarius'
+record but intentionally does not remove the system package.
 
 ### MemPalace federation
 

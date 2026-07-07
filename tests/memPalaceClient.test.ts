@@ -17,6 +17,8 @@ describe("ensurePalaceIdentity", () => {
     const seeded = readFileSync(identityPath, "utf8");
     expect(seeded).toContain("Actuarius agents");
     expect(seeded).toContain("NEVER push directly");
+    expect(seeded).toContain("opening a draft PR for CI validation");
+    expect(seeded).toContain("needs no additional approval");
 
     // Operator edits on the persistent disk must survive restarts.
     writeFileSync(identityPath, "custom identity\n", "utf8");
