@@ -2330,6 +2330,114 @@ describe("ActuariusBot install command", () => {
   });
 });
 
+describe("ActuariusBot uninstall command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  function createUninstallInteraction(scope: string, overrides: Record<string, unknown> = {}) {
+    return createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "package") return "npm-prettier";
+          if (name === "apt-package") return null;
+          if (name === "scope") return scope;
+          return null;
+        }),
+        getInteger: vi.fn().mockReturnValue(null)
+      },
+      ...overrides
+    });
+  }
+
+  function wireUninstallBot(scope: "repo" | "request") {
+    const bot = createBot({
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 1,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      })
+    });
+    const invalidateInstall = vi.fn().mockResolvedValue({ id: 55, package_id: "npm-prettier", status: "invalidated" });
+    (bot as any).installService = { invalidateInstall };
+    const enqueue = vi.fn((_guildId: string, task: () => Promise<void>) => {
+      void task();
+    });
+    (bot as any).requestQueue.enqueue = enqueue;
+    return { bot, invalidateInstall, enqueue, scope };
+  }
+
+  it("defers, queues on the owning thread, and invalidates a request-scoped install", async () => {
+    const { bot, invalidateInstall, enqueue } = wireUninstallBot("request");
+    const interaction = createUninstallInteraction("request");
+
+    await (bot as any).handleUninstall(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function), "thread-1");
+    expect(invalidateInstall).toHaveBeenCalledWith({
+      repoId: 1,
+      threadId: "thread-1",
+      packageId: "npm-prettier",
+      scope: "request",
+      invalidatedByUserId: "user-1"
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Invalidated install request #55")
+    );
+    expect(interaction.reply).not.toHaveBeenCalled();
+  });
+
+  it("queues repo-scoped invalidation as a guild task without a thread resource key", async () => {
+    const { bot, invalidateInstall, enqueue } = wireUninstallBot("repo");
+    const interaction = createUninstallInteraction("repo", {
+      channel: {
+        isThread: () => false,
+        isTextBased: () => true,
+        isDMBased: () => false,
+        parentId: null,
+        send: vi.fn().mockResolvedValue(undefined)
+      },
+      channelId: "channel-1"
+    });
+
+    await (bot as any).handleUninstall(interaction);
+
+    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function), undefined);
+    expect(invalidateInstall).toHaveBeenCalledWith(expect.objectContaining({
+      repoId: 1,
+      threadId: null,
+      scope: "repo"
+    }));
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Invalidated install request #55")
+    );
+  });
+
+  it("stays successful when the deferred acknowledgement token has expired", async () => {
+    const { bot, invalidateInstall } = wireUninstallBot("request");
+    const interaction = createUninstallInteraction("request", {
+      editReply: vi.fn().mockRejectedValue(new Error("DiscordAPIError[50027]: Invalid Webhook Token"))
+    });
+
+    await expect((bot as any).handleUninstall(interaction)).resolves.toBeUndefined();
+    expect(invalidateInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports invalidation failures through the deferred reply", async () => {
+    const { bot } = wireUninstallBot("request");
+    (bot as any).installService.invalidateInstall = vi.fn().mockRejectedValue(new Error("boom"));
+    const interaction = createUninstallInteraction("request");
+
+    await (bot as any).handleUninstall(interaction);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Uninstall failed"));
+  });
+});
+
 describe("ActuariusBot model-select command", () => {
   beforeEach(() => {
     vi.resetAllMocks();

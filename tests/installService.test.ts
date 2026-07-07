@@ -982,4 +982,82 @@ describe("InstallService", () => {
     expect(existsSync(installRoot)).toBe(false);
     expect(db.listSuccessfulInstallRequestsForScope({ repoId: 1 })).toEqual([]);
   });
+
+  it("invalidates every succeeded record left behind by reinstalls of the same package", async () => {
+    const installsRoot = mkdtempSync(join(tmpdir(), "actuarius-invalidate-reinstall-"));
+    const installRoot = join(installsRoot, "repo", "1", "npm-prettier");
+    mkdirSync(join(installRoot, "bin"), { recursive: true });
+    const createSucceededInstall = (): number => {
+      const install = db.createInstallRequest({
+        guildId: "guild-1",
+        repoId: 1,
+        packageId: "npm-prettier",
+        packageVersion: "3",
+        scope: "repo",
+        status: "approved",
+        requestedByUserId: "user-1",
+        approvedByUserId: "admin-1",
+        installRoot
+      });
+      db.updateInstallRequest({
+        installRequestId: install.id,
+        status: "succeeded",
+        binPath: join(installRoot, "bin"),
+        envJson: "{}",
+        completedAt: "2026-03-31T00:00:00.000Z"
+      });
+      return install.id;
+    };
+    const firstId = createSucceededInstall();
+    const secondId = createSucceededInstall();
+    (service as any).config.installsRootPath = installsRoot;
+
+    const invalidated = await service.invalidateInstall({
+      repoId: 1,
+      packageId: "npm-prettier",
+      scope: "repo",
+      invalidatedByUserId: "admin-1"
+    });
+
+    expect(invalidated.id).toBe(secondId);
+    expect(existsSync(installRoot)).toBe(false);
+    expect(db.listSuccessfulInstallRequestsForScope({ repoId: 1 })).toEqual([]);
+    expect(db.getInstallRequestById(firstId)!.status).toBe("invalidated");
+    expect(db.getInstallRequestById(secondId)!.status).toBe("invalidated");
+  });
+
+  it("does not mark an install stale for missing absolute env values outside the install root", () => {
+    const root = "/data/tool-installs/repo/1/gcc-toolchain";
+    const binPath = `${root}/bin`;
+    const install = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "gcc-toolchain",
+      packageVersion: "latest",
+      scope: "repo",
+      status: "approved",
+      requestedByUserId: "user-1",
+      approvedByUserId: "admin-1",
+      installRoot: root
+    });
+    db.updateInstallRequest({
+      installRequestId: install.id,
+      status: "succeeded",
+      binPath,
+      envJson: JSON.stringify({ SYSTEM_CC: "/usr/bin/cc", CC_FLAGS: "-O2" }),
+      completedAt: "2026-03-31T00:00:00.000Z"
+    });
+    const validatingService = new InstallService(
+      (service as any).config,
+      pino({ level: "silent" }),
+      db,
+      (path) => path === root || path === binPath
+    );
+
+    const result = validatingService.buildMinimalExecutionEnvironment({ repoId: 1 });
+    expect(result.packages).toEqual(["gcc-toolchain"]);
+    expect(result.env.SYSTEM_CC).toBe("/usr/bin/cc");
+    expect(result.env.CC_FLAGS).toBe("-O2");
+    expect(result.pathEntries).toEqual([binPath]);
+  });
 });

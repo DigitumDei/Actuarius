@@ -119,6 +119,15 @@ export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: 
   return { text };
 }
 
+// Role restriction is enforced only for the OpenCode provider; other providers
+// accept `role` but ignore it. This relies on opencode's OPENCODE_CONFIG_CONTENT
+// inline-config env var (second-highest config precedence) and per-agent
+// permission maps with a "*" wildcard. Both must exist in the seeded opencode
+// CLI — an older CLI would ignore this config and run the restricted roles as a
+// default agent that stalls on interactive permission prompts until timeout,
+// because --dangerously-skip-permissions is deliberately omitted here.
+// Note: opencode does NOT apply {env:}/{file:} token substitution to inline
+// config, so only literal values may be written into this JSON.
 function buildRestrictedRoleEnvironment(
   inputEnv: NodeJS.ProcessEnv | undefined,
   role: Exclude<OpencodeExecutionRole, "implementation">

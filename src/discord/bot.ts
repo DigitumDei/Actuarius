@@ -2368,23 +2368,39 @@ export class ActuariusBot {
       threadId = interaction.channelId;
     }
 
+    // Removing a large toolchain can exceed Discord's 3-second initial
+    // response window, so acknowledge first. Queueing the invalidation keyed
+    // on the thread keeps the deletion from racing a request that has the
+    // install's binaries on its PATH; repo-scoped installs have no owning
+    // thread, so they only get guild-level queue serialization.
+    await interaction.deferReply({ ephemeral: true });
+
     try {
-      const invalidated = await this.installService.invalidateInstall({
-        repoId: repo.id,
-        threadId,
-        packageId,
-        scope,
-        invalidatedByUserId: interaction.user.id
-      });
+      const invalidated = await this.runQueuedGuildTask(
+        interaction.guildId,
+        async () => this.installService.invalidateInstall({
+          repoId: repo.id,
+          threadId,
+          packageId,
+          scope,
+          invalidatedByUserId: interaction.user.id
+        }),
+        threadId ?? undefined
+      );
       const aptNote = isAptPackageId(packageId)
         ? " The system APT package remains installed; only its Actuarius install record and managed marker files were removed."
         : "";
-      await interaction.reply({
-        content: `Invalidated install request #${invalidated.id} for ${this.describeInstallTarget(packageId)} in \`${scope}\` scope.${aptNote}`,
-        ephemeral: true
-      });
+      await this.bestEffortLongRunningEditReply(
+        interaction,
+        `Invalidated install request #${invalidated.id} for ${this.describeInstallTarget(packageId)} in \`${scope}\` scope.${aptNote}`,
+        "uninstall success acknowledgement"
+      );
     } catch (error) {
-      await interaction.reply({ content: `Uninstall failed: ${this.describeExecutionError(error)}`, ephemeral: true });
+      await this.bestEffortLongRunningEditReply(
+        interaction,
+        `Uninstall failed: ${this.describeExecutionError(error)}`,
+        "uninstall failure acknowledgement"
+      );
     }
   }
 
@@ -3222,11 +3238,33 @@ Output the result of the command or the link to the created issue.`;
     try {
       await interaction.editReply(content);
     } catch (error) {
-      this.logger.warn(
-        { error, interactionId: interaction.id, operation },
-        "Long-running interaction acknowledgement expired after durable thread delivery"
-      );
+      // Never rethrow: by this point the durable outcome has already been
+      // delivered (or the operation is admin-ephemeral by design), and callers
+      // in catch blocks would turn an ack failure into a misleading
+      // operation-failed message. Expired interaction tokens are expected for
+      // long-running work; anything else is a real delivery problem and is
+      // logged at error level so it stays visible.
+      if (this.isExpiredInteractionError(error)) {
+        this.logger.warn(
+          { error, interactionId: interaction.id, operation },
+          "Long-running interaction acknowledgement expired after durable delivery"
+        );
+      } else {
+        this.logger.error(
+          { error, interactionId: interaction.id, operation },
+          "Long-running interaction acknowledgement failed for a reason other than token expiry"
+        );
+      }
     }
+  }
+
+  private isExpiredInteractionError(error: unknown): boolean {
+    // 50027 = Invalid Webhook Token (interaction token past its 15-minute
+    // lifetime); 10062 = Unknown interaction (token no longer resolvable).
+    const code = (error as { code?: unknown })?.code;
+    if (code === 50027 || code === 10062) return true;
+    const message = error instanceof Error ? error.message : String(error);
+    return /50027|10062|Invalid Webhook Token|Unknown interaction/iu.test(message);
   }
 
   private async handleRevise(interaction: ChatInputCommandInteraction): Promise<void> {

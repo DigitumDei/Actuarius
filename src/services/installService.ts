@@ -457,15 +457,20 @@ export class InstallService {
     scope: InstallScope;
     invalidatedByUserId: string;
   }): Promise<InstallRequestRow> {
-    const install = this.db.getLatestSuccessfulInstallRequest(input);
-    if (!install) {
+    // Reinstalls create new rows sharing the same deterministic install root,
+    // so every matching succeeded row must be invalidated in one pass — leaving
+    // older rows as 'succeeded' would keep the DB claiming installs that were
+    // administratively removed.
+    const installs = this.db.listSuccessfulInstallRequestsByPackage(input);
+    const latestInstall = installs[0];
+    if (!latestInstall) {
       throw new InstallServiceError(
         "INSTALL_NOT_FOUND",
         `No active successful install of \`${input.packageId}\` was found in \`${input.scope}\` scope.`
       );
     }
 
-    const activeInstall = this.db.getActiveInstallRequestByRoot(install.install_root);
+    const activeInstall = this.db.getActiveInstallRequestByRoot(latestInstall.install_root);
     if (activeInstall) {
       throw new InstallServiceError(
         "INSTALL_ALREADY_ACTIVE",
@@ -474,26 +479,37 @@ export class InstallService {
     }
 
     const installsRoot = resolve(this.config.installsRootPath);
-    const installRoot = resolve(install.install_root);
-    const relativeInstallRoot = relative(installsRoot, installRoot);
-    if (!relativeInstallRoot || relativeInstallRoot.startsWith("..") || isAbsolute(relativeInstallRoot)) {
-      throw new InstallServiceError("INSTALL_FAILED", `Refusing to remove unmanaged install path \`${install.install_root}\`.`);
+    const removedRoots = new Set<string>();
+    const completedAt = new Date().toISOString();
+    for (const install of installs) {
+      const installRoot = resolve(install.install_root);
+      const relativeInstallRoot = relative(installsRoot, installRoot);
+      if (!relativeInstallRoot || relativeInstallRoot.startsWith("..") || isAbsolute(relativeInstallRoot)) {
+        throw new InstallServiceError("INSTALL_FAILED", `Refusing to remove unmanaged install path \`${install.install_root}\`.`);
+      }
+
+      if (!removedRoots.has(installRoot)) {
+        await rm(installRoot, { recursive: true, force: true });
+        removedRoots.add(installRoot);
+      }
+      this.db.updateInstallRequest({
+        installRequestId: install.id,
+        status: "invalidated",
+        errorMessage: `Invalidated by Discord user ${input.invalidatedByUserId}.`,
+        completedAt
+      });
     }
 
-    await rm(installRoot, { recursive: true, force: true });
-    const completedAt = new Date().toISOString();
-    this.db.updateInstallRequest({
-      installRequestId: install.id,
-      status: "invalidated",
-      errorMessage: `Invalidated by Discord user ${input.invalidatedByUserId}.`,
-      completedAt
-    });
-
     this.logger.info(
-      { installRequestId: install.id, packageId: install.package_id, installRoot, invalidatedByUserId: input.invalidatedByUserId },
+      {
+        installRequestIds: installs.map((install) => install.id),
+        packageId: latestInstall.package_id,
+        installRoots: [...removedRoots],
+        invalidatedByUserId: input.invalidatedByUserId
+      },
       "Managed install invalidated"
     );
-    return this.db.getInstallRequestById(install.id)!;
+    return this.db.getInstallRequestById(latestInstall.id)!;
   }
 
   private getUsableInstalls(input: { repoId: number; threadId?: string | null }): Array<{
@@ -518,10 +534,18 @@ export class InstallService {
         }
       }
 
+      // Only env values pointing inside the install root are treated as
+      // managed paths. Absolute values elsewhere (system paths, path lists,
+      // flag strings) must not mark the install stale when they don't resolve.
+      const isManagedEnvPath = (value: string): boolean => {
+        if (!isAbsolute(value)) return false;
+        const relativeToRoot = relative(install.install_root, value);
+        return relativeToRoot === "" || (!relativeToRoot.startsWith("..") && !isAbsolute(relativeToRoot));
+      };
       const managedPaths = [
         install.install_root,
         ...(install.bin_path ? [install.bin_path] : []),
-        ...Object.values(envVars).filter((value) => isAbsolute(value))
+        ...Object.values(envVars).filter(isManagedEnvPath)
       ];
       const missingPath = managedPaths.find((managedPath) => !this.pathExists(managedPath));
       if (missingPath) {

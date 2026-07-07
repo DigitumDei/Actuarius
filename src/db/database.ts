@@ -1186,13 +1186,13 @@ export class AppDatabase {
       .filter((row): row is InstallRequestRow => Boolean(row));
   }
 
-  public getLatestSuccessfulInstallRequest(input: {
+  public listSuccessfulInstallRequestsByPackage(input: {
     repoId: number;
     threadId?: string | null;
     packageId: string;
     scope: InstallScope;
-  }): InstallRequestRow | undefined {
-    const raw = installRequestRowRawSchema.optional().parse(
+  }): InstallRequestRow[] {
+    const rows = z.array(installRequestRowRawSchema).parse(
       this.db
         .prepare(
           `SELECT *
@@ -1205,13 +1205,14 @@ export class AppDatabase {
                scope = 'repo'
                OR thread_id = ?
              )
-           ORDER BY id DESC
-           LIMIT 1`
+           ORDER BY id DESC`
         )
-        .get(input.repoId, input.packageId, input.scope, input.threadId ?? null)
+        .all(input.repoId, input.packageId, input.scope, input.threadId ?? null)
     );
 
-    return this.mapInstallRequestRow(raw);
+    return rows
+      .map((row) => this.mapInstallRequestRow(row))
+      .filter((row): row is InstallRequestRow => Boolean(row));
   }
 
   public close(): void {
