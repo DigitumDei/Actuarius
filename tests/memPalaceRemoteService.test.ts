@@ -137,17 +137,21 @@ describe("MemPalaceRemoteService", () => {
       token_file: config.mempalaceRemoteTokenFile
     });
     expect(globalConfig.server.checkouts[wing]).toBe(checkoutPath);
+    // The remote entry carries the literal token: provider CLIs spawn the
+    // mempalace MCP server with only its configured env block, so a token_env
+    // reference to the bot's runtime environment never resolves in agents
+    // (observed as HTTP 401 from the loopback remote in /ask requests).
     expect(globalConfig.federation.remotes).toContainEqual(
       expect.objectContaining({
         name: "actuarius",
         url: config.mempalaceRemoteUrl,
-        token_env: "MEMPALACE_REMOTE_TOKEN",
+        token: "test-token",
         timeout_ms: 5000
       })
     );
     expect(globalConfig.federation.wings[wing]).toEqual({ mode: "combined", remote: "actuarius", write: "remote" });
     expect(globalConfig.federation.kg).toEqual({ mode: "combined", remote: "actuarius", write: "remote" });
-    expect(globalConfig.federation.remotes[0]).not.toHaveProperty("token");
+    expect(globalConfig.federation.remotes[0]).not.toHaveProperty("token_env");
 
     const tokenEntries = JSON.parse(readFileSync(config.mempalaceRemoteTokenFile, "utf8"));
     expect(tokenEntries[0]).toMatchObject({ name: "actuarius-local", token: "test-token", enabled: true });
