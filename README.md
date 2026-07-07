@@ -189,7 +189,7 @@ Every push to `main` builds and pushes two image tags to ghcr.io:
 - `ghcr.io/digitumdei/actuarius:latest`
 - `ghcr.io/digitumdei/actuarius:<git-sha>`
 
-Infrastructure is managed via Terraform (`infra/`). VM instance metadata is the source of truth for env vars and the redeploy script itself.
+Infrastructure is managed via Terraform (`infra/`). VM instance metadata is the source of truth for non-secret env vars and the redeploy script itself; secret values live in Google Secret Manager and are added out-of-band with `gcloud secrets versions add` — they never appear in `terraform.tfvars`, state, or metadata (see [docs/deploy.md](docs/deploy.md)).
 
 ### Deploy latest image or roll back
 

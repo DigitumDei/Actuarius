@@ -40,15 +40,16 @@ resource "google_compute_instance" "actuarius" {
   # All config and scripts stored in metadata — the startup script is a static
   # bootstrapper that pulls the real script from metadata, so metadata changes
   # never force VM recreation.
+  # Metadata carries NON-SECRET config only. Secret values (Discord token,
+  # GitHub App key, Claude OAuth token, API keys, federation token) live in
+  # Secret Manager (see secrets.tf) and are fetched by redeploy.sh at deploy
+  # time — never through Terraform, so they cannot leak via tfvars, state, or
+  # plan files.
   metadata = {
-    env-discord-token                    = var.discord_token
     env-discord-client-id                = var.discord_client_id
     env-discord-guild-id                 = var.discord_guild_id
-    env-gh-token                         = var.gh_token
     env-github-app-id                    = var.github_app_id
     env-github-app-installation-id       = var.github_app_installation_id
-    env-github-app-private-key-b64       = var.github_app_private_key_b64
-    env-claude-oauth-token               = var.claude_oauth_token
     env-docker-image                     = var.docker_image
     env-ask-concurrency                  = var.ask_concurrency
     env-container-memory                 = var.container_memory
@@ -62,12 +63,10 @@ resource "google_compute_instance" "actuarius" {
     env-mempalace-remote-url             = var.mempalace_remote_url
     env-mempalace-remote-bind            = var.mempalace_remote_bind
     env-mempalace-remote-name            = var.mempalace_remote_name
-    env-mempalace-remote-token           = var.mempalace_remote_token
     env-mempalace-remote-timeout-ms      = var.mempalace_remote_timeout_ms
     env-mempalace-remote-mine-on-sync    = var.mempalace_remote_mine_on_sync
     env-mempalace-remote-mine-timeout-ms = var.mempalace_remote_mine_timeout_ms
     env-mempalace-remote-mine-batch-size = var.mempalace_remote_mine_batch_size
-    env-gemini-api-key                   = var.gemini_api_key
     env-redeploy-script                  = file("${path.module}/../scripts/redeploy.sh")
     env-startup-script                   = file("${path.module}/startup.sh")
   }

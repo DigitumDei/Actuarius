@@ -1,5 +1,7 @@
 # Copy this file to terraform.tfvars and fill in your values.
-# terraform.tfvars is gitignored — never commit real secrets.
+# terraform.tfvars is gitignored, but it must contain NO secrets regardless:
+# secret values live in Google Secret Manager and are added out-of-band (see
+# the "Secrets" section below and docs/deploy.md).
 
 gcp_project_id = "your-gcp-project-id"
 gcp_region     = "us-east1"
@@ -11,31 +13,34 @@ container_memory  = "700m"
 container_cpus    = "0.8"
 container_pids_limit = 256
 
-# Discord application credentials
-discord_token     = "replace_me"
+# Discord application config (IDs are not secrets; the bot token is — see below)
 discord_client_id = "replace_me"
 discord_guild_id = "replace_me"   # Optional: omit for global command registration
 
-# GitHub App auth (preferred)
+# GitHub App config (IDs are not secrets; the private key is — see below)
 github_app_id              = "replace_me"
 github_app_installation_id = "replace_me"
-github_app_private_key_b64 = "replace_me"
-
-# GitHub personal access token (fallback — use GitHub App instead)
-# gh_token = "replace_me"
-
-# Long-lived Claude OAuth token
-# Generate with: claude setup-token
-claude_oauth_token = "replace_me"
 
 # Enable Codex/Gemini CLI providers for /ask
 enable_codex_execution  = true
 enable_gemini_execution = true
-gemini_api_key          = "replace_me"
 
 # Enable MemPalace persistent cross-request memory and repo federation
 enable_mempalace        = true
 enable_mempalace_remote = true
 # Optional MemPalace remote overrides; leave blank to use app defaults.
-# mempalace_remote_token = "replace_me_or_omit_to_generate"
 # mempalace_remote_mine_on_sync = "true"
+
+# ── Secrets ──────────────────────────────────────────────────────────────
+# `terraform apply` creates empty Secret Manager containers (infra/secrets.tf).
+# Add the values yourself — they never pass through Terraform:
+#
+#   gcloud secrets versions add actuarius-discord-token             --data-file=-   # required
+#   gcloud secrets versions add actuarius-claude-oauth-token        --data-file=-   # required (claude setup-token)
+#   gcloud secrets versions add actuarius-github-app-private-key-b64 --data-file=-  # base64 of the App .pem
+#   gcloud secrets versions add actuarius-gh-token                  --data-file=-   # optional PAT fallback
+#   gcloud secrets versions add actuarius-gemini-api-key            --data-file=-   # if Gemini enabled
+#   gcloud secrets versions add actuarius-mempalace-remote-token    --data-file=-   # optional; omit to auto-generate
+#
+# Each command reads the value from stdin: paste it, then press Ctrl+D
+# (Ctrl+Z then Enter on Windows). Redeploy picks up new versions on next run.
