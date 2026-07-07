@@ -733,6 +733,11 @@ export async function runAdversarialReview(input: {
     for (let round = 1; round <= maxConsensusRounds; round += 1) {
       checkBudget();
       await emitProgress({ type: "round-start", round, maxRounds: maxConsensusRounds });
+      // When reviewConcurrency serializes a fan-out stage, that stage occupies
+      // as many sequential budget slots as it has batches — without this
+      // weighting, a serialized reviewer stage could consume nearly the whole
+      // remaining budget and starve the critique/judge/summarizer stages.
+      const reviewerBatches = Math.ceil(activeReviewers.length / reviewConcurrency);
       const reviewerResults = await mapSettledWithConcurrency(
         activeReviewers,
         reviewConcurrency,
@@ -761,7 +766,12 @@ export async function runAdversarialReview(input: {
               ...(priorJudge ? { judgeSummary: [priorJudge.consensusSummary, reviewerGuidance].filter(Boolean).join("\n") } : {})
             }),
             cwd: input.worktreePath,
-            timeoutMs: getStageTimeout(startTime, input.stageTimeoutMs, input.totalTimeoutMs, (maxConsensusRounds - round + 1) * 3 + 1),
+            timeoutMs: getStageTimeout(
+              startTime,
+              input.stageTimeoutMs,
+              input.totalTimeoutMs,
+              (maxConsensusRounds - round + 1) * (2 * reviewerBatches + 1) + 1
+            ),
             ...(reviewer.model ? { model: reviewer.model } : {})
           });
 
@@ -810,6 +820,7 @@ export async function runAdversarialReview(input: {
       activeReviewers = input.reviewers.filter((reviewer) => successfulReviewers.some((result) => result.reviewer === reviewer.label));
 
       checkBudget();
+      const critiqueBatches = Math.ceil(activeReviewers.length / reviewConcurrency);
       const critiqueSettled = await mapSettledWithConcurrency(
         activeReviewers,
         reviewConcurrency,
@@ -827,7 +838,12 @@ export async function runAdversarialReview(input: {
               peerReviews
             }),
             cwd: input.worktreePath,
-            timeoutMs: getStageTimeout(startTime, input.stageTimeoutMs, input.totalTimeoutMs, (maxConsensusRounds - round + 1) * 2 + 1),
+            timeoutMs: getStageTimeout(
+              startTime,
+              input.stageTimeoutMs,
+              input.totalTimeoutMs,
+              (maxConsensusRounds - round + 1) * (critiqueBatches + 1) + 1
+            ),
             ...(reviewer.model ? { model: reviewer.model } : {})
           });
 
