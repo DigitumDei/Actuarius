@@ -84,6 +84,27 @@ Local Docker Compose uses the same defaults. Override them with
 `ACTUARIUS_CONTAINER_PIDS_LIMIT` when a development machine has different
 capacity.
 
+## Logs (no SSH needed)
+
+The VM metadata sets `google-logging-enabled = "true"`, which turns on the
+Container-Optimized OS logging agent: all container stdout/stderr streams to
+Cloud Logging (the service account has `roles/logging.logWriter`). Read logs
+from anywhere with gcloud:
+
+```bash
+# Last 30 minutes of bot logs
+gcloud logging read 'logName:cos_containers AND jsonPayload.container_name="actuarius"' \
+  --freshness=30m --limit=100 --order=desc --format='value(timestamp, jsonPayload.message)'
+
+# Live tail
+gcloud alpha logging tail 'jsonPayload.container_name="actuarius"'
+```
+
+Or use the Logs Explorer in the GCP Console. The bot logs structured JSON
+(pino), so fields like `level` and `msg` are queryable. Within the free tier
+(50 GiB/month ingestion, 30-day retention) this costs nothing at this bot's
+volume. `docker logs actuarius` over SSH still works as a fallback.
+
 ## MemPalace Remote
 
 To run the local MemPalace MCP plus Actuarius' loopback remote repo store in production, set both Terraform switches:
