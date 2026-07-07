@@ -46,6 +46,10 @@ resource "google_compute_instance" "actuarius" {
   # time — never through Terraform, so they cannot leak via tfvars, state, or
   # plan files.
   metadata = {
+    # COS built-in Cloud Logging agent: streams all container stdout/stderr to
+    # Cloud Logging so logs are readable without SSH (needs logging.logWriter).
+    google-logging-enabled = "true"
+
     env-discord-client-id                = var.discord_client_id
     env-discord-guild-id                 = var.discord_guild_id
     env-github-app-id                    = var.github_app_id
