@@ -7,17 +7,24 @@ set -euo pipefail
 MDS="http://metadata.google.internal/computeMetadata/v1"
 META="$MDS/instance/attributes"
 HDR="Metadata-Flavor: Google"
-get_meta() { curl -sf -H "$HDR" "$META/$1"; }
+get_meta() { curl -sf -m 5 -H "$HDR" "$META/$1"; }
 
 # Secrets live in Secret Manager, not metadata (see infra/secrets.tf). They are
 # fetched with the VM service account's access token; only curl/sed/base64 are
-# available on Container-Optimized OS, so the JSON is parsed with sed.
-PROJECT_ID=$(curl -sf -H "$HDR" "$MDS/project/project-id")
-ACCESS_TOKEN=$(curl -sf -H "$HDR" "$MDS/instance/service-accounts/default/token" \
+# available on Container-Optimized OS, so the JSON is parsed with sed. Timeouts
+# keep a hung metadata server or API from blocking the deploy indefinitely.
+PROJECT_ID=$(curl -sf -m 5 -H "$HDR" "$MDS/project/project-id")
+if [ -z "$PROJECT_ID" ]; then
+  echo "FATAL: failed to fetch GCP project ID from the metadata server" >&2; exit 1
+fi
+ACCESS_TOKEN=$(curl -sf -m 5 -H "$HDR" "$MDS/instance/service-accounts/default/token" \
   | sed -n 's/.*"access_token" *: *"\([^"]*\)".*/\1/p')
+if [ -z "$ACCESS_TOKEN" ]; then
+  echo "FATAL: failed to fetch an access token from the metadata server" >&2; exit 1
+fi
 get_secret() {
   local response
-  response=$(curl -sf -H "Authorization: Bearer $ACCESS_TOKEN" \
+  response=$(curl -sf -m 10 -H "Authorization: Bearer $ACCESS_TOKEN" \
     "https://secretmanager.googleapis.com/v1/projects/$PROJECT_ID/secrets/$1/versions/latest:access") || return 1
   printf '%s' "$response" | sed -n 's/.*"data" *: *"\([^"]*\)".*/\1/p' | base64 -d
 }
