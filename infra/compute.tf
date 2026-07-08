@@ -57,6 +57,7 @@ resource "google_compute_instance" "actuarius" {
     env-docker-image                     = var.docker_image
     env-ask-concurrency                  = var.ask_concurrency
     env-container-memory                 = var.container_memory
+    env-container-memory-swap            = var.container_memory_swap
     env-container-cpus                   = var.container_cpus
     env-container-pids-limit             = var.container_pids_limit
     env-enable-codex-execution           = var.enable_codex_execution

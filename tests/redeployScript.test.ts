@@ -167,7 +167,7 @@ describe("scripts/redeploy.sh auth validation", () => {
 
     expect(result.status, result.stderr).toBe(0);
     expect(result.dockerLog).toContain("--memory\n700m");
-    expect(result.dockerLog).toContain("--memory-swap\n700m");
+    expect(result.dockerLog).toContain("--memory-swap\n2g");
     expect(result.dockerLog).toContain("--cpus\n0.8");
     expect(result.dockerLog).toContain("--pids-limit\n256");
   });
@@ -176,6 +176,7 @@ describe("scripts/redeploy.sh auth validation", () => {
     const result = runRedeploy({
       ...baseMetadata,
       "env-container-memory": "600m",
+      "env-container-memory-swap": "600m",
       "env-container-cpus": "0.5",
       "env-container-pids-limit": "128",
     }, {
@@ -188,6 +189,21 @@ describe("scripts/redeploy.sh auth validation", () => {
     expect(result.dockerLog).toContain("--memory-swap\n600m");
     expect(result.dockerLog).toContain("--cpus\n0.5");
     expect(result.dockerLog).toContain("--pids-limit\n128");
+  });
+
+  it("raises memory-swap to match a larger memory override", () => {
+    const result = runRedeploy({
+      ...baseMetadata,
+      "env-container-memory": "3g",
+    }, {
+      ...baseSecrets,
+      "actuarius-gh-token": "gh-token",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("raising it to 3g");
+    expect(result.dockerLog).toContain("--memory\n3g");
+    expect(result.dockerLog).toContain("--memory-swap\n3g");
   });
 
   it("accepts GH_TOKEN-only auth and forwards only GH_TOKEN", () => {

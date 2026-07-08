@@ -29,8 +29,14 @@ variable "ask_concurrency" {
 
 variable "container_memory" {
   type        = string
-  description = "Docker memory and memory+swap limit. Keep below VM RAM to preserve host headroom."
+  description = "Docker RAM limit. Keep below VM RAM to preserve host headroom."
   default     = "700m"
+}
+
+variable "container_memory_swap" {
+  type        = string
+  description = "Docker memory+swap total (--memory-swap). Must be >= container_memory; set equal to it to disable swap. The VM provisions a 1536M swapfile for provider CLI subprocesses."
+  default     = "2g"
 }
 
 variable "container_cpus" {
