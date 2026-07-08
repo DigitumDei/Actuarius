@@ -614,6 +614,20 @@ export class AppDatabase {
     this.db.prepare("UPDATE requests SET status = ? WHERE id = ?").run(status, requestId);
   }
 
+  // A freshly booted process has no in-flight work (single-instance
+  // deployment), so any row still marked active was interrupted by a restart.
+  // Left as-is, such rows block their thread ("already queued or running")
+  // and their install root ("INSTALL_ALREADY_ACTIVE") forever.
+  public failInterruptedWork(): { requests: number; installRequests: number } {
+    const requests = this.db
+      .prepare("UPDATE requests SET status = 'failed' WHERE status IN ('queued', 'running', 'install_approved', 'install_running')")
+      .run();
+    const installRequests = this.db
+      .prepare("UPDATE install_requests SET status = 'failed' WHERE status IN ('approved', 'running')")
+      .run();
+    return { requests: Number(requests.changes), installRequests: Number(installRequests.changes) };
+  }
+
   public updateRequestWorkspace(requestId: number, worktreePath: string | null, branchName: string | null): void {
     this.db.prepare("UPDATE requests SET worktree_path = ?, branch_name = ? WHERE id = ?").run(worktreePath, branchName, requestId);
   }

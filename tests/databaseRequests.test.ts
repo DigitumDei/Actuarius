@@ -490,3 +490,79 @@ describe("AppDatabase migration from legacy reviewer_slots", () => {
     expect(db.getReviewerSlots("guild-1")).toEqual([]);
   });
 });
+
+describe("AppDatabase startup reconciliation of interrupted work", () => {
+  let db: AppDatabase;
+
+  beforeEach(() => {
+    db = createInMemoryDb();
+    db.upsertGuild("guild-1", "Test Guild");
+    db.createRepo({
+      guildId: "guild-1",
+      owner: "octocat",
+      repo: "hello-world",
+      fullName: "octocat/hello-world",
+      visibility: "private",
+      channelId: "channel-1",
+      linkedByUserId: "user-1"
+    });
+  });
+
+  function createRequestWithStatus(threadId: string, status: "queued" | "running" | "succeeded" | "failed" | "install_approved" | "install_running") {
+    return db.createRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      channelId: "channel-1",
+      threadId,
+      userId: "user-1",
+      prompt: "prompt",
+      status
+    });
+  }
+
+  it("fails requests left in an active status and leaves terminal ones alone", () => {
+    const queued = createRequestWithStatus("thread-queued", "queued");
+    const running = createRequestWithStatus("thread-running", "running");
+    const installApproved = createRequestWithStatus("thread-install-approved", "install_approved");
+    const installRunning = createRequestWithStatus("thread-install-running", "install_running");
+    const succeeded = createRequestWithStatus("thread-succeeded", "succeeded");
+    const failed = createRequestWithStatus("thread-failed", "failed");
+
+    const result = db.failInterruptedWork();
+
+    expect(result.requests).toBe(4);
+    expect(db.getRequestByThreadId("thread-queued")?.status).toBe("failed");
+    expect(db.getRequestByThreadId("thread-running")?.status).toBe("failed");
+    expect(db.getRequestByThreadId("thread-install-approved")?.status).toBe("failed");
+    expect(db.getRequestByThreadId("thread-install-running")?.status).toBe("failed");
+    expect(db.getRequestByThreadId("thread-succeeded")?.status).toBe("succeeded");
+    expect(db.getRequestByThreadId("thread-failed")?.status).toBe("failed");
+    expect([queued.id, running.id, installApproved.id, installRunning.id, succeeded.id, failed.id]).toHaveLength(6);
+  });
+
+  it("fails active install requests so the install root is released", () => {
+    db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "pkg",
+      packageVersion: "1.0.0",
+      scope: "repo",
+      status: "approved",
+      requestedByUserId: "user-1",
+      installRoot: "/data/installs/repo-1"
+    });
+
+    expect(db.getActiveInstallRequestByRoot("/data/installs/repo-1")).toBeDefined();
+
+    const result = db.failInterruptedWork();
+
+    expect(result.installRequests).toBe(1);
+    expect(db.getActiveInstallRequestByRoot("/data/installs/repo-1")).toBeUndefined();
+  });
+
+  it("reports zero changes when there is nothing to reconcile", () => {
+    createRequestWithStatus("thread-done", "succeeded");
+
+    expect(db.failInterruptedWork()).toEqual({ requests: 0, installRequests: 0 });
+  });
+});
