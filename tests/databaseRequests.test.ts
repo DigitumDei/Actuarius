@@ -490,3 +490,140 @@ describe("AppDatabase migration from legacy reviewer_slots", () => {
     expect(db.getReviewerSlots("guild-1")).toEqual([]);
   });
 });
+
+describe("AppDatabase startup reconciliation of interrupted work", () => {
+  let db: AppDatabase;
+
+  beforeEach(() => {
+    db = createInMemoryDb();
+    db.upsertGuild("guild-1", "Test Guild");
+    db.createRepo({
+      guildId: "guild-1",
+      owner: "octocat",
+      repo: "hello-world",
+      fullName: "octocat/hello-world",
+      visibility: "private",
+      channelId: "channel-1",
+      linkedByUserId: "user-1"
+    });
+  });
+
+  function createRequestWithStatus(threadId: string, status: "queued" | "running" | "succeeded" | "failed" | "install_approved" | "install_running") {
+    return db.createRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      channelId: "channel-1",
+      threadId,
+      userId: "user-1",
+      prompt: "prompt",
+      status
+    });
+  }
+
+  it("fails requests left in an active status and leaves terminal ones alone", () => {
+    const queued = createRequestWithStatus("thread-queued", "queued");
+    const running = createRequestWithStatus("thread-running", "running");
+    const installApproved = createRequestWithStatus("thread-install-approved", "install_approved");
+    const installRunning = createRequestWithStatus("thread-install-running", "install_running");
+    const succeeded = createRequestWithStatus("thread-succeeded", "succeeded");
+    const failed = createRequestWithStatus("thread-failed", "failed");
+
+    const result = db.failInterruptedWork();
+
+    expect(result.requests).toBe(4);
+    expect(result.reviewRuns).toBe(0);
+    expect(db.getRequestByThreadId("thread-queued")?.status).toBe("failed");
+    expect(db.getRequestByThreadId("thread-running")?.status).toBe("failed");
+    expect(db.getRequestByThreadId("thread-install-approved")?.status).toBe("failed");
+    expect(db.getRequestByThreadId("thread-install-running")?.status).toBe("failed");
+    expect(db.getRequestByThreadId("thread-succeeded")?.status).toBe("succeeded");
+    expect(db.getRequestByThreadId("thread-failed")?.status).toBe("failed");
+    expect([queued.id, running.id, installApproved.id, installRunning.id, succeeded.id, failed.id]).toHaveLength(6);
+  });
+
+  it("fails active install requests so the install root is released", () => {
+    db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      packageId: "pkg",
+      packageVersion: "1.0.0",
+      scope: "repo",
+      status: "approved",
+      requestedByUserId: "user-1",
+      installRoot: "/data/installs/repo-1"
+    });
+
+    expect(db.getActiveInstallRequestByRoot("/data/installs/repo-1")).toBeDefined();
+
+    const result = db.failInterruptedWork();
+
+    expect(result.installRequests).toBe(1);
+    expect(db.getActiveInstallRequestByRoot("/data/installs/repo-1")).toBeUndefined();
+  });
+
+  it("preserves a completed install outcome instead of failing the request", () => {
+    const request = createRequestWithStatus("thread-install-done", "install_running");
+    const install = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      requestId: request.id,
+      packageId: "pkg",
+      packageVersion: "1.0.0",
+      scope: "request",
+      status: "approved",
+      requestedByUserId: "user-1",
+      installRoot: "/data/installs/request-done"
+    });
+    db.updateInstallRequest({ installRequestId: install.id, status: "succeeded" });
+
+    const result = db.failInterruptedWork();
+
+    expect(result.requests).toBe(1);
+    expect(db.getRequestByThreadId("thread-install-done")?.status).toBe("install_succeeded");
+  });
+
+  it("derives install_failed when the linked install already failed", () => {
+    const request = createRequestWithStatus("thread-install-lost", "install_running");
+    const install = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      requestId: request.id,
+      packageId: "pkg",
+      packageVersion: "1.0.0",
+      scope: "request",
+      status: "approved",
+      requestedByUserId: "user-1",
+      installRoot: "/data/installs/request-lost"
+    });
+    db.updateInstallRequest({ installRequestId: install.id, status: "failed" });
+
+    const result = db.failInterruptedWork();
+
+    expect(result.requests).toBe(1);
+    expect(db.getRequestByThreadId("thread-install-lost")?.status).toBe("install_failed");
+  });
+
+  it("fails interrupted review runs", () => {
+    const request = createRequestWithStatus("thread-review", "succeeded");
+    db.createReviewRun({
+      requestId: request.id,
+      threadId: "thread-review",
+      branchName: "ask/1-123",
+      status: "running",
+      configJson: "{}",
+      diffBase: "origin/main",
+      diffHead: "sha"
+    });
+
+    const result = db.failInterruptedWork();
+
+    expect(result.reviewRuns).toBe(1);
+    expect(db.getLatestReviewRunForRequest(request.id)?.status).toBe("failed");
+  });
+
+  it("reports zero changes when there is nothing to reconcile", () => {
+    createRequestWithStatus("thread-done", "succeeded");
+
+    expect(db.failInterruptedWork()).toEqual({ requests: 0, installRequests: 0, reviewRuns: 0 });
+  });
+});

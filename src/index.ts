@@ -14,6 +14,11 @@ async function main(): Promise<void> {
   const db = new AppDatabase(appConfig.databasePath);
   db.runMigrations();
 
+  const interrupted = db.failInterruptedWork();
+  if (interrupted.requests > 0 || interrupted.installRequests > 0 || interrupted.reviewRuns > 0) {
+    logger.warn(interrupted, "Marked requests interrupted by the previous shutdown as failed");
+  }
+
   await initializeGitHubAuth(appConfig, logger);
   runCapabilityChecks(logger);
   await registerSlashCommands(appConfig, logger);
