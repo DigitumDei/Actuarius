@@ -10,6 +10,7 @@ gcp_zone       = "us-east1-b"
 docker_image      = "ghcr.io/digitumdei/actuarius:latest"
 ask_concurrency   = 1
 container_memory  = "700m"
+container_memory_swap = "2g"   # memory+swap total; equal to container_memory disables swap
 container_cpus    = "0.8"
 container_pids_limit = 256
 

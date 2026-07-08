@@ -73,16 +73,21 @@ sudo reboot
 3. Stops and removes the old container
 4. Starts a new container with the correct env vars mapped from metadata
 
-Production deploys constrain the container to 700 MB RAM with no extra swap,
+Production deploys constrain the container to 700 MB RAM, 2 GB memory+swap,
 0.8 CPU, and 256 processes by default. These cgroup limits keep provider builds
-or fork storms from starving the VM host. Override them with Terraform variables
-`container_memory`, `container_cpus`, and `container_pids_limit`; keep the memory
-limit below total VM RAM so Docker, SSH, and system services retain headroom.
+or fork storms from starving the VM host. The swap allowance matters: the VM
+provisions a 1536 MB swapfile (`infra/startup.sh`) so heavy provider CLI
+subprocesses spill to swap instead of being SIGKILLed by the OOM killer.
+Override the limits with Terraform variables `container_memory`,
+`container_memory_swap`, `container_cpus`, and `container_pids_limit`; keep the
+memory limit below total VM RAM so Docker, SSH, and system services retain
+headroom, and set `container_memory_swap` equal to `container_memory` to
+disable swap entirely.
 
 Local Docker Compose uses the same defaults. Override them with
-`ACTUARIUS_CONTAINER_MEMORY`, `ACTUARIUS_CONTAINER_CPUS`, and
-`ACTUARIUS_CONTAINER_PIDS_LIMIT` when a development machine has different
-capacity.
+`ACTUARIUS_CONTAINER_MEMORY`, `ACTUARIUS_CONTAINER_MEMORY_SWAP`,
+`ACTUARIUS_CONTAINER_CPUS`, and `ACTUARIUS_CONTAINER_PIDS_LIMIT` when a
+development machine has different capacity.
 
 ## Logs (no SSH needed)
 

@@ -48,10 +48,15 @@ GITHUB_APP_PRIVATE_KEY_B64=$(get_secret actuarius-github-app-private-key-b64 || 
 CLAUDE_CODE_OAUTH_TOKEN=$(get_secret actuarius-claude-oauth-token || true)
 ASK_CONCURRENCY=$(get_meta env-ask-concurrency)
 CONTAINER_MEMORY=$(get_meta env-container-memory || true)
+CONTAINER_MEMORY_SWAP=$(get_meta env-container-memory-swap || true)
 CONTAINER_CPUS=$(get_meta env-container-cpus || true)
 CONTAINER_PIDS_LIMIT=$(get_meta env-container-pids-limit || true)
 
 CONTAINER_MEMORY="${CONTAINER_MEMORY:-700m}"
+# memory+swap total. The VM provisions a 1536M swapfile (infra/startup.sh)
+# specifically so provider CLI subprocesses can spill past RAM instead of
+# being OOM-killed; 2g leaves the host ~230M of swap headroom.
+CONTAINER_MEMORY_SWAP="${CONTAINER_MEMORY_SWAP:-2g}"
 CONTAINER_CPUS="${CONTAINER_CPUS:-0.8}"
 CONTAINER_PIDS_LIMIT="${CONTAINER_PIDS_LIMIT:-256}"
 
@@ -181,7 +186,7 @@ docker run -d \
   --name actuarius \
   --restart unless-stopped \
   --memory "$CONTAINER_MEMORY" \
-  --memory-swap "$CONTAINER_MEMORY" \
+  --memory-swap "$CONTAINER_MEMORY_SWAP" \
   --cpus "$CONTAINER_CPUS" \
   --pids-limit "$CONTAINER_PIDS_LIMIT" \
   -v "$DATA_ROOT:/data" \
