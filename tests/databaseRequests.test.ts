@@ -531,6 +531,7 @@ describe("AppDatabase startup reconciliation of interrupted work", () => {
     const result = db.failInterruptedWork();
 
     expect(result.requests).toBe(4);
+    expect(result.reviewRuns).toBe(0);
     expect(db.getRequestByThreadId("thread-queued")?.status).toBe("failed");
     expect(db.getRequestByThreadId("thread-running")?.status).toBe("failed");
     expect(db.getRequestByThreadId("thread-install-approved")?.status).toBe("failed");
@@ -560,9 +561,69 @@ describe("AppDatabase startup reconciliation of interrupted work", () => {
     expect(db.getActiveInstallRequestByRoot("/data/installs/repo-1")).toBeUndefined();
   });
 
+  it("preserves a completed install outcome instead of failing the request", () => {
+    const request = createRequestWithStatus("thread-install-done", "install_running");
+    const install = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      requestId: request.id,
+      packageId: "pkg",
+      packageVersion: "1.0.0",
+      scope: "request",
+      status: "approved",
+      requestedByUserId: "user-1",
+      installRoot: "/data/installs/request-done"
+    });
+    db.updateInstallRequest({ installRequestId: install.id, status: "succeeded" });
+
+    const result = db.failInterruptedWork();
+
+    expect(result.requests).toBe(1);
+    expect(db.getRequestByThreadId("thread-install-done")?.status).toBe("install_succeeded");
+  });
+
+  it("derives install_failed when the linked install already failed", () => {
+    const request = createRequestWithStatus("thread-install-lost", "install_running");
+    const install = db.createInstallRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      requestId: request.id,
+      packageId: "pkg",
+      packageVersion: "1.0.0",
+      scope: "request",
+      status: "approved",
+      requestedByUserId: "user-1",
+      installRoot: "/data/installs/request-lost"
+    });
+    db.updateInstallRequest({ installRequestId: install.id, status: "failed" });
+
+    const result = db.failInterruptedWork();
+
+    expect(result.requests).toBe(1);
+    expect(db.getRequestByThreadId("thread-install-lost")?.status).toBe("install_failed");
+  });
+
+  it("fails interrupted review runs", () => {
+    const request = createRequestWithStatus("thread-review", "succeeded");
+    db.createReviewRun({
+      requestId: request.id,
+      threadId: "thread-review",
+      branchName: "ask/1-123",
+      status: "running",
+      configJson: "{}",
+      diffBase: "origin/main",
+      diffHead: "sha"
+    });
+
+    const result = db.failInterruptedWork();
+
+    expect(result.reviewRuns).toBe(1);
+    expect(db.getLatestReviewRunForRequest(request.id)?.status).toBe("failed");
+  });
+
   it("reports zero changes when there is nothing to reconcile", () => {
     createRequestWithStatus("thread-done", "succeeded");
 
-    expect(db.failInterruptedWork()).toEqual({ requests: 0, installRequests: 0 });
+    expect(db.failInterruptedWork()).toEqual({ requests: 0, installRequests: 0, reviewRuns: 0 });
   });
 });

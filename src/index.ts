@@ -15,7 +15,7 @@ async function main(): Promise<void> {
   db.runMigrations();
 
   const interrupted = db.failInterruptedWork();
-  if (interrupted.requests > 0 || interrupted.installRequests > 0) {
+  if (interrupted.requests > 0 || interrupted.installRequests > 0 || interrupted.reviewRuns > 0) {
     logger.warn(interrupted, "Marked requests interrupted by the previous shutdown as failed");
   }
 

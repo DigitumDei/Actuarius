@@ -618,14 +618,46 @@ export class AppDatabase {
   // deployment), so any row still marked active was interrupted by a restart.
   // Left as-is, such rows block their thread ("already queued or running")
   // and their install root ("INSTALL_ALREADY_ACTIVE") forever.
-  public failInterruptedWork(): { requests: number; installRequests: number } {
-    const requests = this.db
-      .prepare("UPDATE requests SET status = 'failed' WHERE status IN ('queued', 'running', 'install_approved', 'install_running')")
-      .run();
-    const installRequests = this.db
-      .prepare("UPDATE install_requests SET status = 'failed' WHERE status IN ('approved', 'running')")
-      .run();
-    return { requests: Number(requests.changes), installRequests: Number(installRequests.changes) };
+  public failInterruptedWork(): { requests: number; installRequests: number; reviewRuns: number } {
+    this.db.exec("BEGIN");
+    try {
+      // An install may have reached a terminal outcome on its own row before
+      // the process died, leaving only the request row behind. Derive the
+      // request status from the latest linked install request rather than
+      // stamping a completed install as failed.
+      const installSucceeded = this.db
+        .prepare(
+          `UPDATE requests SET status = 'install_succeeded'
+           WHERE status IN ('install_approved', 'install_running')
+             AND (SELECT ir.status FROM install_requests ir WHERE ir.request_id = requests.id ORDER BY ir.id DESC LIMIT 1) = 'succeeded'`
+        )
+        .run();
+      const installFailed = this.db
+        .prepare(
+          `UPDATE requests SET status = 'install_failed'
+           WHERE status IN ('install_approved', 'install_running')
+             AND (SELECT ir.status FROM install_requests ir WHERE ir.request_id = requests.id ORDER BY ir.id DESC LIMIT 1) = 'failed'`
+        )
+        .run();
+      const requests = this.db
+        .prepare("UPDATE requests SET status = 'failed' WHERE status IN ('queued', 'running', 'install_approved', 'install_running')")
+        .run();
+      const installRequests = this.db
+        .prepare("UPDATE install_requests SET status = 'failed' WHERE status IN ('approved', 'running')")
+        .run();
+      const reviewRuns = this.db
+        .prepare("UPDATE review_runs SET status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE status = 'running'")
+        .run();
+      this.db.exec("COMMIT");
+      return {
+        requests: Number(installSucceeded.changes) + Number(installFailed.changes) + Number(requests.changes),
+        installRequests: Number(installRequests.changes),
+        reviewRuns: Number(reviewRuns.changes)
+      };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   public updateRequestWorkspace(requestId: number, worktreePath: string | null, branchName: string | null): void {
