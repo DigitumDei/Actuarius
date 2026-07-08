@@ -60,6 +60,31 @@ CONTAINER_MEMORY_SWAP="${CONTAINER_MEMORY_SWAP:-2g}"
 CONTAINER_CPUS="${CONTAINER_CPUS:-0.8}"
 CONTAINER_PIDS_LIMIT="${CONTAINER_PIDS_LIMIT:-256}"
 
+# Docker requires --memory-swap >= --memory (it is the memory+swap TOTAL).
+# If a larger memory override predates the swap knob, raise the swap total to
+# match rather than letting docker run fail after the old container is gone.
+to_bytes() {
+  local v n unit
+  v=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  v="${v%b}"
+  case "$v" in
+    *k) unit=1024; n="${v%k}" ;;
+    *m) unit=$((1024 * 1024)); n="${v%m}" ;;
+    *g) unit=$((1024 * 1024 * 1024)); n="${v%g}" ;;
+    *) unit=1; n="$v" ;;
+  esac
+  case "$n" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  printf '%s' "$((n * unit))"
+}
+MEM_BYTES=$(to_bytes "$CONTAINER_MEMORY" || true)
+SWAP_BYTES=$(to_bytes "$CONTAINER_MEMORY_SWAP" || true)
+if [ -n "$MEM_BYTES" ] && [ -n "$SWAP_BYTES" ] && [ "$SWAP_BYTES" -lt "$MEM_BYTES" ]; then
+  echo "WARN: container memory-swap $CONTAINER_MEMORY_SWAP is below memory $CONTAINER_MEMORY; raising it to $CONTAINER_MEMORY (no swap)" >&2
+  CONTAINER_MEMORY_SWAP="$CONTAINER_MEMORY"
+fi
+
 HAS_GITHUB_APP_ID=false
 HAS_GITHUB_APP_INSTALLATION_ID=false
 HAS_GITHUB_APP_PRIVATE_KEY=false

@@ -191,6 +191,21 @@ describe("scripts/redeploy.sh auth validation", () => {
     expect(result.dockerLog).toContain("--pids-limit\n128");
   });
 
+  it("raises memory-swap to match a larger memory override", () => {
+    const result = runRedeploy({
+      ...baseMetadata,
+      "env-container-memory": "3g",
+    }, {
+      ...baseSecrets,
+      "actuarius-gh-token": "gh-token",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("raising it to 3g");
+    expect(result.dockerLog).toContain("--memory\n3g");
+    expect(result.dockerLog).toContain("--memory-swap\n3g");
+  });
+
   it("accepts GH_TOKEN-only auth and forwards only GH_TOKEN", () => {
     const result = runRedeploy(baseMetadata, {
       ...baseSecrets,
