@@ -9,7 +9,8 @@ import {
   buildCritiquePrompt,
   buildJudgePrompt,
   buildReviewerPrompt,
-  buildSummarizerPrompt
+  buildSummarizerPrompt,
+  clipPromptText
 } from "./llmPromptBuilders.js";
 
 export interface ReviewModelIdentity {
@@ -138,10 +139,6 @@ export class AdversarialReviewError extends Error {
   }
 }
 
-function clip(text: string, maxLength: number): string {
-  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 16).trimEnd()}\n...(truncated)`;
-}
-
 function stripCodeFence(text: string): string {
   const trimmed = text.trim();
   const fencedMatch = /^```(?:json|markdown|md|text)?\s*([\s\S]*?)```$/u.exec(trimmed);
@@ -160,7 +157,7 @@ function summarizeMalformedSummary(text: string): string {
   }
 
   const firstWords = normalized.split(/\s+/u).slice(0, 40).join(" ");
-  return clip(firstWords, 600);
+  return clipPromptText(firstWords, 600);
 }
 
 export function parseStructuredSummary(rawText: string): ReviewSummary {

@@ -38,7 +38,7 @@ export interface ReviewPromptJudgeRound {
 export const OPENCODE_TEMPFILE_DIRECTIVE =
   "Read the attached file and follow its full contents as your prompt.";
 
-function clipPromptText(text: string, maxLength: number): string {
+export function clipPromptText(text: string, maxLength: number): string {
   return text.length <= maxLength ? text : `${text.slice(0, maxLength - 16).trimEnd()}\n...(truncated)`;
 }
 
