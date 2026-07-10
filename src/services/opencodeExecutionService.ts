@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Logger } from "pino";
 import { runProviderRequest } from "../utils/runProviderRequest.js";
+import { OPENCODE_TEMPFILE_DIRECTIVE } from "./llmPromptBuilders.js";
+
+export { OPENCODE_TEMPFILE_DIRECTIVE };
 
 export const ALLOWED_OPENCODE_PROVIDERS = ["deepseek", "openai", "anthropic", "google", "xai", "groq", "openrouter", "together"] as const;
 export const OPENCODE_AUTH_PATH = join(homedir(), ".local", "share", "opencode", "auth.json");
@@ -14,9 +17,6 @@ export const OPENCODE_AUTH_PATH = join(homedir(), ".local", "share", "opencode",
 // message). We keep a short, explicit directive message that points at the
 // attached file, which holds the full prompt. Robust regardless of whether
 // opencode treats the file as the prompt or as attached context.
-export const OPENCODE_TEMPFILE_DIRECTIVE =
-  "Read the attached file and follow its full contents as your prompt.";
-
 export interface OpencodeExecutionInput {
   prompt: string;
   cwd: string;

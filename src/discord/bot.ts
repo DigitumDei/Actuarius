@@ -87,6 +87,15 @@ import {
   type IterativePlanTask,
   type IterativeTaskOutput
 } from "../services/iterativeTaskLoopService.js";
+import {
+  buildIssueCreationPrompt,
+  buildIssueSummaryPrompt,
+  buildPlanImplementationPrompt,
+  buildPlanPrompt,
+  buildRepositoryScopedPrompt,
+  buildRevisionPlanPrompt,
+  buildThreadFollowUpPrompt
+} from "../services/llmPromptBuilders.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
 const PR_TITLE_LIMIT = 120;
@@ -560,11 +569,6 @@ function formatUserThreadEntry(content: string, attachments: PendingAttachment[]
   if (!text) return "";
   if (attachments.length === 0) return text;
   return `${text}\n\n**Attachments**\n${buildAttachmentSummary(attachments)}`;
-}
-
-function matchesNewUserMessage(entryText: string, newMessageContent: string): boolean {
-  const normalized = newMessageContent.trim();
-  return entryText === normalized || entryText.startsWith(`${normalized}\n\n**Attachments**\n`);
 }
 
 export class ActuariusBot {
@@ -2657,14 +2661,7 @@ export class ActuariusBot {
   private async handleIssueCreate(interaction: ChatInputCommandInteraction, type: "bug" | "issue"): Promise<void> {
     const defaultLabel = type === "bug" ? "bug" : "enhancement";
     const promptTransformer = (prompt: string): string =>
-      `Analyze the codebase against the master branch to produce a structured GitHub issue report for the following request.
-Request: ${prompt}
-
-Create the issue directly using the GitHub CLI (\`gh issue create\`).
-Make sure to include a clear title, a markdown formatted description (with reproduction steps if it's a bug), and the label "${defaultLabel}".
-If it is a bug, also ensure the "bug" label is applied.
-If the label does not exist on the repository, omit the --label flag rather than failing.
-Output the result of the command or the link to the created issue.`;
+      buildIssueCreationPrompt({ requestPrompt: prompt, defaultLabel });
 
     await this.handleRepoCommand(interaction, {
       label: type,
@@ -2716,21 +2713,10 @@ Output the result of the command or the link to the created issue.`;
     const modelConfig = this.db.getGuildModelConfig(input.guildId);
     const provider: AiProvider = modelConfig?.provider ?? "claude";
     const model = modelConfig?.model;
-    const issuePayload = input.issues.map((issue) => ({
-      number: issue.number,
-      title: issue.title,
-      labels: issue.labels,
-      author: issue.authorLogin,
-      createdAt: issue.createdAt,
-      updatedAt: issue.updatedAt,
-      body: issue.body
-    }));
-    const prompt =
-      `Summarize the open GitHub issues for ${input.repoFullName}.\n`
-      + "Return plain text only.\n"
-      + "Format each issue as a single bullet in the form `- #<number> <title>: <short summary>`.\n"
-      + "Keep each summary to one sentence and keep the total response concise.\n\n"
-      + JSON.stringify(issuePayload, null, 2);
+    const prompt = buildIssueSummaryPrompt({
+      repoFullName: input.repoFullName,
+      issues: input.issues
+    });
 
     const result = await this.runProviderText({
       provider,
@@ -3835,40 +3821,12 @@ Output the result of the command or the link to the created issue.`;
       const implementerLabel = AI_PROVIDER_LABELS[input.implementer.provider];
       await threadChannel.send(`${plannerLabel} planning started.`);
 
-      const planPrompt = input.iterative
-        ? [
-          `Repository: ${input.repo.fullName}`,
-          "",
-          "Produce a structured iterative implementation plan for this request.",
-          "Do not edit files. Do not run the implementation. Inspect the codebase as needed and return only the plan JSON.",
-          "Return ONLY valid JSON with no markdown formatting, no code fences, no prose outside the JSON.",
-          "",
-          'The JSON must have this exact shape:',
-          '{',
-          '  "overview": "brief overview of the plan",',
-          '  "tasks": [',
-          '    { "title": "Short task title", "description": "Detailed description of what to implement" }',
-          '  ]',
-          '}',
-          "",
-          "Guidelines:",
-          "- Each task should be independently implementable and verifiable",
-          "- Tasks should build on each other in a logical order",
-          `- Maximum ${MAX_TASKS} tasks`,
-          "- Do not include testing tasks unless specifically requested",
-          "",
-          "Request:",
-          input.prompt
-        ].join("\n")
-        : [
-          `Repository: ${input.repo.fullName}`,
-          "",
-          "Produce a structured implementation plan for this request.",
-          "Do not edit files. Do not run the implementation. Inspect the codebase as needed and return only the plan.",
-          "",
-          "Request:",
-          input.prompt
-        ].join("\n");
+      const planPrompt = buildPlanPrompt({
+        repoFullName: input.repo.fullName,
+        requestPrompt: input.prompt,
+        iterative: input.iterative,
+        maxTasks: MAX_TASKS
+      });
 
       const planText = await this.runProviderText({
         provider: input.planner.provider,
@@ -3948,18 +3906,11 @@ Output the result of the command or the link to the created issue.`;
       } else {
         stage = "implementing";
         await threadChannel.send(`${implementerLabel} implementation started.`);
-        const implementationPrompt = [
-          `Repository: ${input.repo.fullName}`,
-          "",
-          "Implement the request using the approved plan below. Make code changes in this worktree.",
-          "Do not create or commit a plan file. Keep changes scoped to the request.",
-          "",
-          "Original request:",
-          input.prompt,
-          "",
-          "Plan:",
+        const implementationPrompt = buildPlanImplementationPrompt({
+          repoFullName: input.repo.fullName,
+          originalPrompt: input.prompt,
           planText
-        ].join("\n");
+        });
         const implementationText = await this.runProviderText({
           provider: input.implementer.provider,
           prompt: implementationPrompt,
@@ -4106,41 +4057,14 @@ Output the result of the command or the link to the created issue.`;
       const plannerLabel = AI_PROVIDER_LABELS[input.planner.provider];
       await threadChannel.send(`${plannerLabel} revision planning started.`);
 
-      const planPromptParts: string[] = [
-        `Repository: ${input.repo.fullName}`,
-        "",
-        "Produce a structured iterative implementation plan to fix remaining issues in this request.",
-        "Do not edit files. Do not run the implementation. Inspect the codebase as needed and return only the plan JSON.",
-        "Return ONLY valid JSON with no markdown formatting, no code fences, no prose outside the JSON.",
-        "",
-        'The JSON must have this exact shape:',
-        '{',
-        '  "overview": "brief overview of what needs to be fixed/completed",',
-        '  "tasks": [',
-        '    { "title": "Short task name", "description": "Full task description" }',
-        '  ]',
-        '}',
-        "",
-        "Guidelines:",
-        "- Each task should be independently implementable and verifiable",
-        "- Tasks should build on each other in a logical order",
-        `- Maximum ${MAX_TASKS} tasks`,
-        "- Scope tasks only to remaining fixes and corrections based on the findings below",
-        "",
-        "Original request:",
-        input.prompt,
-        "",
-        "Current branch diff (changes since default branch):",
-        currentDiff || "(no diff)"
-      ];
-
-      if (input.findings) {
-        planPromptParts.push("", "Findings to address:", input.findings);
-      } else if (reviewSummary) {
-        planPromptParts.push("", "Latest review summary:", reviewSummary);
-      }
-
-      const planPrompt = planPromptParts.join("\n");
+      const planPrompt = buildRevisionPlanPrompt({
+        repoFullName: input.repo.fullName,
+        originalPrompt: input.prompt,
+        currentDiff,
+        maxTasks: MAX_TASKS,
+        findings: input.findings,
+        reviewSummary
+      });
 
       const planText = await this.runProviderText({
         provider: input.planner.provider,
@@ -4343,7 +4267,10 @@ Output the result of the command or the link to the created issue.`;
       let effectivePrompt = input.existingWorktreePath
         ? await this.buildThreadPromptWithHistory(channel, input.prompt)
         : input.prompt;
-      effectivePrompt = `Repository: ${input.repo.fullName}\n\n${effectivePrompt}`;
+      effectivePrompt = buildRepositoryScopedPrompt({
+        repoFullName: input.repo.fullName,
+        prompt: effectivePrompt
+      });
       if (input.promptTransformer && !input.existingWorktreePath) {
         effectivePrompt = input.promptTransformer(effectivePrompt);
       }
@@ -4530,24 +4457,7 @@ Output the result of the command or the link to the created issue.`;
       return newMessageContent;
     }
 
-    const lines = [
-      "This is an ongoing code assistance session. The conversation history is below.",
-      "Respond to the final [User] message.",
-      ""
-    ];
-    for (const entry of history) {
-      lines.push(`[${entry.role === "user" ? "User" : "Assistant"}]: ${entry.text}`);
-      lines.push("");
-    }
-
-    const lastEntry = history[history.length - 1];
-    const normalizedNewMessage = newMessageContent.trim();
-    if (lastEntry?.role !== "user" || !matchesNewUserMessage(lastEntry.text, normalizedNewMessage)) {
-      lines.push(`[User]: ${normalizedNewMessage}`);
-      lines.push("");
-    }
-
-    return lines.join("\n").trim();
+    return buildThreadFollowUpPrompt({ history, newMessageContent });
   }
 
   private async buildThreadHistory(channel: AnyThreadChannel): Promise<string> {

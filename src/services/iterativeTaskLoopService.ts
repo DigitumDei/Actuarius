@@ -1,4 +1,8 @@
 import type { AiProvider } from "../db/types.js";
+import {
+  buildIterativeTaskImplementationPrompt,
+  buildIterativeTaskVerificationPrompt
+} from "./llmPromptBuilders.js";
 
 export interface IterativePlanTask {
   title: string;
@@ -88,30 +92,14 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
         .map((r, idx) => `  ${idx + 1}. ${r.title} - ${r.approved ? "approved" : "completed with issues"}`)
         .join("\n");
 
-      const priorFeedback = tweakAttempts > 0
-        ? ["", "Prior planner feedback for this task:", lastVerificationOutput]
-        : [];
-
-      const implementerPrompt = [
-        `Repository: ${repoFullName}`,
-        "",
-        "Original request:",
+      const implementerPrompt = buildIterativeTaskImplementationPrompt({
+        repoFullName,
         originalPrompt,
-        "",
-        "Plan overview:",
         overview,
-        "",
-        ...(completedSummaries ? [`Completed tasks:\n${completedSummaries}`, ""] : []),
-        "Current task to implement:",
-        `Title: ${task.title}`,
-        `Description: ${task.description}`,
-        "",
-        "Implement this task. Make code changes in this worktree.",
-        "Do not create or commit a plan file. Keep changes scoped to the request.",
-        "Commit all changes for this task before responding. If this is a tweak attempt, add a new commit for the tweak or amend only the current task's latest commit.",
-        "Do not rewrite commits from prior tasks. The worktree must be clean when you respond.",
-        ...priorFeedback
-      ].join("\n");
+        task,
+        ...(completedSummaries ? { completedSummaries } : {}),
+        ...(tweakAttempts > 0 ? { priorFeedback: lastVerificationOutput } : {})
+      });
 
       implementerOutput = await input.runProviderText({
         provider: input.implementerProvider,
@@ -135,30 +123,15 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
 
       await threadChannel.send(`Task ${taskIndex}/${taskCount}: ${taskTitle} - planner verifying...`);
 
-      const verificationPrompt = [
-        `Repository: ${repoFullName}`,
-        "",
-        "Original request:",
+      const verificationPrompt = buildIterativeTaskVerificationPrompt({
+        repoFullName,
         originalPrompt,
-        "",
-        "Plan overview:",
         overview,
-        "",
-        ...(completedSummaries ? [`Completed tasks:\n${completedSummaries}`, ""] : []),
-        `Task: ${task.title}`,
-        `Description: ${task.description}`,
-        "",
-        "The implementer was asked to implement this task. Below is the implementer's output and the code changes made.",
-        "",
-        "Implementer output:",
+        task,
+        ...(completedSummaries ? { completedSummaries } : {}),
         implementerOutput,
-        "",
-        "Code changes (git diff):",
-        diff,
-        "",
-        "Has the task been implemented correctly?",
-        "Reply with APPROVED on the first line if satisfied, or provide specific feedback on what needs to be changed."
-      ].join("\n");
+        diff
+      });
 
       const verificationOutput = await input.runProviderText({
         provider: input.plannerProvider,

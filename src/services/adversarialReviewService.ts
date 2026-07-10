@@ -4,6 +4,14 @@ import type { Logger } from "pino";
 import type { AppDatabase } from "../db/database.js";
 import type { AiProvider, ReviewVerdict } from "../db/types.js";
 import { getReviewDiff } from "./gitWorkspaceService.js";
+import {
+  buildAnalyzerPrompt,
+  buildCritiquePrompt,
+  buildJudgePrompt,
+  buildReviewerPrompt,
+  buildSummarizerPrompt,
+  clipPromptText
+} from "./llmPromptBuilders.js";
 
 export interface ReviewModelIdentity {
   provider: AiProvider;
@@ -131,10 +139,6 @@ export class AdversarialReviewError extends Error {
   }
 }
 
-function clip(text: string, maxLength: number): string {
-  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 16).trimEnd()}\n...(truncated)`;
-}
-
 function stripCodeFence(text: string): string {
   const trimmed = text.trim();
   const fencedMatch = /^```(?:json|markdown|md|text)?\s*([\s\S]*?)```$/u.exec(trimmed);
@@ -153,7 +157,7 @@ function summarizeMalformedSummary(text: string): string {
   }
 
   const firstWords = normalized.split(/\s+/u).slice(0, 40).join(" ");
-  return clip(firstWords, 600);
+  return clipPromptText(firstWords, 600);
 }
 
 export function parseStructuredSummary(rawText: string): ReviewSummary {
@@ -370,219 +374,6 @@ export function renderReviewMarkdown(input: {
   }
 
   return lines.join("\n");
-}
-
-function buildAnalyzerPrompt(input: {
-  repoFullName: string;
-  branchName: string;
-  threadHistory: string;
-}): string {
-  return [
-    `You are the analyzer for an adversarial code review of ${input.repoFullName}.`,
-    `Review branch: ${input.branchName}`,
-    "Your job is to read the conversation history below and determine what this change is trying to accomplish.",
-    "Do not look at code. Do not suggest where reviewers should focus. Just describe the intent.",
-    "Return plain text with these headings: Intent, Success Criteria.",
-    "- Intent: what problem is being solved and what the change is trying to achieve",
-    "- Success Criteria: what a correct implementation should accomplish from the requester's perspective",
-    "",
-    "Conversation history:",
-    "```text",
-    clip(input.threadHistory, 20_000),
-    "```"
-  ].join("\n");
-}
-
-function buildReviewerPrompt(input: {
-  repoFullName: string;
-  branchName: string;
-  baseBranch: string;
-  analyzerText: string;
-  changedFiles: string[];
-  diffText: string;
-  reviewerLabel: string;
-  round: number;
-  previousReview?: string;
-  critiqueFeedback?: string[];
-  judgeSummary?: string;
-}): string {
-  const lines = [
-    `You are ${input.reviewerLabel}, an adversarial reviewer for ${input.repoFullName}.`,
-    `Review branch: ${input.branchName}`,
-    `Diff base: ${input.baseBranch}`,
-    `Review round: ${input.round}`,
-    "Be skeptical. Do not assume the implementation is correct. Look for bugs, regressions, missing tests, and weak reasoning.",
-    "Do not soften criticism to agree with prior analysis. If a concern is weak, say so plainly. If the change looks solid, say that too.",
-    "Return plain text with these headings: Blocking Issues, Non-Blocking Issues, Missing Tests, Strong Concerns, Confidence.",
-    "",
-    "Change intent (what this change is trying to achieve — evaluate the code against this):",
-    "```text",
-    clip(input.analyzerText, 20_000),
-    "```",
-    "",
-    "Changed files:",
-    ...(input.changedFiles.length > 0 ? input.changedFiles.map((file) => `- ${file}`) : ["- (none)"]),
-    "",
-    "Diff:",
-    "```diff",
-    clip(input.diffText, 120_000),
-    "```"
-  ];
-
-  if (input.previousReview) {
-    lines.push("", "Your previous round review:", "```text", clip(input.previousReview, 20_000), "```");
-  }
-
-  if ((input.critiqueFeedback?.length ?? 0) > 0) {
-    lines.push("", "Critiques of your previous review:");
-    for (const feedback of input.critiqueFeedback ?? []) {
-      lines.push("```text", clip(feedback, 10_000), "```");
-    }
-  }
-
-  if (input.judgeSummary) {
-    lines.push("", "Judge guidance from the previous round:", "```text", clip(input.judgeSummary, 10_000), "```");
-  }
-
-  return lines.join("\n");
-}
-
-function buildCritiquePrompt(input: {
-  repoFullName: string;
-  branchName: string;
-  baseBranch: string;
-  reviewerLabel: string;
-  round: number;
-  ownReview: string;
-  peerReviews: ReviewerStageResult[];
-}): string {
-  return [
-    `You are ${input.reviewerLabel}, critically reviewing peer code reviews for ${input.repoFullName}.`,
-    `Review branch: ${input.branchName}`,
-    `Diff base: ${input.baseBranch}`,
-    `Critique round: ${input.round}`,
-    "Assess whether each peer review comment is valid, overstated, unsupported, or missing evidence.",
-    "Do not defend your own review by default; be rigorous and specific.",
-    "Return plain text with these headings: Valid Comments, Invalid Or Weak Comments, Missing Context, Feedback To Peers.",
-    "",
-    "Your review for this round:",
-    "```text",
-    clip(input.ownReview, 20_000),
-    "```",
-    "",
-    "Peer reviews:"
-  ].concat(
-    input.peerReviews.flatMap((review) => [
-      "",
-      `Reviewer: ${review.reviewer} (${review.provider}${review.model ? ` / ${review.model}` : ""})`,
-      "```text",
-      clip(review.text, 20_000),
-      "```"
-    ])
-  ).join("\n");
-}
-
-function buildJudgePrompt(input: {
-  repoFullName: string;
-  branchName: string;
-  baseBranch: string;
-  round: number;
-  reviewerOutputs: ReviewerStageResult[];
-  critiqueOutputs: ReviewCritiqueResult[];
-}): string {
-  return [
-    `You are the judge for an adversarial code review of ${input.repoFullName}.`,
-    `Review branch: ${input.branchName}`,
-    `Diff base: ${input.baseBranch}`,
-    `Consensus round: ${input.round}`,
-    "Decide whether the reviewers have reached practical consensus on the important issues.",
-    "Return JSON only with this exact shape:",
-    "{",
-    '  "consensusReached": true | false,',
-    '  "consensusSummary": "string",',
-    '  "reviewerGuidance": [{"reviewer":"string","feedback":"string"}]',
-    "}",
-    "Set `consensusReached` to true only when the remaining disagreements are minor or clearly resolved.",
-    "",
-    "Reviewer outputs:"
-  ].concat(
-    input.reviewerOutputs.flatMap((reviewer) => [
-      "",
-      `Reviewer: ${reviewer.reviewer} (${reviewer.provider}${reviewer.model ? ` / ${reviewer.model}` : ""})`,
-      "```text",
-      clip(reviewer.text, 20_000),
-      "```"
-    ]),
-    ["", "Critique outputs:"],
-    input.critiqueOutputs.flatMap((critique) => [
-      "",
-      `Reviewer: ${critique.reviewer} (${critique.provider}${critique.model ? ` / ${critique.model}` : ""})`,
-      "```text",
-      clip(critique.text, 20_000),
-      "```"
-    ])
-  ).join("\n");
-}
-
-function buildSummarizerPrompt(input: {
-  repoFullName: string;
-  branchName: string;
-  baseBranch: string;
-  analyzerText: string;
-  reviewerOutputs: ReviewerStageResult[];
-  critiqueOutputs: ReviewCritiqueResult[];
-  judgeRounds: JudgeStageResult[];
-}): string {
-  return [
-    `You are the neutral summarizer for an adversarial code review of ${input.repoFullName}.`,
-    `Review branch: ${input.branchName}`,
-    `Diff base: ${input.baseBranch}`,
-    "Synthesize the analyzer and reviewer outputs into a final verdict.",
-    "Return JSON only with this exact shape:",
-    "{",
-    '  "executiveSummary": "2-4 sentences describing what the branch does, summarising the key consensus findings, and explaining why the verdict was reached. Must be substantive analysis — do NOT write meta-commentary such as \'I have reviewed the outputs\' or \'I now have sufficient context\'.",',
-    '  "blockingIssues": [{"title":"string","rationale":"string","file":"optional path"}],',
-    '  "nonBlockingIssues": [{"title":"string","rationale":"string","file":"optional path"}],',
-    '  "missingTests": ["string"],',
-    '  "disputedIssues": ["string"],',
-    '  "outstandingConcerns": ["string"],',
-    '  "verdict": "ready_for_pr" | "revise"',
-    "}",
-    "Use `ready_for_pr` only if there are no unresolved blocking issues.",
-    "Include only consensus issues in `blockingIssues` and `nonBlockingIssues`.",
-    "Put unresolved but strongly-held reviewer concerns in `outstandingConcerns`.",
-    "",
-    "Analyzer output:",
-    "```text",
-    clip(input.analyzerText, 20_000),
-    "```",
-    "",
-    "Reviewer outputs:"
-  ].concat(
-    input.reviewerOutputs.flatMap((reviewer) => [
-      "",
-      `Reviewer: ${reviewer.reviewer} (${reviewer.provider}${reviewer.model ? ` / ${reviewer.model}` : ""})`,
-      "```text",
-      clip(reviewer.text, 20_000),
-      "```"
-    ]),
-    ["", "Critique outputs:"],
-    input.critiqueOutputs.flatMap((critique) => [
-      "",
-      `Round ${critique.round} critique: ${critique.reviewer} (${critique.provider}${critique.model ? ` / ${critique.model}` : ""})`,
-      "```text",
-      clip(critique.text, 20_000),
-      "```"
-    ]),
-    ["", "Judge outputs:"],
-    input.judgeRounds.flatMap((judgeRound) => [
-      "",
-      `Round ${judgeRound.round} consensus: ${judgeRound.consensusReached ? "reached" : "not reached"}`,
-      "```text",
-      clip(judgeRound.text, 20_000),
-      "```"
-    ])
-  ).join("\n");
 }
 
 function buildArtifactPath(artifactRootPath: string, branchName: string): { absolutePath: string; relativePath: string } {
