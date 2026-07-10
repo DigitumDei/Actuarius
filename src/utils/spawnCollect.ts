@@ -303,6 +303,8 @@ export interface SpawnCollectTransportOptions {
   cwd: string;
   /** Kill the process after this many milliseconds. */
   timeoutMs: number;
+  /** Kill the process if neither stdout nor stderr has produced data for this long. */
+  idleTimeoutMs?: number;
   /** Hard limit for stdout in bytes. */
   maxBuffer: number;
   /** Soft limit for stderr in bytes (default 64 KB). */
@@ -346,6 +348,7 @@ export interface SpawnCollectTransportOptions {
 function buildOptions(base: {
   cwd: string;
   timeoutMs: number;
+  idleTimeoutMs?: number;
   maxBuffer: number;
   maxStderrBuffer?: number;
   env?: NodeJS.ProcessEnv;
@@ -357,6 +360,7 @@ function buildOptions(base: {
     maxBuffer: base.maxBuffer,
   };
   if (base.maxStderrBuffer !== undefined) opts.maxStderrBuffer = base.maxStderrBuffer;
+  if (base.idleTimeoutMs !== undefined) opts.idleTimeoutMs = base.idleTimeoutMs;
   if (base.env !== undefined) opts.env = base.env;
   if (base.stdin !== undefined) opts.stdin = base.stdin;
   return opts;
@@ -384,6 +388,7 @@ export async function spawnCollectWithTransport(
     promptArgIndices,
     cwd,
     timeoutMs,
+    idleTimeoutMs,
     maxBuffer,
     maxStderrBuffer,
     env,
@@ -445,6 +450,7 @@ export async function spawnCollectWithTransport(
           );
       return await spawnCollect(file, fileArgs, buildOptions({
         cwd, timeoutMs, maxBuffer,
+        ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
         ...(maxStderrBuffer !== undefined ? { maxStderrBuffer } : {}),
         ...(env !== undefined ? { env } : {}),
       }));
@@ -452,6 +458,7 @@ export async function spawnCollectWithTransport(
 
     return await spawnCollect(file, decision.args, buildOptions({
       cwd, timeoutMs, maxBuffer,
+      ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
       ...(maxStderrBuffer !== undefined ? { maxStderrBuffer } : {}),
       ...(env !== undefined ? { env } : {}),
       ...(decision.stdinPayload !== undefined ? { stdin: decision.stdinPayload } : {}),
@@ -470,6 +477,8 @@ export interface SpawnResult {
 
 const DEFAULT_STDERR_MAX = 64 * 1024; // 64 KB
 
+export type SpawnTimeoutReason = "idle" | "absolute";
+
 /**
  * Spawns a child process, collects stdout/stderr, and resolves/rejects on close.
  * stdin is set to "ignore" to prevent CLIs from blocking on interactive input.
@@ -483,7 +492,17 @@ const DEFAULT_STDERR_MAX = 64 * 1024; // 64 KB
 export function spawnCollect(
   file: string,
   args: string[],
-  options: { cwd: string; timeoutMs: number; maxBuffer: number; maxStderrBuffer?: number; env?: NodeJS.ProcessEnv; stdin?: string }
+  options: {
+    cwd: string;
+    /** Absolute upper bound, regardless of output activity. */
+    timeoutMs: number;
+    /** Kill a process that has produced no stdout or stderr for this long. */
+    idleTimeoutMs?: number;
+    maxBuffer: number;
+    maxStderrBuffer?: number;
+    env?: NodeJS.ProcessEnv;
+    stdin?: string;
+  }
 ): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, {
@@ -500,19 +519,38 @@ export function spawnCollect(
 
     let stdout = "";
     let stderr = "";
-    let timedOut = false;
+    let timeoutReason: SpawnTimeoutReason | undefined;
     let bufferOverflow = false;
     let stderrTruncated = false;
 
     const effectiveStderrMax = options.maxStderrBuffer ?? DEFAULT_STDERR_MAX;
 
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const absoluteTimer = setTimeout(() => {
+      if (timeoutReason) return;
+      timeoutReason = "absolute";
       child.kill("SIGTERM");
     }, options.timeoutMs);
 
+    let idleTimer: NodeJS.Timeout | undefined;
+    const resetIdleTimer = () => {
+      if (options.idleTimeoutMs === undefined) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        if (timeoutReason) return;
+        timeoutReason = "idle";
+        child.kill("SIGTERM");
+      }, options.idleTimeoutMs);
+    };
+    resetIdleTimer();
+
+    const clearTimers = () => {
+      clearTimeout(absoluteTimer);
+      if (idleTimer) clearTimeout(idleTimer);
+    };
+
     child.stdout!.on("data", (chunk: Buffer) => {
-      if (bufferOverflow || timedOut) return;
+      if (bufferOverflow || timeoutReason) return;
+      resetIdleTimer();
       stdout += chunk.toString();
       if (stdout.length > options.maxBuffer) {
         bufferOverflow = true;
@@ -521,7 +559,8 @@ export function spawnCollect(
     });
 
     child.stderr!.on("data", (chunk: Buffer) => {
-      if (bufferOverflow || timedOut) return;
+      if (bufferOverflow || timeoutReason) return;
+      resetIdleTimer();
       const combined = stderr + chunk.toString();
       if (combined.length > effectiveStderrMax) {
         stderrTruncated = true;
@@ -532,12 +571,12 @@ export function spawnCollect(
     });
 
     child.on("error", (err) => {
-      clearTimeout(timer);
+      clearTimers();
       reject(err);
     });
 
     child.on("close", (code, signal) => {
-      clearTimeout(timer);
+      clearTimers();
       const finalStderr = stderrTruncated ? `[stderr truncated]\n${stderr}` : stderr;
 
       if (bufferOverflow) {
@@ -546,15 +585,18 @@ export function spawnCollect(
         }));
         return;
       }
-      if (timedOut) {
+      if (timeoutReason) {
+        const timeoutMessage = timeoutReason === "idle"
+          ? `Process produced no stdout or stderr for ${options.idleTimeoutMs}ms`
+          : `Process timed out after ${options.timeoutMs}ms`;
         if (code !== null) {
-          reject(Object.assign(new Error(`Process exited with code ${String(code)} after timeout`), {
-            code: "ETIMEDOUT", killed: false, signal, stdout, stderr: finalStderr,
+          reject(Object.assign(new Error(`Process exited with code ${String(code)} after timeout: ${timeoutMessage}`), {
+            code: "ETIMEDOUT", timeoutReason, killed: false, signal, stdout, stderr: finalStderr,
           }));
           return;
         }
-        reject(Object.assign(new Error(`Process timed out after ${options.timeoutMs}ms`), {
-          code: "ETIMEDOUT", killed: true, signal, stdout, stderr: finalStderr,
+        reject(Object.assign(new Error(timeoutMessage), {
+          code: "ETIMEDOUT", timeoutReason, killed: true, signal, stdout, stderr: finalStderr,
         }));
         return;
       }

@@ -8,6 +8,20 @@ loadDotEnv();
 const allowedArchiveDurations = [60, 1440, 4320, 10080] as const;
 type AllowedArchiveDuration = (typeof allowedArchiveDurations)[number];
 
+/**
+ * Default durations for every configurable timeout. Environment variables use
+ * the same name with `_MS` appended and override these values at runtime.
+ */
+export const TIMEOUT_DEFAULTS_MS = {
+  askExecution: 90 * 60 * 1000,
+  providerIdle: 15 * 60 * 1000,
+  reviewer: 20 * 60 * 1000,
+  iterativeVerification: 10 * 60 * 1000,
+  installStep: 60 * 60 * 1000,
+  mempalaceRemote: 5 * 1000,
+  mempalaceRemoteMine: 45 * 60 * 1000,
+} as const;
+
 function normalizeArchiveDuration(rawValue: number): AllowedArchiveDuration {
   if (allowedArchiveDurations.includes(rawValue as AllowedArchiveDuration)) {
     return rawValue as AllowedArchiveDuration;
@@ -50,12 +64,22 @@ const envSchema = z.object({
     .refine((value) => Number.isFinite(value) && value > 0, "ASK_CONCURRENCY_PER_GUILD must be a positive number"),
   ASK_EXECUTION_TIMEOUT_MS: z
     .string()
-    .default("2700000")
+    .default(String(TIMEOUT_DEFAULTS_MS.askExecution))
     .transform((value) => Number.parseInt(value, 10))
     .refine((value) => Number.isFinite(value) && value > 0, "ASK_EXECUTION_TIMEOUT_MS must be a positive number"),
+  PROVIDER_IDLE_TIMEOUT_MS: z
+    .string()
+    .default(String(TIMEOUT_DEFAULTS_MS.providerIdle))
+    .transform((value) => Number.parseInt(value, 10))
+    .refine((value) => Number.isFinite(value) && value > 0, "PROVIDER_IDLE_TIMEOUT_MS must be a positive number"),
+  REVIEWER_TIMEOUT_MS: z
+    .string()
+    .default(String(TIMEOUT_DEFAULTS_MS.reviewer))
+    .transform((value) => Number.parseInt(value, 10))
+    .refine((value) => Number.isFinite(value) && value > 0, "REVIEWER_TIMEOUT_MS must be a positive number"),
   ITERATIVE_VERIFICATION_TIMEOUT_MS: z
     .string()
-    .default("300000")
+    .default(String(TIMEOUT_DEFAULTS_MS.iterativeVerification))
     .transform((value) => Number.parseInt(value, 10))
     .refine((value) => Number.isFinite(value) && value > 0, "ITERATIVE_VERIFICATION_TIMEOUT_MS must be a positive number"),
   REVIEW_CONCURRENCY: z
@@ -65,7 +89,7 @@ const envSchema = z.object({
     .refine((value) => Number.isFinite(value) && value > 0, "REVIEW_CONCURRENCY must be a positive number"),
   INSTALL_STEP_TIMEOUT_MS: z
     .string()
-    .default("3600000")
+    .default(String(TIMEOUT_DEFAULTS_MS.installStep))
     .transform((value) => Number.parseInt(value, 10))
     .refine((value) => Number.isFinite(value) && value > 0, "INSTALL_STEP_TIMEOUT_MS must be a positive number"),
   APT_INSTALL_HELPER_PATH: optionalNonEmpty,
@@ -116,9 +140,9 @@ const envSchema = z.object({
   MEMPALACE_REMOTE_NAME: z.string().default("actuarius"),
   MEMPALACE_REMOTE_TOKEN: optionalNonEmpty,
   MEMPALACE_REMOTE_TOKEN_FILE: z.string().default("/data/mempalace/server_tokens.json"),
-  MEMPALACE_REMOTE_TIMEOUT_MS: z.string().default("5000").transform((value) => Number.parseInt(value, 10)).refine((value) => Number.isFinite(value) && value > 0, "MEMPALACE_REMOTE_TIMEOUT_MS must be a positive number"),
+  MEMPALACE_REMOTE_TIMEOUT_MS: z.string().default(String(TIMEOUT_DEFAULTS_MS.mempalaceRemote)).transform((value) => Number.parseInt(value, 10)).refine((value) => Number.isFinite(value) && value > 0, "MEMPALACE_REMOTE_TIMEOUT_MS must be a positive number"),
   MEMPALACE_REMOTE_MINE_ON_SYNC: z.string().default("true").transform((value) => value === "true"),
-  MEMPALACE_REMOTE_MINE_TIMEOUT_MS: z.string().default("2700000").transform((value) => Number.parseInt(value, 10)).refine((value) => Number.isFinite(value) && value > 0, "MEMPALACE_REMOTE_MINE_TIMEOUT_MS must be a positive number"),
+  MEMPALACE_REMOTE_MINE_TIMEOUT_MS: z.string().default(String(TIMEOUT_DEFAULTS_MS.mempalaceRemoteMine)).transform((value) => Number.parseInt(value, 10)).refine((value) => Number.isFinite(value) && value > 0, "MEMPALACE_REMOTE_MINE_TIMEOUT_MS must be a positive number"),
   MEMPALACE_REMOTE_MINE_BATCH_SIZE: z.string().default("0").transform((value) => Number.parseInt(value, 10)).refine((value) => Number.isFinite(value) && value >= 0, "MEMPALACE_REMOTE_MINE_BATCH_SIZE must be a non-negative number"),
 });
 
@@ -187,6 +211,8 @@ export const appConfig = {
   threadAutoArchiveMinutes: normalizeArchiveDuration(rawConfig.THREAD_AUTO_ARCHIVE_MINUTES),
   askConcurrencyPerGuild: rawConfig.ASK_CONCURRENCY_PER_GUILD,
   askExecutionTimeoutMs: rawConfig.ASK_EXECUTION_TIMEOUT_MS,
+  providerIdleTimeoutMs: rawConfig.PROVIDER_IDLE_TIMEOUT_MS,
+  reviewerTimeoutMs: rawConfig.REVIEWER_TIMEOUT_MS,
   iterativeVerificationTimeoutMs: rawConfig.ITERATIVE_VERIFICATION_TIMEOUT_MS,
   reviewConcurrency: rawConfig.REVIEW_CONCURRENCY,
   installStepTimeoutMs: rawConfig.INSTALL_STEP_TIMEOUT_MS,
