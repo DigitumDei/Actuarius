@@ -179,18 +179,17 @@ describe("adversarialReviewService", () => {
         judge,
         summarizer,
         stageTimeoutMs: 1_000,
+        reviewerTimeoutMs: 500,
         totalTimeoutMs: 900,
         maxConsensusRounds: 1
       });
 
-      // Default reviewConcurrency (1) serializes the two reviewers, so the
-      // fan-out stages count one budget slot per batch: the review stage
-      // divides the 900ms budget by 6 and the critique stage by 4, keeping the
-      // serialized stages from starving the judge and summarizer.
+      // Each primary reviewer receives its configured fixed budget. The
+      // remaining stages continue to divide the overall review budget.
       expect(timeouts).toEqual([
         { label: "analyzer", timeoutMs: 300 },
-        { label: "reviewer-1", timeoutMs: 150 },
-        { label: "reviewer-2", timeoutMs: 150 },
+        { label: "reviewer-1", timeoutMs: 500 },
+        { label: "reviewer-2", timeoutMs: 500 },
         { label: "reviewer-1", timeoutMs: 225 },
         { label: "reviewer-2", timeoutMs: 225 },
         { label: "judge", timeoutMs: 450 },

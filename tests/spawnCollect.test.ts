@@ -108,6 +108,37 @@ describe("spawnCollect — stderr trimming", () => {
       stderr: expect.stringMatching(/^\[stderr truncated\]\n/),
     });
   });
+
+  it("kills a silent process when its inactivity timeout expires before its absolute timeout", async () => {
+    const error = await spawnCollect(
+      node,
+      ["-e", "setTimeout(() => {}, 60_000);"],
+      { cwd, timeoutMs: 1_000, idleTimeoutMs: 100, maxBuffer: 1024 },
+    ).catch((reason: unknown) => reason);
+
+    expect(error).toMatchObject({ code: "ETIMEDOUT", timeoutReason: "idle" });
+  });
+
+  it("resets the inactivity timeout when either output stream produces data", async () => {
+    const result = await spawnCollect(
+      node,
+      ["-e", "let count = 0; const timer = setInterval(() => { (count++ % 2 ? process.stderr : process.stdout).write('x'); if (count === 6) { clearInterval(timer); } }, 50);"],
+      { cwd, timeoutMs: 1_000, idleTimeoutMs: 120, maxBuffer: 1024 },
+    );
+
+    expect(result.stdout).toBe("xxx");
+    expect(result.stderr).toBe("xxx");
+  });
+
+  it("still enforces the absolute timeout while a process keeps producing output", async () => {
+    const error = await spawnCollect(
+      node,
+      ["-e", "setInterval(() => process.stdout.write('x'), 20);"],
+      { cwd, timeoutMs: 180, idleTimeoutMs: 100, maxBuffer: 1024 },
+    ).catch((reason: unknown) => reason);
+
+    expect(error).toMatchObject({ code: "ETIMEDOUT", timeoutReason: "absolute" });
+  });
 });
 
 describe("spawnCollectWithTransport — argv transport", () => {

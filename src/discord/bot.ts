@@ -2950,6 +2950,7 @@ export class ActuariusBot {
       prompt: input.prompt,
       cwd: input.cwd,
       timeoutMs: input.timeoutMs ?? this.config.askExecutionTimeoutMs,
+      idleTimeoutMs: this.config.providerIdleTimeoutMs,
       ...(input.model ? { model: input.model } : {}),
       ...(input.env ? { env: input.env } : {})
     };
@@ -3143,6 +3144,7 @@ export class ActuariusBot {
               judge: runners.judge,
               summarizer: runners.summarizer,
               stageTimeoutMs: this.config.askExecutionTimeoutMs,
+              reviewerTimeoutMs: this.config.reviewerTimeoutMs,
               totalTimeoutMs: this.config.askExecutionTimeoutMs * 2,
               reviewConcurrency: this.config.reviewConcurrency,
               maxConsensusRounds: this.getReviewRounds(interaction.guildId!),

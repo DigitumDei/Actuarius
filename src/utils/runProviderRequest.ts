@@ -5,6 +5,7 @@ export interface ProviderRequestInput {
   prompt: string;
   cwd: string;
   timeoutMs: number;
+  idleTimeoutMs?: number;
   model?: string;
   env?: NodeJS.ProcessEnv;
 }
@@ -163,6 +164,7 @@ export async function runProviderRequest(
       const result = await spawnCollect(config.binary, stdinArgs, {
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,
+        ...(input.idleTimeoutMs !== undefined ? { idleTimeoutMs: Math.min(input.idleTimeoutMs, input.timeoutMs) } : {}),
         maxBuffer: 4 * 1024 * 1024,
         ...(input.env ? { env: input.env } : {}),
         stdin: input.prompt,
@@ -175,6 +177,7 @@ export async function runProviderRequest(
         promptArgIndices,
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,
+        ...(input.idleTimeoutMs !== undefined ? { idleTimeoutMs: Math.min(input.idleTimeoutMs, input.timeoutMs) } : {}),
         maxBuffer: 4 * 1024 * 1024,
         logger,
         logLabel: config.logLabel,

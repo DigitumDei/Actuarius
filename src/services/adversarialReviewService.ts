@@ -434,6 +434,8 @@ export async function runAdversarialReview(input: {
   judge: ReviewModelRunner;
   summarizer: ReviewModelRunner;
   stageTimeoutMs: number;
+  /** Fixed cap for each primary reviewer invocation in each consensus round. */
+  reviewerTimeoutMs?: number;
   totalTimeoutMs: number;
   reviewConcurrency?: number;
   maxConsensusRounds?: number;
@@ -491,6 +493,7 @@ export async function runAdversarialReview(input: {
       judge: { provider: input.judge.provider, model: input.judge.model ?? null, label: input.judge.label },
       summarizer: { provider: input.summarizer.provider, model: input.summarizer.model ?? null },
       stageTimeoutMs: input.stageTimeoutMs,
+      reviewerTimeoutMs: input.reviewerTimeoutMs ?? input.stageTimeoutMs,
       totalTimeoutMs: input.totalTimeoutMs,
       reviewConcurrency,
       maxConsensusRounds
@@ -524,11 +527,6 @@ export async function runAdversarialReview(input: {
     for (let round = 1; round <= maxConsensusRounds; round += 1) {
       checkBudget();
       await emitProgress({ type: "round-start", round, maxRounds: maxConsensusRounds });
-      // When reviewConcurrency serializes a fan-out stage, that stage occupies
-      // as many sequential budget slots as it has batches — without this
-      // weighting, a serialized reviewer stage could consume nearly the whole
-      // remaining budget and starve the critique/judge/summarizer stages.
-      const reviewerBatches = Math.ceil(activeReviewers.length / reviewConcurrency);
       const reviewerResults = await mapSettledWithConcurrency(
         activeReviewers,
         reviewConcurrency,
@@ -559,9 +557,9 @@ export async function runAdversarialReview(input: {
             cwd: input.worktreePath,
             timeoutMs: getStageTimeout(
               startTime,
-              input.stageTimeoutMs,
+              input.reviewerTimeoutMs ?? input.stageTimeoutMs,
               input.totalTimeoutMs,
-              (maxConsensusRounds - round + 1) * (2 * reviewerBatches + 1) + 1
+              1
             ),
             ...(reviewer.model ? { model: reviewer.model } : {})
           });

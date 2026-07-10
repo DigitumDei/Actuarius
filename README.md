@@ -51,9 +51,7 @@ Copy `.env.example` to `.env` and set:
 - `LOG_LEVEL` (default `info`)
 - `THREAD_AUTO_ARCHIVE_MINUTES` (`60`, `1440`, `4320`, or `10080`)
 - `ASK_CONCURRENCY_PER_GUILD` (default `3`)
-- `ITERATIVE_VERIFICATION_TIMEOUT_MS` (default `300000`, bounds each iterative planner verification)
 - `REVIEW_CONCURRENCY` (default `1`, serialize reviewers on memory-constrained hosts)
-- `ASK_EXECUTION_TIMEOUT_MS` (default `1200000`)
 - `ENABLE_CODEX_EXECUTION` (default `false`, enables Codex/OpenAI provider)
 - `ENABLE_GEMINI_EXECUTION` (default `false`, enables Gemini provider)
 - `ENABLE_OPENCODE_EXECUTION` (default `false`, enables OpenCode/DeepSeek provider)
@@ -65,6 +63,15 @@ Copy `.env.example` to `.env` and set:
 - `MEMPALACE_REMOTE_URL` (default `http://127.0.0.1:8765`)
 - `MEMPALACE_REMOTE_TOKEN` (optional; generated and persisted if omitted)
 - `MEMPALACE_REMOTE_MINE_ON_SYNC` (default `true`, queues repo mining after connect/sync/checkouts)
+
+All timeout defaults live together in [`TIMEOUT_DEFAULTS_MS`](src/config.ts) and can be overridden with these millisecond-valued environment variables:
+
+- `ASK_EXECUTION_TIMEOUT_MS` — absolute cap for a provider invocation (default `5400000`)
+- `PROVIDER_IDLE_TIMEOUT_MS` — no-output timeout for a provider (default `900000`)
+- `REVIEWER_TIMEOUT_MS` — fixed cap for each primary reviewer per round (default `1200000`)
+- `ITERATIVE_VERIFICATION_TIMEOUT_MS` — iterative planner-verification cap (default `600000`)
+- `INSTALL_STEP_TIMEOUT_MS` — tool-install step cap (default `3600000`)
+- `MEMPALACE_REMOTE_TIMEOUT_MS` and `MEMPALACE_REMOTE_MINE_TIMEOUT_MS` — remote request and mine-operation caps (defaults `5000` and `2700000`)
 
 Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global`, with `docker/entrypoint.sh` seeding them on first boot if missing. That keeps Claude and Codex authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. Gemini and OpenCode execution use API keys instead of persisted OAuth state — set `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` as env vars, or use `/opencode-auth` to store per-provider keys in `auth.json` with support for DeepSeek, OpenAI, Anthropic, Google, xAI, Groq, OpenRouter, and Together.
 
