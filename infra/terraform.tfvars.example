@@ -12,7 +12,7 @@ ask_concurrency   = 1
 container_memory  = "700m"
 container_memory_swap = "2g"   # memory+swap total; equal to container_memory disables swap
 container_cpus    = "0.8"
-container_pids_limit = 256
+container_pids_limit = 1024
 
 # Discord application config (IDs are not secrets; the bot token is — see below)
 discord_client_id = "replace_me"

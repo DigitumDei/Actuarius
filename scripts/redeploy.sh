@@ -58,7 +58,10 @@ CONTAINER_MEMORY="${CONTAINER_MEMORY:-700m}"
 # being OOM-killed; 2g leaves the host ~230M of swap headroom.
 CONTAINER_MEMORY_SWAP="${CONTAINER_MEMORY_SWAP:-2g}"
 CONTAINER_CPUS="${CONTAINER_CPUS:-0.8}"
-CONTAINER_PIDS_LIMIT="${CONTAINER_PIDS_LIMIT:-256}"
+# Pids limit counts tasks (threads included), not just processes. Each
+# concurrent provider CLI stack uses ~60-80 tasks; 256 caused EAGAIN
+# thread-creation failures when a 3-reviewer review ran.
+CONTAINER_PIDS_LIMIT="${CONTAINER_PIDS_LIMIT:-1024}"
 
 # Docker requires --memory-swap >= --memory (it is the memory+swap TOTAL).
 # If a larger memory override predates the swap knob, raise the swap total to

@@ -169,7 +169,7 @@ describe("scripts/redeploy.sh auth validation", () => {
     expect(result.dockerLog).toContain("--memory\n700m");
     expect(result.dockerLog).toContain("--memory-swap\n2g");
     expect(result.dockerLog).toContain("--cpus\n0.8");
-    expect(result.dockerLog).toContain("--pids-limit\n256");
+    expect(result.dockerLog).toContain("--pids-limit\n1024");
   });
 
   it("forwards configured container resource limits", () => {
