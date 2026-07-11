@@ -9,7 +9,7 @@ services:
     mem_limit: ${ACTUARIUS_CONTAINER_MEMORY:-700m}
     memswap_limit: ${ACTUARIUS_CONTAINER_MEMORY_SWAP:-2g}
     cpus: ${ACTUARIUS_CONTAINER_CPUS:-0.8}
-    pids_limit: ${ACTUARIUS_CONTAINER_PIDS_LIMIT:-256}
+    pids_limit: ${ACTUARIUS_CONTAINER_PIDS_LIMIT:-1024}
     restart: unless-stopped
 
 volumes:

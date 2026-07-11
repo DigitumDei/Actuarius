@@ -74,8 +74,11 @@ sudo reboot
 4. Starts a new container with the correct env vars mapped from metadata
 
 Production deploys constrain the container to 700 MB RAM, 2 GB memory+swap,
-0.8 CPU, and 256 processes by default. These cgroup limits keep provider builds
-or fork storms from starving the VM host. The swap allowance matters: the VM
+0.8 CPU, and 1024 tasks by default. These cgroup limits keep provider builds
+or fork storms from starving the VM host. Note the pids limit counts threads
+as well as processes — each concurrent provider CLI stack uses roughly 60–80
+tasks, so the earlier 256 default caused `EAGAIN` (os error 11) thread-creation
+failures when three reviewers ran at once. The swap allowance matters: the VM
 provisions a 1536 MB swapfile (`infra/startup.sh`) so heavy provider CLI
 subprocesses spill to swap instead of being SIGKILLed by the OOM killer.
 Override the limits with Terraform variables `container_memory`,

@@ -47,8 +47,8 @@ variable "container_cpus" {
 
 variable "container_pids_limit" {
   type        = number
-  description = "Maximum process count inside the Actuarius container."
-  default     = 256
+  description = "Maximum task count (processes AND threads) inside the Actuarius container. Each concurrent provider CLI stack uses ~60-80 tasks; 256 caused EAGAIN thread-creation failures during 3-reviewer reviews."
+  default     = 1024
 }
 
 # Secret values (Discord token, GitHub App private key, Claude OAuth token,
