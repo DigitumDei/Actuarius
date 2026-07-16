@@ -260,6 +260,56 @@ describe("ActuariusBot auth-openai-opencode command", () => {
       ephemeral: true
     });
   });
+
+  it("releases the auth lock when deferReply fails", async () => {
+    vi.mocked(authenticateOpenAIOpencode).mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      deferReply: vi.fn()
+        .mockRejectedValueOnce(new Error("Discord unavailable"))
+        .mockResolvedValueOnce(undefined)
+    });
+    const bot = createBot();
+    (bot as any).config.enableOpencodeExecution = true;
+
+    await (bot as any).handleAuthOpenAIOpenCode(interaction);
+    await (bot as any).handleAuthOpenAIOpenCode(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledTimes(2);
+    expect(authenticateOpenAIOpencode).toHaveBeenCalledOnce();
+    expect(interaction.reply).not.toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("already in progress")
+    }));
+  });
+
+  it("does not misreport successful auth when the success reply fails", async () => {
+    vi.mocked(authenticateOpenAIOpencode).mockResolvedValueOnce(undefined);
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      editReply: vi.fn().mockRejectedValueOnce(new Error("Interaction token expired"))
+    });
+    const bot = createBot();
+    (bot as any).config.enableOpencodeExecution = true;
+
+    await expect((bot as any).handleAuthOpenAIOpenCode(interaction)).resolves.toBeUndefined();
+
+    expect(authenticateOpenAIOpencode).toHaveBeenCalledOnce();
+    expect(interaction.editReply).toHaveBeenCalledOnce();
+  });
+
+  it("swallows a secondary reply failure after auth itself fails", async () => {
+    vi.mocked(authenticateOpenAIOpencode).mockRejectedValueOnce(new Error("Authorization failed"));
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      editReply: vi.fn().mockRejectedValueOnce(new Error("Interaction token expired"))
+    });
+    const bot = createBot();
+    (bot as any).config.enableOpencodeExecution = true;
+
+    await expect((bot as any).handleAuthOpenAIOpenCode(interaction)).resolves.toBeUndefined();
+
+    expect(interaction.editReply).toHaveBeenCalledOnce();
+  });
 });
 
 describe("ActuariusBot ask command", () => {

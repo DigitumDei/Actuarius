@@ -1935,9 +1935,8 @@ export class ActuariusBot {
     }
 
     this.opencodeOpenAIAuthInProgress = true;
-    await interaction.deferReply({ ephemeral: true });
-
     try {
+      await interaction.deferReply({ ephemeral: true });
       await authenticateOpenAIOpencode({
         cwd: process.cwd(),
         onChallenge: ({ url, code }) => {
@@ -1956,9 +1955,13 @@ export class ActuariusBot {
       });
 
       this.logger.info({ guildId: interaction.guildId }, "OpenAI subscription connected to OpenCode");
-      await interaction.editReply({
-        content: "OpenAI ChatGPT Pro/Plus subscription connected to OpenCode. OpenAI models are now available to OpenCode requests."
-      });
+      try {
+        await interaction.editReply({
+          content: "OpenAI ChatGPT Pro/Plus subscription connected to OpenCode. OpenAI models are now available to OpenCode requests."
+        });
+      } catch (replyErr) {
+        this.logger.warn({ err: replyErr, guildId: interaction.guildId }, "Failed to send OpenAI auth success reply");
+      }
     } catch (err) {
       this.logger.error({ err, guildId: interaction.guildId }, "OpenCode OpenAI subscription auth failed");
       const error = err as Error & { code?: string; stderr?: string };
@@ -1968,7 +1971,11 @@ export class ActuariusBot {
       const message = error.code === "ETIMEDOUT"
         ? "OpenAI authorization timed out. Run `/auth-openai-opencode` to try again."
         : `OpenAI authorization failed: ${diagnostic}`;
-      await interaction.editReply({ content: message });
+      try {
+        await interaction.editReply({ content: message });
+      } catch (replyErr) {
+        this.logger.warn({ err: replyErr, guildId: interaction.guildId }, "Failed to send OpenAI auth failure reply");
+      }
     } finally {
       this.opencodeOpenAIAuthInProgress = false;
     }
