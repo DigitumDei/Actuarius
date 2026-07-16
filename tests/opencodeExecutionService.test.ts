@@ -17,10 +17,17 @@ vi.mock("../src/utils/spawnCollect.js", async (importActual) => {
   };
 });
 
-const { spawnCollectWithTransport } = await import("../src/utils/spawnCollect.js");
+const { spawnCollect, spawnCollectWithTransport } = await import("../src/utils/spawnCollect.js");
+const mockSpawnCollect = vi.mocked(spawnCollect);
 const mockSpawnCollectWithTransport = vi.mocked(spawnCollectWithTransport);
 
-const { OpencodeExecutionError, runOpencodeRequest, OPENCODE_TEMPFILE_DIRECTIVE } = await import("../src/services/opencodeExecutionService.js");
+const {
+  authenticateOpenAIOpencode,
+  OpencodeExecutionError,
+  parseOpenAIOpencodeAuthChallenge,
+  runOpencodeRequest,
+  OPENCODE_TEMPFILE_DIRECTIVE
+} = await import("../src/services/opencodeExecutionService.js");
 
 const logger = pino({ level: "silent" });
 
@@ -56,6 +63,52 @@ describe("OpencodeExecutionError", () => {
   it("constructs with EMPTY_OUTPUT code", () => {
     const error = new OpencodeExecutionError("EMPTY_OUTPUT", "empty");
     expect(error.code).toBe("EMPTY_OUTPUT");
+  });
+});
+
+describe("authenticateOpenAIOpencode", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("parses the OpenAI device URL and code from ANSI output", () => {
+    expect(parseOpenAIOpencodeAuthChallenge(
+      "\u001b[34mGo to: https://auth.openai.com/codex/device\u001b[0m\nEnter code: ABCD-EFGH"
+    )).toEqual({
+      url: "https://auth.openai.com/codex/device",
+      code: "ABCD-EFGH"
+    });
+  });
+
+  it("runs OpenCode's headless ChatGPT subscription flow and streams the challenge", async () => {
+    mockSpawnCollect.mockImplementationOnce(async (_file, _args, options) => {
+      options.onOutput?.({
+        stdout: "Go to: https://auth.openai.com/codex/device\n",
+        stderr: "Enter code: WXYZ-1234\n"
+      });
+      return { stdout: "Authorization complete", stderr: "" };
+    });
+    const onChallenge = vi.fn();
+
+    await authenticateOpenAIOpencode({ cwd: "/app", timeoutMs: 1234, onChallenge });
+
+    expect(mockSpawnCollect).toHaveBeenCalledWith(
+      "opencode",
+      ["providers", "login", "--provider", "OpenAI", "--method", "ChatGPT Pro/Plus (headless)"],
+      expect.objectContaining({ cwd: "/app", timeoutMs: 1234, onOutput: expect.any(Function) })
+    );
+    expect(onChallenge).toHaveBeenCalledOnce();
+    expect(onChallenge).toHaveBeenCalledWith({
+      url: "https://auth.openai.com/codex/device",
+      code: "WXYZ-1234"
+    });
+  });
+
+  it("fails when OpenCode exits without emitting a device challenge", async () => {
+    mockSpawnCollect.mockResolvedValueOnce({ stdout: "Authorization complete", stderr: "" });
+
+    await expect(authenticateOpenAIOpencode({ cwd: "/app", onChallenge: vi.fn() }))
+      .rejects.toThrow("without providing an OpenAI device authorization challenge");
   });
 });
 

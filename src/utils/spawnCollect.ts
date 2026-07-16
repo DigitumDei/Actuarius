@@ -475,6 +475,11 @@ export interface SpawnResult {
   stderr: string;
 }
 
+export interface SpawnOutputSnapshot {
+  stdout: string;
+  stderr: string;
+}
+
 const DEFAULT_STDERR_MAX = 64 * 1024; // 64 KB
 
 export type SpawnTimeoutReason = "idle" | "absolute";
@@ -502,6 +507,8 @@ export function spawnCollect(
     maxStderrBuffer?: number;
     env?: NodeJS.ProcessEnv;
     stdin?: string;
+    /** Called after stdout or stderr changes, with the output collected so far. */
+    onOutput?: (snapshot: SpawnOutputSnapshot) => void;
   }
 ): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
@@ -552,6 +559,7 @@ export function spawnCollect(
       if (bufferOverflow || timeoutReason) return;
       resetIdleTimer();
       stdout += chunk.toString();
+      options.onOutput?.({ stdout, stderr });
       if (stdout.length > options.maxBuffer) {
         bufferOverflow = true;
         child.kill("SIGTERM");
@@ -568,6 +576,7 @@ export function spawnCollect(
       } else {
         stderr = combined;
       }
+      options.onOutput?.({ stdout, stderr });
     });
 
     child.on("error", (err) => {

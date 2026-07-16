@@ -67,7 +67,7 @@ import {
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
 import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
 import { GeminiExecutionError, runGeminiRequest } from "../services/geminiExecutionService.js";
-import { OpencodeExecutionError, runOpencodeRequest, hasOpencodeAuth, OPENCODE_AUTH_PATH, ALLOWED_OPENCODE_PROVIDERS } from "../services/opencodeExecutionService.js";
+import { authenticateOpenAIOpencode, OpencodeExecutionError, runOpencodeRequest, hasOpencodeAuth, OPENCODE_AUTH_PATH, ALLOWED_OPENCODE_PROVIDERS } from "../services/opencodeExecutionService.js";
 import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
 import { InstallService, InstallServiceError } from "../services/installService.js";
 import { buildAptPackageId, getAptPackageSpec, isAptPackageId } from "../services/installerRegistry.js";
@@ -580,6 +580,7 @@ export class ActuariusBot {
   private readonly installService: InstallService;
   private readonly memPalace: MemPalaceClient | null;
   private readonly memPalaceRemote: MemPalaceRemoteService | null;
+  private opencodeOpenAIAuthInProgress = false;
 
   public constructor(
     config: AppConfig,
@@ -872,6 +873,9 @@ export class ActuariusBot {
         return;
       case "opencode-auth":
         await this.handleOpencodeAuth(interaction);
+        return;
+      case "auth-openai-opencode":
+        await this.handleAuthOpenAIOpenCode(interaction);
         return;
       case "opencode-auth-remove":
         await this.handleOpencodeAuthRemove(interaction);
@@ -1640,7 +1644,7 @@ export class ActuariusBot {
     }
 
     if (provider === "opencode" && !this.config.deepseekApiKey?.trim() && !(await hasOpencodeAuth())) {
-      return "OpenCode execution requires an API key. Use `/opencode-auth` to configure keys (e.g. `deepseek`, `openai`, `anthropic`), or set `DEEPSEEK_API_KEY` on the instance.";
+      return "OpenCode execution requires credentials. Use `/auth-openai-opencode` for a ChatGPT Pro/Plus subscription, `/opencode-auth` for an API key, or set `DEEPSEEK_API_KEY` on the instance.";
     }
 
     return null;
@@ -1900,6 +1904,76 @@ export class ActuariusBot {
     });
   }
 
+  private async handleAuthOpenAIOpenCode(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to connect an OpenAI subscription to OpenCode.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!this.config.enableOpencodeExecution) {
+      await interaction.reply({
+        content: "OpenCode execution is not enabled on this instance. Set `ENABLE_OPENCODE_EXECUTION=true` to enable it.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (this.opencodeOpenAIAuthInProgress) {
+      await interaction.reply({
+        content: "An OpenAI subscription authorization is already in progress. Complete it before starting another.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    this.opencodeOpenAIAuthInProgress = true;
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      await authenticateOpenAIOpencode({
+        cwd: process.cwd(),
+        onChallenge: ({ url, code }) => {
+          void interaction.editReply({
+            content: [
+              "OpenCode is waiting for your OpenAI authorization.",
+              "",
+              `[Open the OpenAI device login](${url}) and enter code \`${code}\`.`,
+              "",
+              "This private response will update automatically when authorization completes."
+            ].join("\n")
+          }).catch((err) => {
+            this.logger.warn({ err, guildId: interaction.guildId }, "Failed to show OpenCode OpenAI auth challenge");
+          });
+        }
+      });
+
+      this.logger.info({ guildId: interaction.guildId }, "OpenAI subscription connected to OpenCode");
+      await interaction.editReply({
+        content: "OpenAI ChatGPT Pro/Plus subscription connected to OpenCode. OpenAI models are now available to OpenCode requests."
+      });
+    } catch (err) {
+      this.logger.error({ err, guildId: interaction.guildId }, "OpenCode OpenAI subscription auth failed");
+      const error = err as Error & { code?: string; stderr?: string };
+      const diagnostic = (error.stderr?.trim() || error.message || "Unknown error")
+        .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+        .slice(0, 1_400);
+      const message = error.code === "ETIMEDOUT"
+        ? "OpenAI authorization timed out. Run `/auth-openai-opencode` to try again."
+        : `OpenAI authorization failed: ${diagnostic}`;
+      await interaction.editReply({ content: message });
+    } finally {
+      this.opencodeOpenAIAuthInProgress = false;
+    }
+  }
+
   private async handleOpencodeAuthRemove(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guild || !interaction.guildId) {
       await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
@@ -1908,7 +1982,7 @@ export class ActuariusBot {
 
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
       await interaction.reply({
-        content: "You need the `Manage Server` permission to remove OpenCode API keys.",
+        content: "You need the `Manage Server` permission to remove OpenCode credentials.",
         ephemeral: true
       });
       return;
@@ -1926,7 +2000,7 @@ export class ActuariusBot {
 
     if (!existsSync(OPENCODE_AUTH_PATH)) {
       await interaction.reply({
-        content: `No stored auth.json found. No keys to remove.`,
+        content: `No stored auth.json found. No credentials to remove.`,
         ephemeral: true
       });
       return;
@@ -1946,7 +2020,7 @@ export class ActuariusBot {
 
     if (!(rawProvider in authJson)) {
       await interaction.reply({
-        content: `No stored API key for **${rawProvider}**.`,
+        content: `No stored credential for **${rawProvider}**.`,
         ephemeral: true
       });
       return;
@@ -1963,7 +2037,7 @@ export class ActuariusBot {
     this.logger.info({ guildId: interaction.guildId, provider: rawProvider }, "OpenCode auth key removed");
 
     await interaction.reply({
-      content: `API key for **${rawProvider}** has been removed from OpenCode's auth.json.`,
+      content: `Credential for **${rawProvider}** has been removed from OpenCode's auth.json.`,
       ephemeral: true
     });
   }

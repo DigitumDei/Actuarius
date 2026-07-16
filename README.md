@@ -17,7 +17,7 @@ Discord bot container that links GitHub repos to Discord channels and creates re
 - Runs the configured AI provider (Claude, Codex, Gemini, or OpenCode) for each `/ask` request in an isolated git worktree.
 - Queues `/ask` jobs with bounded per-guild concurrency and support for `/review` (adversarial code review across multiple provider CLIs).
 - Stores guild/repo/request mappings in SQLite.
-- Supports `/opencode-auth` for per-provider API key management when using OpenCode as the provider.
+- Supports `/auth-openai-opencode` for ChatGPT Pro/Plus subscription login and `/opencode-auth` for per-provider API key management when using OpenCode as the provider.
 
 ## What v1 does not do
 
@@ -56,7 +56,7 @@ Copy `.env.example` to `.env` and set:
 - `ENABLE_GEMINI_EXECUTION` (default `false`, enables Gemini provider)
 - `ENABLE_OPENCODE_EXECUTION` (default `false`, enables OpenCode/DeepSeek provider)
 - `GEMINI_API_KEY` (required for Gemini execution)
-- `DEEPSEEK_API_KEY` (required for OpenCode execution when not using `/opencode-auth`)
+- `DEEPSEEK_API_KEY` (required for OpenCode execution when not using stored OpenCode credentials)
 - `CLAUDE_CODE_OAUTH_TOKEN` (optional for local/manual runs, required by the production redeploy helper for non-interactive Claude auth)
 - `MEMPALACE_ENABLED` (default `false`, enables the local MemPalace MCP for agents)
 - `MEMPALACE_REMOTE_ENABLED` (default `false`, starts Actuarius' loopback MemPalace federation server and routes repo memory through it)
@@ -73,7 +73,7 @@ All timeout defaults live together in [`TIMEOUT_DEFAULTS_MS`](src/config.ts) and
 - `INSTALL_STEP_TIMEOUT_MS` — tool-install step cap (default `3600000`)
 - `MEMPALACE_REMOTE_TIMEOUT_MS` and `MEMPALACE_REMOTE_MINE_TIMEOUT_MS` — remote request and mine-operation caps (defaults `5000` and `2700000`)
 
-Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global`, with `docker/entrypoint.sh` seeding them on first boot if missing. That keeps Claude and Codex authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. Gemini and OpenCode execution use API keys instead of persisted OAuth state — set `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` as env vars, or use `/opencode-auth` to store per-provider keys in `auth.json` with support for DeepSeek, OpenAI, Anthropic, Google, xAI, Groq, OpenRouter, and Together.
+Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global`, with `docker/entrypoint.sh` seeding them on first boot if missing. That keeps provider authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. For OpenCode, use `/auth-openai-opencode` to connect a ChatGPT Pro/Plus subscription with OpenAI's device flow, `/opencode-auth` to store per-provider API keys in `auth.json`, or set provider API keys such as `DEEPSEEK_API_KEY` in the environment. `/opencode-auth` supports DeepSeek, OpenAI, Anthropic, Google, xAI, Groq, OpenRouter, and Together.
 
 Managed tool installs are validated against the filesystem before Actuarius adds
 their binaries or environment values to provider processes. Use `/uninstall`

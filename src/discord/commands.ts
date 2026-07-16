@@ -228,8 +228,11 @@ export const commandBuilders = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName("auth-openai-opencode")
+    .setDescription("Connect a ChatGPT Pro/Plus subscription to OpenCode. Requires Manage Server permission."),
+  new SlashCommandBuilder()
     .setName("opencode-auth-remove")
-    .setDescription("Remove a stored API key for OpenCode. Requires Manage Server permission.")
+    .setDescription("Remove a stored OpenCode credential. Requires Manage Server permission.")
     .addStringOption((option) =>
       option
         .setName("provider")
@@ -318,6 +321,7 @@ export type CommandName =
   | "review-rounds"
   | "codex-auth"
   | "opencode-auth"
+  | "auth-openai-opencode"
   | "opencode-auth-remove"
   | "gh-auth-refresh"
   | "delete"
