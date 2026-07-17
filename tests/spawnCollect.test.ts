@@ -139,6 +139,23 @@ describe("spawnCollect — stderr trimming", () => {
 
     expect(error).toMatchObject({ code: "ETIMEDOUT", timeoutReason: "absolute" });
   });
+
+  it.each(["stdout", "stderr"] as const)(
+    "rejects and terminates the child when an onOutput callback throws from %s",
+    async (stream) => {
+      const callbackError = new Error(`failed while handling ${stream}`);
+      const onOutput = vi.fn(() => { throw callbackError; });
+      const script = `${stream === "stdout" ? "process.stdout" : "process.stderr"}.write("chunk"); setInterval(() => {}, 60_000);`;
+
+      await expect(spawnCollect(
+        node,
+        ["-e", script],
+        { cwd, timeoutMs, maxBuffer: 1024, onOutput }
+      )).rejects.toBe(callbackError);
+
+      expect(onOutput).toHaveBeenCalledOnce();
+    }
+  );
 });
 
 describe("spawnCollectWithTransport — argv transport", () => {

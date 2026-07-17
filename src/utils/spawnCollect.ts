@@ -529,6 +529,7 @@ export function spawnCollect(
     let timeoutReason: SpawnTimeoutReason | undefined;
     let bufferOverflow = false;
     let stderrTruncated = false;
+    let outputCallbackError: Error | undefined;
 
     const effectiveStderrMax = options.maxStderrBuffer ?? DEFAULT_STDERR_MAX;
 
@@ -555,11 +556,24 @@ export function spawnCollect(
       if (idleTimer) clearTimeout(idleTimer);
     };
 
+    const notifyOutput = (): void => {
+      if (!options.onOutput || outputCallbackError) return;
+      try {
+        options.onOutput({ stdout, stderr });
+      } catch (reason) {
+        outputCallbackError = reason instanceof Error
+          ? reason
+          : new Error("spawnCollect onOutput callback failed", { cause: reason });
+        child.kill("SIGTERM");
+      }
+    };
+
     child.stdout!.on("data", (chunk: Buffer) => {
-      if (bufferOverflow || timeoutReason) return;
+      if (bufferOverflow || timeoutReason || outputCallbackError) return;
       resetIdleTimer();
       stdout += chunk.toString();
-      options.onOutput?.({ stdout, stderr });
+      notifyOutput();
+      if (outputCallbackError) return;
       if (stdout.length > options.maxBuffer) {
         bufferOverflow = true;
         child.kill("SIGTERM");
@@ -567,7 +581,7 @@ export function spawnCollect(
     });
 
     child.stderr!.on("data", (chunk: Buffer) => {
-      if (bufferOverflow || timeoutReason) return;
+      if (bufferOverflow || timeoutReason || outputCallbackError) return;
       resetIdleTimer();
       const combined = stderr + chunk.toString();
       if (combined.length > effectiveStderrMax) {
@@ -576,7 +590,7 @@ export function spawnCollect(
       } else {
         stderr = combined;
       }
-      options.onOutput?.({ stdout, stderr });
+      notifyOutput();
     });
 
     child.on("error", (err) => {
@@ -588,6 +602,10 @@ export function spawnCollect(
       clearTimers();
       const finalStderr = stderrTruncated ? `[stderr truncated]\n${stderr}` : stderr;
 
+      if (outputCallbackError) {
+        reject(outputCallbackError);
+        return;
+      }
       if (bufferOverflow) {
         reject(Object.assign(new Error(`Process output exceeded maxBuffer (${options.maxBuffer} bytes)`), {
           code: "EMSGSIZE", killed: true, signal, stdout, stderr: finalStderr,
