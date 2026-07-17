@@ -5,6 +5,11 @@ vi.mock("node:fs", () => ({
   existsSync: vi.fn(),
 }));
 
+vi.mock("node:fs/promises", async (importActual) => ({
+  ...await importActual<typeof import("node:fs/promises")>(),
+  readFile: vi.fn(),
+}));
+
 // Mock only the process-spawning functions; keep the real (pure) byte-math
 // helpers like exceedsArgvLimits/estimateSpawnPayloadBytes and the size
 // constants so the transport decision runs for real.
@@ -18,8 +23,10 @@ vi.mock("../src/utils/spawnCollect.js", async (importActual) => {
 });
 
 const { spawnCollect, spawnCollectWithTransport } = await import("../src/utils/spawnCollect.js");
+const { readFile } = await import("node:fs/promises");
 const mockSpawnCollect = vi.mocked(spawnCollect);
 const mockSpawnCollectWithTransport = vi.mocked(spawnCollectWithTransport);
+const mockReadFile = vi.mocked(readFile);
 
 const {
   authenticateOpenAIOpencode,
@@ -69,6 +76,14 @@ describe("OpencodeExecutionError", () => {
 describe("authenticateOpenAIOpencode", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    mockReadFile.mockResolvedValue(JSON.stringify({
+      openai: {
+        type: "oauth",
+        access: "access-token",
+        refresh: "refresh-token",
+        expires: 1_800_000_000_000
+      }
+    }) as never);
   });
 
   it("parses the OpenAI device URL and code from ANSI output", () => {
@@ -95,7 +110,12 @@ describe("authenticateOpenAIOpencode", () => {
     expect(mockSpawnCollect).toHaveBeenCalledWith(
       "opencode",
       ["providers", "login", "--provider", "OpenAI", "--method", "ChatGPT Pro/Plus (headless)"],
-      expect.objectContaining({ cwd: "/app", timeoutMs: 1234, onOutput: expect.any(Function) })
+      expect.objectContaining({
+        cwd: "/app",
+        timeoutMs: 1234,
+        maxBuffer: 4 * 1024 * 1024,
+        onOutput: expect.any(Function)
+      })
     );
     expect(onChallenge).toHaveBeenCalledOnce();
     expect(onChallenge).toHaveBeenCalledWith({
@@ -109,6 +129,35 @@ describe("authenticateOpenAIOpencode", () => {
 
     await expect(authenticateOpenAIOpencode({ cwd: "/app", onChallenge: vi.fn() }))
       .rejects.toThrow("without providing an OpenAI device authorization challenge");
+  });
+
+  it("fails when OpenCode reports a failed authorization despite exiting normally", async () => {
+    mockSpawnCollect.mockImplementationOnce(async (_file, _args, options) => {
+      options.onOutput?.({
+        stdout: "Go to: https://auth.openai.com/codex/device\nEnter code: ABCD-EFGH\n",
+        stderr: ""
+      });
+      return { stdout: "Failed to authorize\nDone", stderr: "" };
+    });
+
+    await expect(authenticateOpenAIOpencode({ cwd: "/app", onChallenge: vi.fn() }))
+      .rejects.toThrow("failed to authorize the OpenAI subscription");
+  });
+
+  it("fails when OpenCode does not persist a valid OpenAI OAuth credential", async () => {
+    mockReadFile.mockResolvedValueOnce(JSON.stringify({
+      openai: { type: "oauth", access: "", refresh: "refresh-token", expires: 1_800_000_000_000 }
+    }) as never);
+    mockSpawnCollect.mockImplementationOnce(async (_file, _args, options) => {
+      options.onOutput?.({
+        stdout: "Go to: https://auth.openai.com/codex/device\nEnter code: ABCD-EFGH\n",
+        stderr: ""
+      });
+      return { stdout: "Login successful\nDone", stderr: "" };
+    });
+
+    await expect(authenticateOpenAIOpencode({ cwd: "/app", onChallenge: vi.fn() }))
+      .rejects.toThrow("without saving a valid OpenAI OAuth credential");
   });
 });
 

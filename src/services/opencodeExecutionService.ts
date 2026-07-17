@@ -13,6 +13,7 @@ export { OPENCODE_TEMPFILE_DIRECTIVE };
 export const ALLOWED_OPENCODE_PROVIDERS = ["deepseek", "openai", "anthropic", "google", "xai", "groq", "openrouter", "together"] as const;
 export const OPENCODE_AUTH_PATH = join(homedir(), ".local", "share", "opencode", "auth.json");
 const OPENAI_OPENCODE_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
+const OPENAI_OPENCODE_AUTH_MAX_BUFFER = 4 * 1024 * 1024;
 
 // opencode's `-f/--file` flag "attaches file(s) to the message" rather than
 // replacing the message — so an oversized prompt delivered purely via --file
@@ -73,6 +74,28 @@ export function parseOpenAIOpencodeAuthChallenge(output: string): OpenAIOpencode
   return url && code ? { url, code } : null;
 }
 
+async function hasSavedOpenAIOpencodeOAuthCredential(): Promise<boolean> {
+  try {
+    const raw = await readFile(OPENCODE_AUTH_PATH, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const credential = parsed.openai;
+    if (typeof credential !== "object" || credential === null || Array.isArray(credential)) {
+      return false;
+    }
+
+    const oauth = credential as Record<string, unknown>;
+    return oauth.type === "oauth"
+      && typeof oauth.access === "string"
+      && oauth.access.trim().length > 0
+      && typeof oauth.refresh === "string"
+      && oauth.refresh.trim().length > 0
+      && typeof oauth.expires === "number"
+      && Number.isFinite(oauth.expires);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Starts OpenCode's device-code flow for a ChatGPT Pro/Plus subscription.
  * The headless method is required because Actuarius normally runs remotely;
@@ -81,7 +104,7 @@ export function parseOpenAIOpencodeAuthChallenge(output: string): OpenAIOpencode
 export async function authenticateOpenAIOpencode(input: OpenAIOpencodeAuthInput): Promise<void> {
   let challengeDelivered = false;
 
-  await spawnCollect(
+  const result = await spawnCollect(
     "opencode",
     [
       "providers",
@@ -94,7 +117,9 @@ export async function authenticateOpenAIOpencode(input: OpenAIOpencodeAuthInput)
     {
       cwd: input.cwd,
       timeoutMs: input.timeoutMs ?? OPENAI_OPENCODE_AUTH_TIMEOUT_MS,
-      maxBuffer: 256 * 1024,
+      // Clack redraws its waiting spinner frequently for the entire device
+      // flow. Keep enough headroom for the full ten-minute timeout.
+      maxBuffer: OPENAI_OPENCODE_AUTH_MAX_BUFFER,
       maxStderrBuffer: 64 * 1024,
       onOutput: ({ stdout, stderr }) => {
         if (challengeDelivered) return;
@@ -108,6 +133,15 @@ export async function authenticateOpenAIOpencode(input: OpenAIOpencodeAuthInput)
 
   if (!challengeDelivered) {
     throw new Error("OpenCode completed without providing an OpenAI device authorization challenge.");
+  }
+
+  const output = stripVTControlCharacters(`${result.stdout}\n${result.stderr}`);
+  if (/Failed to authorize/iu.test(output)) {
+    throw new Error("OpenCode failed to authorize the OpenAI subscription.");
+  }
+
+  if (!(await hasSavedOpenAIOpencodeOAuthCredential())) {
+    throw new Error("OpenCode completed without saving a valid OpenAI OAuth credential.");
   }
 }
 

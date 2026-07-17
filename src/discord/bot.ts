@@ -1963,8 +1963,14 @@ export class ActuariusBot {
         this.logger.warn({ err: replyErr, guildId: interaction.guildId }, "Failed to send OpenAI auth success reply");
       }
     } catch (err) {
-      this.logger.error({ err, guildId: interaction.guildId }, "OpenCode OpenAI subscription auth failed");
       const error = err as Error & { code?: string; stderr?: string };
+      // spawnCollect errors can contain the device URL and one-time code in
+      // stdout/stderr. Log only non-sensitive classification fields.
+      this.logger.error({
+        guildId: interaction.guildId,
+        errorName: error.name,
+        ...(error.code ? { errorCode: error.code } : {})
+      }, "OpenCode OpenAI subscription auth failed");
       const diagnostic = (error.stderr?.trim() || error.message || "Unknown error")
         .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
         .slice(0, 1_400);

@@ -310,6 +310,37 @@ describe("ActuariusBot auth-openai-opencode command", () => {
 
     expect(interaction.editReply).toHaveBeenCalledOnce();
   });
+
+  it("does not include device authorization output in failure logs", async () => {
+    const deviceCode = "SECRET-DEVICE-CODE";
+    vi.mocked(authenticateOpenAIOpencode).mockRejectedValueOnce(Object.assign(
+      new Error("Process timed out"),
+      {
+        code: "ETIMEDOUT",
+        stdout: `Go to: https://auth.openai.com/codex/device Enter code: ${deviceCode}`,
+        stderr: `Waiting for authorization for ${deviceCode}`
+      }
+    ));
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    const errorLog = vi.spyOn(logger, "error");
+    const bot = createBot();
+    (bot as any).config.enableOpencodeExecution = true;
+
+    try {
+      await (bot as any).handleAuthOpenAIOpenCode(interaction);
+
+      expect(errorLog).toHaveBeenCalledWith({
+        guildId: "guild-1",
+        errorName: "Error",
+        errorCode: "ETIMEDOUT"
+      }, "OpenCode OpenAI subscription auth failed");
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain(deviceCode);
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
 });
 
 describe("ActuariusBot ask command", () => {
