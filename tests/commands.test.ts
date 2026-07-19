@@ -15,6 +15,15 @@ describe("command registration", () => {
     expect(names).not.toContain("gemini-oauth-file");
   });
 
+  it("registers /auth-openai-opencode for ChatGPT subscription login", () => {
+    const command = commandBuilders.find((builder) => builder.name === "auth-openai-opencode");
+    expect(command).toBeDefined();
+    expect(command!.toJSON()).toMatchObject({
+      name: "auth-openai-opencode",
+      description: "Connect a ChatGPT Pro/Plus subscription to OpenCode. Requires Manage Server permission."
+    });
+  });
+
   it("registers /model-select with role choices", () => {
     const command = commandBuilders.find((builder) => builder.name === "model-select");
     expect(command).toBeDefined();

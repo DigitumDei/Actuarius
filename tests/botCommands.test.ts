@@ -81,6 +81,7 @@ vi.mock("../src/services/opencodeExecutionService.js", async () => {
 
   return {
     ...actual,
+    authenticateOpenAIOpencode: vi.fn(),
     hasOpencodeAuth: vi.fn().mockResolvedValue(false)
   };
 });
@@ -124,6 +125,7 @@ const {
 const { spawnCollect } = await import("../src/utils/spawnCollect.js");
 const { listOpenIssues, viewIssueDetail } = await import("../src/services/githubService.js");
 const { runClaudeRequest } = await import("../src/services/claudeExecutionService.js");
+const { authenticateOpenAIOpencode } = await import("../src/services/opencodeExecutionService.js");
 const { runAdversarialReview } = await import("../src/services/adversarialReviewService.js");
 const { runIterativeTaskLoop } = await import("../src/services/iterativeTaskLoopService.js");
 const { createDraftPullRequest } = await import("../src/services/pullRequestService.js");
@@ -218,6 +220,128 @@ function createInteraction(overrides: Record<string, unknown> = {}) {
     ...overrides
   };
 }
+
+describe("ActuariusBot auth-openai-opencode command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("runs the private headless device flow and reports success", async () => {
+    vi.mocked(authenticateOpenAIOpencode).mockImplementationOnce(async ({ onChallenge }) => {
+      onChallenge({ url: "https://auth.openai.com/codex/device", code: "ABCD-EFGH" });
+    });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    const bot = createBot();
+    (bot as any).config.enableOpencodeExecution = true;
+
+    await (bot as any).handleAuthOpenAIOpenCode(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: expect.stringContaining("https://auth.openai.com/codex/device")
+    });
+    expect(interaction.editReply).toHaveBeenLastCalledWith({
+      content: expect.stringContaining("subscription connected to OpenCode")
+    });
+  });
+
+  it("requires Manage Server permission", async () => {
+    const interaction = createInteraction();
+    const bot = createBot();
+    (bot as any).config.enableOpencodeExecution = true;
+
+    await (bot as any).handleAuthOpenAIOpenCode(interaction);
+
+    expect(authenticateOpenAIOpencode).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Manage Server"),
+      ephemeral: true
+    });
+  });
+
+  it("releases the auth lock when deferReply fails", async () => {
+    vi.mocked(authenticateOpenAIOpencode).mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      deferReply: vi.fn()
+        .mockRejectedValueOnce(new Error("Discord unavailable"))
+        .mockResolvedValueOnce(undefined)
+    });
+    const bot = createBot();
+    (bot as any).config.enableOpencodeExecution = true;
+
+    await (bot as any).handleAuthOpenAIOpenCode(interaction);
+    await (bot as any).handleAuthOpenAIOpenCode(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledTimes(2);
+    expect(authenticateOpenAIOpencode).toHaveBeenCalledOnce();
+    expect(interaction.reply).not.toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("already in progress")
+    }));
+  });
+
+  it("does not misreport successful auth when the success reply fails", async () => {
+    vi.mocked(authenticateOpenAIOpencode).mockResolvedValueOnce(undefined);
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      editReply: vi.fn().mockRejectedValueOnce(new Error("Interaction token expired"))
+    });
+    const bot = createBot();
+    (bot as any).config.enableOpencodeExecution = true;
+
+    await expect((bot as any).handleAuthOpenAIOpenCode(interaction)).resolves.toBeUndefined();
+
+    expect(authenticateOpenAIOpencode).toHaveBeenCalledOnce();
+    expect(interaction.editReply).toHaveBeenCalledOnce();
+  });
+
+  it("swallows a secondary reply failure after auth itself fails", async () => {
+    vi.mocked(authenticateOpenAIOpencode).mockRejectedValueOnce(new Error("Authorization failed"));
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      editReply: vi.fn().mockRejectedValueOnce(new Error("Interaction token expired"))
+    });
+    const bot = createBot();
+    (bot as any).config.enableOpencodeExecution = true;
+
+    await expect((bot as any).handleAuthOpenAIOpenCode(interaction)).resolves.toBeUndefined();
+
+    expect(interaction.editReply).toHaveBeenCalledOnce();
+  });
+
+  it("does not include device authorization output in failure logs", async () => {
+    const deviceCode = "SECRET-DEVICE-CODE";
+    vi.mocked(authenticateOpenAIOpencode).mockRejectedValueOnce(Object.assign(
+      new Error("Process timed out"),
+      {
+        code: "ETIMEDOUT",
+        stdout: `Go to: https://auth.openai.com/codex/device Enter code: ${deviceCode}`,
+        stderr: `Waiting for authorization for ${deviceCode}`
+      }
+    ));
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    const errorLog = vi.spyOn(logger, "error");
+    const bot = createBot();
+    (bot as any).config.enableOpencodeExecution = true;
+
+    try {
+      await (bot as any).handleAuthOpenAIOpenCode(interaction);
+
+      expect(errorLog).toHaveBeenCalledWith({
+        guildId: "guild-1",
+        errorName: "Error",
+        errorCode: "ETIMEDOUT"
+      }, "OpenCode OpenAI subscription auth failed");
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain(deviceCode);
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+});
 
 describe("ActuariusBot ask command", () => {
   beforeEach(() => {
@@ -2061,7 +2185,7 @@ describe("ActuariusBot review command", () => {
     await (bot as any).handleReview(interaction);
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     expect(interaction.editReply).toHaveBeenCalledWith(
-      "**Provider unavailable** — slot 2 uses `opencode` which is not available. OpenCode execution requires an API key. Use `/opencode-auth` to configure keys (e.g. `deepseek`, `openai`, `anthropic`), or set `DEEPSEEK_API_KEY` on the instance."
+      "**Provider unavailable** — slot 2 uses `opencode` which is not available. OpenCode execution requires credentials. Use `/auth-openai-opencode` for a ChatGPT Pro/Plus subscription, `/opencode-auth` for an API key, or set `DEEPSEEK_API_KEY` on the instance."
     );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });

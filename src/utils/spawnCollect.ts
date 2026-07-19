@@ -475,6 +475,11 @@ export interface SpawnResult {
   stderr: string;
 }
 
+export interface SpawnOutputSnapshot {
+  stdout: string;
+  stderr: string;
+}
+
 const DEFAULT_STDERR_MAX = 64 * 1024; // 64 KB
 
 export type SpawnTimeoutReason = "idle" | "absolute";
@@ -502,6 +507,8 @@ export function spawnCollect(
     maxStderrBuffer?: number;
     env?: NodeJS.ProcessEnv;
     stdin?: string;
+    /** Called after stdout or stderr changes, with the output collected so far. */
+    onOutput?: (snapshot: SpawnOutputSnapshot) => void;
   }
 ): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
@@ -522,6 +529,7 @@ export function spawnCollect(
     let timeoutReason: SpawnTimeoutReason | undefined;
     let bufferOverflow = false;
     let stderrTruncated = false;
+    let outputCallbackError: Error | undefined;
 
     const effectiveStderrMax = options.maxStderrBuffer ?? DEFAULT_STDERR_MAX;
 
@@ -548,10 +556,24 @@ export function spawnCollect(
       if (idleTimer) clearTimeout(idleTimer);
     };
 
+    const notifyOutput = (): void => {
+      if (!options.onOutput || outputCallbackError) return;
+      try {
+        options.onOutput({ stdout, stderr });
+      } catch (reason) {
+        outputCallbackError = reason instanceof Error
+          ? reason
+          : new Error("spawnCollect onOutput callback failed", { cause: reason });
+        child.kill("SIGTERM");
+      }
+    };
+
     child.stdout!.on("data", (chunk: Buffer) => {
-      if (bufferOverflow || timeoutReason) return;
+      if (bufferOverflow || timeoutReason || outputCallbackError) return;
       resetIdleTimer();
       stdout += chunk.toString();
+      notifyOutput();
+      if (outputCallbackError) return;
       if (stdout.length > options.maxBuffer) {
         bufferOverflow = true;
         child.kill("SIGTERM");
@@ -559,7 +581,7 @@ export function spawnCollect(
     });
 
     child.stderr!.on("data", (chunk: Buffer) => {
-      if (bufferOverflow || timeoutReason) return;
+      if (bufferOverflow || timeoutReason || outputCallbackError) return;
       resetIdleTimer();
       const combined = stderr + chunk.toString();
       if (combined.length > effectiveStderrMax) {
@@ -568,6 +590,7 @@ export function spawnCollect(
       } else {
         stderr = combined;
       }
+      notifyOutput();
     });
 
     child.on("error", (err) => {
@@ -579,6 +602,10 @@ export function spawnCollect(
       clearTimers();
       const finalStderr = stderrTruncated ? `[stderr truncated]\n${stderr}` : stderr;
 
+      if (outputCallbackError) {
+        reject(outputCallbackError);
+        return;
+      }
       if (bufferOverflow) {
         reject(Object.assign(new Error(`Process output exceeded maxBuffer (${options.maxBuffer} bytes)`), {
           code: "EMSGSIZE", killed: true, signal, stdout, stderr: finalStderr,

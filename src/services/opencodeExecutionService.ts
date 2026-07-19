@@ -2,14 +2,18 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { stripVTControlCharacters } from "node:util";
 import type { Logger } from "pino";
 import { runProviderRequest } from "../utils/runProviderRequest.js";
+import { spawnCollect } from "../utils/spawnCollect.js";
 import { OPENCODE_TEMPFILE_DIRECTIVE } from "./llmPromptBuilders.js";
 
 export { OPENCODE_TEMPFILE_DIRECTIVE };
 
 export const ALLOWED_OPENCODE_PROVIDERS = ["deepseek", "openai", "anthropic", "google", "xai", "groq", "openrouter", "together"] as const;
 export const OPENCODE_AUTH_PATH = join(homedir(), ".local", "share", "opencode", "auth.json");
+const OPENAI_OPENCODE_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
+const OPENAI_OPENCODE_AUTH_MAX_BUFFER = 4 * 1024 * 1024;
 
 // opencode's `-f/--file` flag "attaches file(s) to the message" rather than
 // replacing the message — so an oversized prompt delivered purely via --file
@@ -41,6 +45,103 @@ export class OpencodeExecutionError extends Error {
     super(message);
     this.name = "OpencodeExecutionError";
     this.code = code;
+  }
+}
+
+export interface OpenAIOpencodeAuthChallenge {
+  url: string;
+  code: string;
+}
+
+export interface OpenAIOpencodeAuthInput {
+  cwd: string;
+  onChallenge: (challenge: OpenAIOpencodeAuthChallenge) => void;
+  timeoutMs?: number;
+}
+
+export function parseOpenAIOpencodeAuthChallenge(output: string): OpenAIOpencodeAuthChallenge | null {
+  const normalized = stripVTControlCharacters(output);
+  const candidateUrls = normalized.match(/https:\/\/[^\s<>()]+/gu) ?? [];
+  const url = candidateUrls.find((candidate) => {
+    try {
+      const parsed = new URL(candidate);
+      return parsed.protocol === "https:" && parsed.hostname === "auth.openai.com" && parsed.pathname === "/codex/device";
+    } catch {
+      return false;
+    }
+  });
+  const code = /Enter code:\s*([A-Z0-9][A-Z0-9-]{3,})/iu.exec(normalized)?.[1];
+  return url && code ? { url, code } : null;
+}
+
+async function hasSavedOpenAIOpencodeOAuthCredential(): Promise<boolean> {
+  try {
+    const raw = await readFile(OPENCODE_AUTH_PATH, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const credential = parsed.openai;
+    if (typeof credential !== "object" || credential === null || Array.isArray(credential)) {
+      return false;
+    }
+
+    const oauth = credential as Record<string, unknown>;
+    return oauth.type === "oauth"
+      && typeof oauth.access === "string"
+      && oauth.access.trim().length > 0
+      && typeof oauth.refresh === "string"
+      && oauth.refresh.trim().length > 0
+      && typeof oauth.expires === "number"
+      && Number.isFinite(oauth.expires);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Starts OpenCode's device-code flow for a ChatGPT Pro/Plus subscription.
+ * The headless method is required because Actuarius normally runs remotely;
+ * browser OAuth redirects to localhost on the machine opening the link.
+ */
+export async function authenticateOpenAIOpencode(input: OpenAIOpencodeAuthInput): Promise<void> {
+  let challengeDelivered = false;
+
+  const result = await spawnCollect(
+    "opencode",
+    [
+      "providers",
+      "login",
+      "--provider",
+      "OpenAI",
+      "--method",
+      "ChatGPT Pro/Plus (headless)"
+    ],
+    {
+      cwd: input.cwd,
+      timeoutMs: input.timeoutMs ?? OPENAI_OPENCODE_AUTH_TIMEOUT_MS,
+      // Clack redraws its waiting spinner frequently for the entire device
+      // flow. Keep enough headroom for the full ten-minute timeout.
+      maxBuffer: OPENAI_OPENCODE_AUTH_MAX_BUFFER,
+      maxStderrBuffer: 64 * 1024,
+      onOutput: ({ stdout, stderr }) => {
+        if (challengeDelivered) return;
+        const challenge = parseOpenAIOpencodeAuthChallenge(`${stdout}\n${stderr}`);
+        if (!challenge) return;
+        challengeDelivered = true;
+        input.onChallenge(challenge);
+      }
+    }
+  );
+
+  if (!challengeDelivered) {
+    throw new Error("OpenCode completed without providing an OpenAI device authorization challenge.");
+  }
+
+  const output = stripVTControlCharacters(`${result.stdout}\n${result.stderr}`);
+  if (/Failed to authorize/iu.test(output)) {
+    throw new Error("OpenCode failed to authorize the OpenAI subscription.");
+  }
+
+  if (!(await hasSavedOpenAIOpencodeOAuthCredential())) {
+    throw new Error("OpenCode completed without saving a valid OpenAI OAuth credential.");
   }
 }
 
