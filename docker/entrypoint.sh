@@ -15,22 +15,29 @@ fi
 
 MEMPALACE_BINARY_PATH="${MEMPALACE_BINARY_PATH:-/usr/local/bin/mempalace-mcp}"
 MEMPALACE_PALACE_PATH="${MEMPALACE_PALACE_PATH:-/data/mempalace/palace}"
+# Agent-spawned MCP servers do not reliably inherit the container environment,
+# so the profile is written into each client's server definition explicitly.
+MEMPALACE_EMBEDDING_PROFILE="${MEMPALACE_EMBEDDING_PROFILE:-low_cpu}"
 
 mkdir -p "$HOME/.gemini"
 if [ ! -f "$HOME/.gemini/settings.json" ]; then
   echo '{"security":{"auth":{"selectedType":"oauth-personal"}}}' > "$HOME/.gemini/settings.json"
 fi
 if [ -x "$MEMPALACE_BINARY_PATH" ]; then
-  python3 - "$HOME/.gemini/settings.json" "$MEMPALACE_BINARY_PATH" "$MEMPALACE_PALACE_PATH" <<'PYEOF'
+  python3 - "$HOME/.gemini/settings.json" "$MEMPALACE_BINARY_PATH" "$MEMPALACE_PALACE_PATH" "$MEMPALACE_EMBEDDING_PROFILE" <<'PYEOF'
 import json, sys
-path, binary, palace = sys.argv[1], sys.argv[2], sys.argv[3]
+path, binary, palace, profile = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 with open(path) as f: cfg = json.load(f)
 if "mcpServers" not in cfg:
     cfg["mcpServers"] = {}
 if "mempalace" not in cfg["mcpServers"]:
     cfg["mcpServers"]["mempalace"] = {
         "command": binary,
-        "env": {"MEMPALACE_PALACE_PATH": palace, "MEMPALACE_EMBED_ALLOW_DOWNLOADS": "1"}
+        "env": {
+            "MEMPALACE_PALACE_PATH": palace,
+            "MEMPALACE_EMBEDDING_PROFILE": profile,
+            "MEMPALACE_EMBED_ALLOW_DOWNLOADS": "1"
+        }
     }
     with open(path, "w") as f: json.dump(cfg, f, indent=2)
 PYEOF
@@ -38,16 +45,20 @@ fi
 
 if [ -x "$MEMPALACE_BINARY_PATH" ]; then
   if ! grep -q '"mempalace"' "$HOME/.claude.json" 2>/dev/null; then
-    python3 - "$HOME/.claude.json" "$MEMPALACE_BINARY_PATH" "$MEMPALACE_PALACE_PATH" <<'PYEOF'
+    python3 - "$HOME/.claude.json" "$MEMPALACE_BINARY_PATH" "$MEMPALACE_PALACE_PATH" "$MEMPALACE_EMBEDDING_PROFILE" <<'PYEOF'
 import json, sys, os
-path, binary, palace = sys.argv[1], sys.argv[2], sys.argv[3]
+path, binary, palace, profile = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 cfg = {}
 if os.path.exists(path):
     with open(path) as f: cfg = json.load(f)
 if "mcpServers" not in cfg: cfg["mcpServers"] = {}
 cfg["mcpServers"]["mempalace"] = {
     "command": binary,
-    "env": {"MEMPALACE_PALACE_PATH": palace, "MEMPALACE_EMBED_ALLOW_DOWNLOADS": "1"}
+    "env": {
+        "MEMPALACE_PALACE_PATH": palace,
+        "MEMPALACE_EMBEDDING_PROFILE": profile,
+        "MEMPALACE_EMBED_ALLOW_DOWNLOADS": "1"
+    }
 }
 with open(path, "w") as f: json.dump(cfg, f, indent=2)
 PYEOF
@@ -62,6 +73,7 @@ command = "$MEMPALACE_BINARY_PATH"
 
 [mcp_servers.mempalace.env]
 MEMPALACE_PALACE_PATH = "$MEMPALACE_PALACE_PATH"
+MEMPALACE_EMBEDDING_PROFILE = "$MEMPALACE_EMBEDDING_PROFILE"
 MEMPALACE_EMBED_ALLOW_DOWNLOADS = "1"
 EOF
   fi
@@ -69,9 +81,9 @@ EOF
   OPENCODE_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
   mkdir -p "$OPENCODE_CONFIG_DIR"
   if ! grep -q '"type"' "$OPENCODE_CONFIG_DIR/config.json" 2>/dev/null; then
-    python3 - "$OPENCODE_CONFIG_DIR/config.json" "$MEMPALACE_BINARY_PATH" "$MEMPALACE_PALACE_PATH" <<'PYEOF'
+    python3 - "$OPENCODE_CONFIG_DIR/config.json" "$MEMPALACE_BINARY_PATH" "$MEMPALACE_PALACE_PATH" "$MEMPALACE_EMBEDDING_PROFILE" <<'PYEOF'
 import json, sys, os
-path, binary, palace = sys.argv[1], sys.argv[2], sys.argv[3]
+path, binary, palace, profile = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 cfg = {}
 if os.path.exists(path):
     with open(path) as f: cfg = json.load(f)
@@ -80,7 +92,11 @@ cfg["mcp"]["mempalace"] = {
     "type": "local",
     "enabled": True,
     "command": [binary],
-    "environment": {"MEMPALACE_PALACE_PATH": palace, "MEMPALACE_EMBED_ALLOW_DOWNLOADS": "1"}
+    "environment": {
+        "MEMPALACE_PALACE_PATH": palace,
+        "MEMPALACE_EMBEDDING_PROFILE": profile,
+        "MEMPALACE_EMBED_ALLOW_DOWNLOADS": "1"
+    }
 }
 with open(path, "w") as f: json.dump(cfg, f, indent=2)
 PYEOF

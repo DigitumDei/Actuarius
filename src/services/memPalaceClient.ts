@@ -105,7 +105,8 @@ export class MemPalaceClient {
   public constructor(
     private readonly binaryPath: string,
     private readonly palacePath: string,
-    private readonly logger: Logger
+    private readonly logger: Logger,
+    private readonly embeddingProfile: string = "low_cpu"
   ) {}
 
   public async start(): Promise<void> {
@@ -117,6 +118,7 @@ export class MemPalaceClient {
       env: {
         ...process.env,
         MEMPALACE_PALACE_PATH: this.palacePath,
+        MEMPALACE_EMBEDDING_PROFILE: this.embeddingProfile,
         MEMPALACE_EMBED_ALLOW_DOWNLOADS: "1",
       },
       stdio: ["pipe", "pipe", "pipe"],
