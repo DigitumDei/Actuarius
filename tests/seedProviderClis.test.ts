@@ -162,6 +162,10 @@ function runEntrypointCacheRotation(skipCacheRotation: boolean): { status: numbe
   const markers = {
     npmCache: join(homeDir, ".npm", "_cacache", "marker"),
     genericCache: join(homeDir, ".cache", "marker"),
+    genericCacheSubdir: join(homeDir, ".cache", "opencode", "marker"),
+    // MemPalace's downloaded ONNX embedding model — expensive to refetch, so
+    // the rotation must leave it alone even on a normal boot.
+    mempalaceModel: join(homeDir, ".cache", "mempalace", "embeddings", "model.onnx"),
     cargoCache: join(homeDir, ".cargo", "registry", "cache", "marker"),
     opencodeDb: join(homeDir, ".local", "share", "opencode", "opencode.db"),
     codexTmp: join(homeDir, ".codex", "tmp", "marker"),
@@ -256,13 +260,15 @@ describe("seed-provider-clis.sh", () => {
     );
   });
 
-  it.skipIf(process.platform === "win32")("wipes caches on a normal boot", () => {
+  it.skipIf(process.platform === "win32")("wipes caches on a normal boot but keeps the MemPalace model", () => {
     const result = runEntrypointCacheRotation(false);
 
     expect(result.status).toBe(0);
     expect(result.markers).toEqual({
       npmCache: false,
       genericCache: false,
+      genericCacheSubdir: false,
+      mempalaceModel: true,
       cargoCache: false,
       opencodeDb: false,
       codexTmp: false,
@@ -276,6 +282,8 @@ describe("seed-provider-clis.sh", () => {
     expect(result.markers).toEqual({
       npmCache: true,
       genericCache: true,
+      genericCacheSubdir: true,
+      mempalaceModel: true,
       cargoCache: true,
       opencodeDb: true,
       codexTmp: true,

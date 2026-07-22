@@ -48,11 +48,14 @@ Two gotchas:
 
 **Fix (reclaim, run inside the container):** all of these regenerate or are re-`/install`able:
 ```bash
-rm -rf ~/.npm/_cacache ~/.gradle/caches ~/.cargo/registry ~/.cache   # caches
+rm -rf ~/.npm/_cacache ~/.gradle/caches ~/.cargo/registry             # caches
+find ~/.cache -mindepth 1 -maxdepth 1 ! -name mempalace -exec rm -rf {} +  # keep the embedding model
 rm -rf ~/.rustup ~/.cargo                                              # Rust toolchain
 rm -rf /data/tool-installs/*/*/{java-temurin,android-sdk}             # JVM/Android toolchains (all repos)
 ```
-Do NOT delete `.npm-global` (the provider CLIs) or auth files (`.codex/auth.json`, `.local/share/opencode/auth.json`, `.gemini` creds).
+Do NOT delete `.npm-global` (the provider CLIs), auth files (`.codex/auth.json`, `.local/share/opencode/auth.json`, `.gemini` creds), or `~/.cache/mempalace`.
+
+**`~/.cache/mempalace` is not a disposable cache.** MemPalace stores its downloaded ONNX embedding model there (~86 MB), derived from `XDG_CACHE_HOME` — the binary exposes no path override (only `MEMPALACE_EMBED_ALLOW_DOWNLOADS`, `MEMPALACE_EMBEDDING_PROFILE`, `MEMPALACE_STUB_EMBEDDINGS`). A blanket `rm -rf ~/.cache` in `docker/entrypoint.sh` was deleting it on every container start, costing an ~86 MB refetch and a slow first search each boot while reclaiming only ~8 MB of genuinely disposable cache. The entrypoint now prunes `~/.cache` entry-by-entry (`prune_cache_dir`) with `mempalace` preserved.
 
 **Rule:** When `/data` approaches full, reclaim caches + unused per-repo toolchains first. The durable fix is a larger disk — follow the snapshot-first resize procedure (confirm `prevent_destroy`, snapshot `actuarius-data`, bump `size` in `infra/compute.tf`, `terraform apply`, then `resize2fs`); a botched resize previously caused full data loss.
 
