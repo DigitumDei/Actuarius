@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import pino from "pino";
 import { AppDatabase } from "../src/db/database.js";
 import { InstallService } from "../src/services/installService.js";
@@ -86,6 +86,14 @@ describe("InstallService", () => {
       db,
       () => true
     );
+  });
+
+  afterEach(() => {
+    // beforeEach mkdtemps a fresh pair per test, and runInstall writes real
+    // files into the install root, so without this the suite leaves ~40
+    // orphaned temp trees behind on every run.
+    rmSync(reposRootPath, { recursive: true, force: true });
+    rmSync(installsRootPath, { recursive: true, force: true });
   });
 
   function writeRepoFile(relativePath: string, content: string): void {
