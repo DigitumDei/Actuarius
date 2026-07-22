@@ -126,6 +126,10 @@ function runEntrypointWithFailingSeed(): { status: number | null; stdout: string
       XDG_DATA_HOME: xdgDataHome,
       XDG_STATE_HOME: xdgStateHome,
       NPM_CONFIG_PREFIX: npmPrefixDir,
+      // Without this the entrypoint's `mkdir -p` falls back to /data, which a
+      // non-root CI runner cannot create — `set -eu` then aborts at line 9,
+      // long before anything under test runs.
+      MEMPALACE_PALACE_PATH: join(tempDir, "palace"),
       PATH: `${binDir}:${process.env.PATH ?? ""}`,
     },
     encoding: "utf8",
@@ -191,6 +195,8 @@ function runEntrypointCacheRotation(skipCacheRotation: boolean): { status: numbe
       XDG_DATA_HOME: xdgDataHome,
       XDG_STATE_HOME: xdgStateHome,
       NPM_CONFIG_PREFIX: npmPrefixDir,
+      // See runEntrypointWithFailingSeed: keeps the entrypoint off /data.
+      MEMPALACE_PALACE_PATH: join(tempDir, "palace"),
       PATH: `${binDir}:${process.env.PATH ?? ""}`,
       ...(skipCacheRotation ? { SKIP_CACHE_ROTATION: "true" } : {}),
     },
