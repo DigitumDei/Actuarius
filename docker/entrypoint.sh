@@ -123,7 +123,10 @@ prune_cache_dir() {
   cache_dir="$1"
   shift
   [ -d "$cache_dir" ] || return 0
-  for entry in "$cache_dir"/* "$cache_dir"/.[!.]*; do
+  # Three patterns, because a cache dir must be enumerated exhaustively for the
+  # catch-all to hold: /* skips dotfiles, /.[!.]* catches ".npm" but not "..foo",
+  # and /..?* catches those. None of them match "." or ".." themselves.
+  for entry in "$cache_dir"/* "$cache_dir"/.[!.]* "$cache_dir"/..?*; do
     [ -e "$entry" ] || continue
     entry_name="${entry##*/}"
     keep_entry=false
