@@ -119,22 +119,47 @@ describe("spawnCollect — stderr trimming", () => {
     expect(error).toMatchObject({ code: "ETIMEDOUT", timeoutReason: "idle" });
   });
 
+  // The two timing tests below race a real child process against real timers,
+  // so their durations are chosen as ratios rather than tight absolute values.
+  // spawnCollect arms both timers at spawn() time, but the child's first byte
+  // only arrives after Node's cold start — under a parallel `npm test` run that
+  // startup, and any single interval tick, can be stretched by scheduler load.
+  // Each duration below therefore has a stated safety factor; keep them if you
+  // retune. Total wall-clock cost is ~2s per test, which is the price of not
+  // being flaky.
+  const WRITE_INTERVAL_MS = 50;
+
   it("resets the inactivity timeout when either output stream produces data", async () => {
+    // The child writes 40 times at 50ms => ~2000ms of activity, well past the
+    // 900ms idle budget: if the idle timer did NOT reset on output it would fire
+    // at 900ms and this would reject instead of resolving. 900ms also gives 18x
+    // headroom over the write cadence and ~900ms of slack for Node's startup.
+    const writes = 40;
+    const idleTimeoutMs = 900;
+
     const result = await spawnCollect(
       node,
-      ["-e", "let count = 0; const timer = setInterval(() => { (count++ % 2 ? process.stderr : process.stdout).write('x'); if (count === 6) { clearInterval(timer); } }, 50);"],
-      { cwd, timeoutMs: 1_000, idleTimeoutMs: 120, maxBuffer: 1024 },
+      [
+        "-e",
+        `let count = 0; const timer = setInterval(() => { (count++ % 2 ? process.stderr : process.stdout).write('x'); if (count === ${writes}) { clearInterval(timer); } }, ${WRITE_INTERVAL_MS});`,
+      ],
+      { cwd, timeoutMs: 30_000, idleTimeoutMs, maxBuffer: 1024 },
     );
 
-    expect(result.stdout).toBe("xxx");
-    expect(result.stderr).toBe("xxx");
+    // Writes alternate stdout/stderr starting with stdout, so each gets half.
+    expect(result.stdout).toBe("x".repeat(writes / 2));
+    expect(result.stderr).toBe("x".repeat(writes / 2));
   });
 
   it("still enforces the absolute timeout while a process keeps producing output", async () => {
+    // The child never stops writing, so only a timeout can end it. The idle
+    // budget (1000ms, 20x the write cadence) must lose the race to the absolute
+    // budget (2000ms) — that is what `timeoutReason: "absolute"` proves. It also
+    // leaves ~1000ms for Node's startup before the first write lands.
     const error = await spawnCollect(
       node,
-      ["-e", "setInterval(() => process.stdout.write('x'), 20);"],
-      { cwd, timeoutMs: 180, idleTimeoutMs: 100, maxBuffer: 1024 },
+      ["-e", `setInterval(() => process.stdout.write('x'), ${WRITE_INTERVAL_MS});`],
+      { cwd, timeoutMs: 2_000, idleTimeoutMs: 1_000, maxBuffer: 1024 * 1024 },
     ).catch((reason: unknown) => reason);
 
     expect(error).toMatchObject({ code: "ETIMEDOUT", timeoutReason: "absolute" });
