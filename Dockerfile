@@ -63,6 +63,7 @@ ENV APT_INSTALL_HELPER_PATH=/usr/local/bin/actuarius-apt-install
 COPY --from=deps /app/package.json ./package.json
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY config/opencode-plan-oc /app/config/opencode-plan-oc
 COPY docker/entrypoint.sh /app/entrypoint.sh
 COPY docker/install-llm-user-instructions.sh /app/install-llm-user-instructions.sh
 COPY docker/seed-provider-clis.sh /app/seed-provider-clis.sh

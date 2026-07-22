@@ -75,6 +75,25 @@ All timeout defaults live together in [`TIMEOUT_DEFAULTS_MS`](src/config.ts) and
 
 Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global`, with `docker/entrypoint.sh` seeding them on first boot if missing. That keeps provider authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. For OpenCode, use `/auth-openai-opencode` to connect a ChatGPT Pro/Plus subscription with OpenAI's device flow, `/opencode-auth` to store per-provider API keys in `auth.json`, or set provider API keys such as `DEEPSEEK_API_KEY` in the environment. `/opencode-auth` supports DeepSeek, OpenAI, Anthropic, Google, xAI, Groq, OpenRouter, and Together.
 
+### Experimental OpenCode-native planning
+
+`/plan-oc prompt:<text>` is a playground workflow that runs alongside the existing
+`/plan` command. It starts one OpenCode CLI session with a read-only primary planner;
+the planner creates the implementation plan and delegates the edits and validation to
+the managed implementation subagent in that same session. The established `/plan`
+workflow and its model settings are unchanged.
+
+Use `/model-select-oc role:<planner|implementer> model:<provider/model>` to set an
+agent's explicit OpenCode model, or pass `clear:true` instead of `model` to remove the
+override and let OpenCode resolve its normal default or inheritance. This command
+requires Manage Server permission. The managed Markdown agent files persist at
+`/data/home/appuser/.config/actuarius-opencode/agents`; versioned templates seed files
+that do not yet exist, without overwriting later manual edits. Each `/plan-oc` request
+uses a snapshot of those files, so a model change affects subsequent requests rather
+than a workflow already in progress. The implementation subagent has shell access in
+the request worktree; its no-commit/no-push rules are behavioral guardrails rather
+than an OS sandbox, so the private-server trust boundary described below still applies.
+
 Managed tool installs are validated against the filesystem before Actuarius adds
 their binaries or environment values to provider processes. Use `/uninstall`
 (requires Manage Server) to invalidate a repo- or request-scoped install and
