@@ -133,6 +133,12 @@ const envSchema = z.object({
   MEMPALACE_PALACE_PATH: z.string().default("/data/mempalace/palace"),
   MEMPALACE_BINARY_PATH: z.string().default("/usr/local/bin/mempalace-mcp"),
   MEMPALACE_CLI_PATH: z.string().default("/usr/local/bin/mempalace-cli"),
+  // The bot runs on a 1GB e2-micro. MemPalace's own default is `balanced`, which
+  // uses the fp32 model and leaves every runtime guardrail unbounded
+  // (ingest batch size, queue depth, worker threads). `low_cpu` uses the
+  // quantized model and bounded batches, and is the only profile with a
+  // declared RSS budget.
+  MEMPALACE_EMBEDDING_PROFILE: z.enum(["balanced", "low_cpu"]).default("low_cpu"),
   MEMPALACE_REMOTE_ENABLED: z.string().default("false").transform((value) => value === "true"),
   MEMPALACE_REMOTE_PALACE_PATH: z.string().default("/data/mempalace/remote-palace"),
   MEMPALACE_REMOTE_BIND: z.string().default("127.0.0.1:8765"),
@@ -229,6 +235,7 @@ export const appConfig = {
   mempalacePalacePath: rawConfig.MEMPALACE_PALACE_PATH,
   mempalaceBinaryPath: rawConfig.MEMPALACE_BINARY_PATH,
   mempalaceCliPath: rawConfig.MEMPALACE_CLI_PATH,
+  mempalaceEmbeddingProfile: rawConfig.MEMPALACE_EMBEDDING_PROFILE,
   mempalaceRemoteEnabled: rawConfig.MEMPALACE_REMOTE_ENABLED,
   mempalaceRemotePalacePath: rawConfig.MEMPALACE_REMOTE_PALACE_PATH,
   mempalaceRemoteBind: rawConfig.MEMPALACE_REMOTE_BIND,

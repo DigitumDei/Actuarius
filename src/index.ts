@@ -61,7 +61,12 @@ async function main(): Promise<void> {
   let memPalace: MemPalaceClient | null = null;
   if (appConfig.mempalaceEnabled) {
     await ensurePalaceIdentity(logger);
-    memPalace = new MemPalaceClient(appConfig.mempalaceBinaryPath, appConfig.mempalacePalacePath, logger);
+    memPalace = new MemPalaceClient(
+      appConfig.mempalaceBinaryPath,
+      appConfig.mempalacePalacePath,
+      logger,
+      appConfig.mempalaceEmbeddingProfile
+    );
     try {
       await memPalace.start();
     } catch (err) {

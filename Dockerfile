@@ -51,6 +51,7 @@ RUN curl -fsSL \
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/data/app.db
 ENV MEMPALACE_PALACE_PATH=/data/mempalace/palace
+ENV MEMPALACE_EMBEDDING_PROFILE=low_cpu
 ENV HOME=/data/home/appuser
 ENV NPM_CONFIG_PREFIX=/data/home/appuser/.npm-global
 ENV PATH=/data/home/appuser/.npm-global/bin:$PATH
@@ -63,6 +64,7 @@ ENV APT_INSTALL_HELPER_PATH=/usr/local/bin/actuarius-apt-install
 COPY --from=deps /app/package.json ./package.json
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY config/opencode-plan-oc /app/config/opencode-plan-oc
 COPY docker/entrypoint.sh /app/entrypoint.sh
 COPY docker/install-llm-user-instructions.sh /app/install-llm-user-instructions.sh
 COPY docker/seed-provider-clis.sh /app/seed-provider-clis.sh

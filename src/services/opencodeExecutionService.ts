@@ -30,10 +30,25 @@ export interface OpencodeExecutionInput {
   role?: OpencodeExecutionRole;
 }
 
+export interface OpencodeAgentExecutionInput {
+  prompt: string;
+  cwd: string;
+  timeoutMs: number;
+  env?: NodeJS.ProcessEnv;
+  agent: string;
+  requiredSubagent?: string;
+}
+
 export type OpencodeExecutionRole = "implementation" | "planner" | "verification";
 
 export interface OpencodeExecutionResult {
   text: string;
+}
+
+export interface ParsedOpencodeJsonEvents {
+  text: string;
+  completedSubagents: string[];
+  diagnostics: string[];
 }
 
 export class OpencodeExecutionError extends Error {
@@ -162,9 +177,7 @@ export async function hasOpencodeAuth(): Promise<boolean> {
 }
 
 export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: Logger): Promise<OpencodeExecutionResult> {
-  if (!(await hasOpencodeAuth()) && !(input.env?.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY)?.trim()) {
-    throw new OpencodeExecutionError("NOT_AUTHENTICATED", "Opencode requires an API key. Use `/opencode-auth` to configure keys, or set `DEEPSEEK_API_KEY` on the instance.");
-  }
+  await assertOpencodeAuthenticated(input.env);
 
   const role = input.role ?? "implementation";
   const agent = role === "implementation" ? "build" : `actuarius-${role}`;
@@ -173,8 +186,113 @@ export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: 
     ? input
     : { ...input, env: buildRestrictedRoleEnvironment(input.env, role) };
 
-  const text = await runProviderRequest(
+  return { text: await runOpencodeCommand(request, extraArgs, logger) };
+}
+
+export async function runOpencodeAgentRequest(
+  input: OpencodeAgentExecutionInput,
+  logger: Logger
+): Promise<OpencodeExecutionResult> {
+  await assertOpencodeAuthenticated(input.env);
+  if (!/^[a-z0-9][a-z0-9_-]*$/u.test(input.agent)) {
+    throw new OpencodeExecutionError("FAILED", `Invalid managed OpenCode agent name: ${input.agent}`);
+  }
+
+  const { agent, requiredSubagent, ...request } = input;
+  const rawOutput = await runOpencodeCommand(
     request,
+    ["--agent", agent, "--format", "json"],
+    logger
+  );
+  const parsed = parseOpencodeJsonEvents(rawOutput);
+
+  if (parsed.diagnostics.length > 0) {
+    throw new OpencodeExecutionError(
+      "FAILED",
+      `OpenCode emitted non-JSON diagnostic output, so the managed primary agent selection could not be verified: ${parsed.diagnostics[0]}`
+    );
+  }
+
+  const completedRequiredTasks = requiredSubagent
+    ? parsed.completedSubagents.filter((subagent) => subagent === requiredSubagent).length
+    : 0;
+  if (requiredSubagent && completedRequiredTasks !== 1) {
+    throw new OpencodeExecutionError(
+      "FAILED",
+      completedRequiredTasks === 0
+        ? `OpenCode primary agent did not complete the required \`${requiredSubagent}\` subagent task.`
+        : `OpenCode primary agent completed the required \`${requiredSubagent}\` subagent task ${completedRequiredTasks} times; exactly one task is required.`
+    );
+  }
+  if (!parsed.text) {
+    throw new OpencodeExecutionError("EMPTY_OUTPUT", "OpenCode primary agent returned no final text output.");
+  }
+
+  return { text: parsed.text };
+}
+
+export function parseOpencodeJsonEvents(output: string): ParsedOpencodeJsonEvents {
+  const textParts: string[] = [];
+  const completedSubagents: string[] = [];
+  const completedTaskKeys = new Set<string>();
+  const diagnostics: string[] = [];
+
+  for (const [lineIndex, line] of output.split(/\r?\n/u).entries()) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    let event: unknown;
+    try {
+      event = JSON.parse(trimmed) as unknown;
+    } catch {
+      diagnostics.push(stripVTControlCharacters(trimmed).slice(0, 500));
+      continue;
+    }
+    if (!isRecord(event)) continue;
+
+    const part = isRecord(event.part) ? event.part : null;
+    if (event.type === "text" && part && typeof part.text === "string" && part.text.trim()) {
+      textParts.push(part.text.trim());
+      continue;
+    }
+
+    if (event.type !== "tool_use" || !part || part.tool !== "task") continue;
+    const state = isRecord(part.state) ? part.state : null;
+    const taskInput = state && isRecord(state.input) ? state.input : null;
+    if (state?.status === "completed" && taskInput && typeof taskInput.subagent_type === "string") {
+      const taskId = typeof part.id === "string" ? part.id : `line-${lineIndex}`;
+      const taskKey = `${taskInput.subagent_type}\u0000${taskId}`;
+      if (!completedTaskKeys.has(taskKey)) {
+        completedTaskKeys.add(taskKey);
+        completedSubagents.push(taskInput.subagent_type);
+      }
+    }
+  }
+
+  return {
+    text: textParts.join("\n\n").trim(),
+    completedSubagents,
+    diagnostics
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function assertOpencodeAuthenticated(env: NodeJS.ProcessEnv | undefined): Promise<void> {
+  if (!(await hasOpencodeAuth()) && !(env?.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY)?.trim()) {
+    throw new OpencodeExecutionError("NOT_AUTHENTICATED", "Opencode requires an API key. Use `/opencode-auth` to configure keys, or set `DEEPSEEK_API_KEY` on the instance.");
+  }
+}
+
+async function runOpencodeCommand(
+  input: OpencodeExecutionInput,
+  extraArgs: string[],
+  logger: Logger
+): Promise<string> {
+  return runProviderRequest(
+    input,
     {
       binary: "opencode",
       prefixArgs: ["run"],
@@ -217,7 +335,6 @@ export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: 
     },
     logger
   );
-  return { text };
 }
 
 // Role restriction is enforced only for the OpenCode provider; other providers

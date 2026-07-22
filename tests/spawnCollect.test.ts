@@ -119,33 +119,56 @@ describe("spawnCollect — stderr trimming", () => {
     expect(error).toMatchObject({ code: "ETIMEDOUT", timeoutReason: "idle" });
   });
 
-  // The child writes every 20ms for ~400ms total, so the run outlasts the 300ms
-  // idle timeout — it can only survive if each write resets that timer. The gap
-  // between write interval and idle timeout is 15x so a loaded machine cannot
-  // stall long enough to trip the idle kill spuriously.
+  // The two timing tests below race a real child process against real timers,
+  // so their durations are chosen as ratios rather than tight absolute values.
+  // spawnCollect arms both timers at spawn() time, but the child's first byte
+  // only arrives after Node's cold start — under a parallel `npm test` run that
+  // startup, and any single interval tick, can be stretched by scheduler load.
+  // Each duration below therefore has a stated safety factor; keep them if you
+  // retune. Total wall-clock cost is ~2s per test, which is the price of not
+  // being flaky.
+  //
+  // Both also pass an explicit per-test timeout that sits ABOVE the spawnCollect
+  // budget they exercise. vitest's default is 5000ms, which these would approach
+  // under load — and a generic "Test timed out in 5000ms" would preempt the
+  // ETIMEDOUT assertion, reintroducing the exact flake this file is fixing.
+  const WRITE_INTERVAL_MS = 50;
+
   it("resets the inactivity timeout when either output stream produces data", async () => {
+    // The child writes 40 times at 50ms => ~2000ms of activity, well past the
+    // 900ms idle budget: if the idle timer did NOT reset on output it would fire
+    // at 900ms and this would reject instead of resolving. 900ms also gives 18x
+    // headroom over the write cadence and ~900ms of slack for Node's startup.
+    const writes = 40;
+    const idleTimeoutMs = 900;
+
     const result = await spawnCollect(
       node,
-      ["-e", "let count = 0; const timer = setInterval(() => { (count++ % 2 ? process.stderr : process.stdout).write('x'); if (count === 20) { clearInterval(timer); } }, 20);"],
-      { cwd, timeoutMs: 10_000, idleTimeoutMs: 300, maxBuffer: 1024 },
+      [
+        "-e",
+        `let count = 0; const timer = setInterval(() => { (count++ % 2 ? process.stderr : process.stdout).write('x'); if (count === ${writes}) { clearInterval(timer); } }, ${WRITE_INTERVAL_MS});`,
+      ],
+      { cwd, timeoutMs: 30_000, idleTimeoutMs, maxBuffer: 1024 },
     );
 
-    expect(result.stdout).toBe("x".repeat(10));
-    expect(result.stderr).toBe("x".repeat(10));
-  });
+    // Writes alternate stdout/stderr starting with stdout, so each gets half.
+    expect(result.stdout).toBe("x".repeat(writes / 2));
+    expect(result.stderr).toBe("x".repeat(writes / 2));
+  }, 35_000); // above the 30s spawnCollect absolute budget above
 
-  // idleTimeoutMs deliberately exceeds timeoutMs: the idle timer then cannot
-  // fire first no matter how badly the machine is loaded, so "absolute" is the
-  // only reachable reason and the assertion is load-independent.
   it("still enforces the absolute timeout while a process keeps producing output", async () => {
+    // The child never stops writing, so only a timeout can end it. The idle
+    // budget (1000ms, 20x the write cadence) must lose the race to the absolute
+    // budget (2000ms) — that is what `timeoutReason: "absolute"` proves. It also
+    // leaves ~1000ms for Node's startup before the first write lands.
     const error = await spawnCollect(
       node,
-      ["-e", "setInterval(() => process.stdout.write('x'), 20);"],
-      { cwd, timeoutMs: 300, idleTimeoutMs: 5_000, maxBuffer: 1024 },
+      ["-e", `setInterval(() => process.stdout.write('x'), ${WRITE_INTERVAL_MS});`],
+      { cwd, timeoutMs: 2_000, idleTimeoutMs: 1_000, maxBuffer: 1024 * 1024 },
     ).catch((reason: unknown) => reason);
 
     expect(error).toMatchObject({ code: "ETIMEDOUT", timeoutReason: "absolute" });
-  });
+  }, 15_000); // above the 2s spawnCollect absolute budget above
 
   it.each(["stdout", "stderr"] as const)(
     "rejects and terminates the child when an onOutput callback throws from %s",

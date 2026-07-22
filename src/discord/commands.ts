@@ -1,4 +1,4 @@
-import { REST, Routes, SlashCommandBuilder } from "discord.js";
+import { PermissionFlagsBits, REST, Routes, SlashCommandBuilder } from "discord.js";
 import type { AppConfig } from "../config.js";
 import type pino from "pino";
 import { INSTALLER_PACKAGE_CHOICES } from "../services/installerRegistry.js";
@@ -75,6 +75,15 @@ export const commandBuilders = [
     .addStringOption((option) => option.setName("prompt").setDescription("Request text for the plan-and-implement thread.").setRequired(true))
     .addBooleanOption((option) =>
       option.setName("iterative").setDescription("Iterative per-task implementation and verification. Defaults true; set false for single-shot.").setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName("plan-oc")
+    .setDescription("Plan and implement with managed OpenCode agents in one CLI session.")
+    .addStringOption((option) =>
+      option
+        .setName("prompt")
+        .setDescription("Request text for the OpenCode-native plan-and-implement thread.")
+        .setRequired(true)
     ),
   new SlashCommandBuilder()
     .setName("install")
@@ -178,6 +187,33 @@ export const commandBuilders = [
       option
         .setName("clear")
         .setDescription("Clear a reviewer slot or reviewer role override instead of setting it.")
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName("model-select-oc")
+    .setDescription("Set a managed OpenCode agent model. Requires Manage Server permission.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addStringOption((option) =>
+      option
+        .setName("role")
+        .setDescription("Managed OpenCode agent to configure.")
+        .setRequired(true)
+        .addChoices(
+          { name: "Planner", value: "planner" },
+          { name: "Implementer", value: "implementer" }
+        )
+    )
+    .addStringOption((option) =>
+      option
+        .setName("model")
+        .setDescription("OpenCode model in provider/model format. Omit when clearing the override.")
+        .setRequired(false)
+        .setAutocomplete(true)
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName("clear")
+        .setDescription("Remove the selected agent's explicit model override.")
         .setRequired(false)
     ),
   new SlashCommandBuilder()
@@ -312,11 +348,13 @@ export type CommandName =
   | "issues"
   | "ask"
   | "plan"
+  | "plan-oc"
   | "install"
   | "uninstall"
   | "bug"
   | "issue"
   | "model-select"
+  | "model-select-oc"
   | "model-current"
   | "review-rounds"
   | "codex-auth"

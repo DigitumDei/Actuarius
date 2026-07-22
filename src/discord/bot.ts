@@ -67,7 +67,15 @@ import {
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
 import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
 import { GeminiExecutionError, runGeminiRequest } from "../services/geminiExecutionService.js";
-import { authenticateOpenAIOpencode, OpencodeExecutionError, runOpencodeRequest, hasOpencodeAuth, OPENCODE_AUTH_PATH, ALLOWED_OPENCODE_PROVIDERS } from "../services/opencodeExecutionService.js";
+import { authenticateOpenAIOpencode, OpencodeExecutionError, runOpencodeAgentRequest, runOpencodeRequest, hasOpencodeAuth, OPENCODE_AUTH_PATH, ALLOWED_OPENCODE_PROVIDERS } from "../services/opencodeExecutionService.js";
+import {
+  createOpencodePlanAgentSnapshot,
+  OPENCODE_IMPLEMENT_OC_AGENT,
+  OPENCODE_PLAN_OC_AGENT,
+  OpencodePlanAgentConfigError,
+  setOpencodePlanAgentModel,
+  type OpencodePlanOcRole
+} from "../services/opencodePlanAgentService.js";
 import { RequestExecutionQueue } from "../services/requestExecutionQueue.js";
 import { InstallService, InstallServiceError } from "../services/installService.js";
 import { buildAptPackageId, getAptPackageSpec, isAptPackageId } from "../services/installerRegistry.js";
@@ -90,6 +98,7 @@ import {
 import {
   buildIssueCreationPrompt,
   buildIssueSummaryPrompt,
+  buildOpencodePlanWorkflowPrompt,
   buildPlanImplementationPrompt,
   buildPlanPrompt,
   buildRepositoryScopedPrompt,
@@ -847,6 +856,9 @@ export class ActuariusBot {
       case "plan":
         await this.handlePlan(interaction);
         return;
+      case "plan-oc":
+        await this.handlePlanOc(interaction);
+        return;
       case "install":
         await this.handleInstall(interaction);
         return;
@@ -861,6 +873,9 @@ export class ActuariusBot {
         return;
       case "model-select":
         await this.handleModelSelect(interaction);
+        return;
+      case "model-select-oc":
+        await this.handleModelSelectOc(interaction);
         return;
       case "model-current":
         await this.handleModelCurrent(interaction);
@@ -1411,12 +1426,23 @@ export class ActuariusBot {
   }
 
   private async handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
-    if (interaction.commandName !== "model-select") {
+    if (interaction.commandName !== "model-select" && interaction.commandName !== "model-select-oc") {
       return;
     }
 
     const focused = interaction.options.getFocused(true);
     if (focused.name !== "model") {
+      return;
+    }
+
+    if (interaction.commandName === "model-select-oc") {
+      const history = this.db.getModelHistory("opencode");
+      const candidates = [...new Set([...history, ...(KNOWN_MODELS_BY_PROVIDER.opencode ?? [])])];
+      const typed = focused.value.toLowerCase();
+      const filtered = typed
+        ? candidates.filter((model) => model.toLowerCase().includes(typed))
+        : candidates;
+      await interaction.respond(filtered.slice(0, 10).map((model) => ({ name: model, value: model })));
       return;
     }
 
@@ -1623,6 +1649,74 @@ export class ActuariusBot {
       content: `${roleDisplay} set to **${AI_PROVIDER_LABELS[provider]}** with ${modelDisplay}. This applies to ${affectedCommands}.`,
       ephemeral: true
     });
+  }
+
+  private async handleModelSelectOc(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to change the OpenCode-native agent models.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const rawRole = interaction.options.getString("role", true);
+    if (rawRole !== "planner" && rawRole !== "implementer") {
+      await interaction.reply({
+        content: "Invalid OpenCode-native role. Choose `planner` or `implementer`.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const role = rawRole as OpencodePlanOcRole;
+    const model = interaction.options.getString("model")?.trim() || null;
+    const clear = interaction.options.getBoolean("clear") ?? false;
+    if (clear && model) {
+      await interaction.reply({
+        content: "Choose either a `model` or `clear:true`, not both.",
+        ephemeral: true
+      });
+      return;
+    }
+    if (!clear && !model) {
+      await interaction.reply({
+        content: "Provide a full OpenCode model ID in `provider/model-id` format, or use `clear:true`.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    try {
+      const state = await setOpencodePlanAgentModel(role, clear ? null : model);
+      this.db.upsertGuild(interaction.guild.id, interaction.guild.name);
+      if (model) {
+        this.db.addModelToHistory("opencode", model);
+      }
+
+      const plannerModel = state.models.planner ? `\`${state.models.planner}\`` : "OpenCode default";
+      const implementerModel = state.models.implementer ? `\`${state.models.implementer}\`` : "inherit planner";
+      const action = clear ? `Cleared the **${role}** model override.` : `Set the **${role}** model to \`${model}\`.`;
+      await interaction.reply({
+        content: `${action} Planner: ${plannerModel}; implementer: ${implementerModel}. This instance-wide setting applies to future \`/plan-oc\` requests.`,
+        ephemeral: true
+      });
+    } catch (error) {
+      if (error instanceof OpencodePlanAgentConfigError) {
+        await interaction.reply({ content: error.message, ephemeral: true });
+        return;
+      }
+      this.logger.error({ error, role }, "Failed to update OpenCode-native agent model");
+      await interaction.reply({
+        content: "Failed to update the OpenCode-native agent file due to an unexpected error.",
+        ephemeral: true
+      });
+    }
   }
 
   private async getProviderUnavailableMessage(provider: AiProvider): Promise<string | null> {
@@ -2743,6 +2837,109 @@ export class ActuariusBot {
     await interaction.editReply(
       `Created plan thread <#${thread.id}>. Planner: ${AI_PROVIDER_LABELS[roles.planner.provider]}; implementer: ${AI_PROVIDER_LABELS[roles.implementer.provider]}.${iterativeSuffix}`
     );
+  }
+
+  private async handlePlanOc(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    const prompt = interaction.options.getString("prompt", true).trim();
+    if (!prompt) {
+      await interaction.reply({ content: "Prompt cannot be empty.", ephemeral: true });
+      return;
+    }
+
+    const resolvedChannelId =
+      interaction.channel && interaction.channel.isThread() ? interaction.channel.parentId : interaction.channelId;
+    if (!resolvedChannelId) {
+      await interaction.reply({ content: "Could not resolve a parent channel for this thread.", ephemeral: true });
+      return;
+    }
+
+    const repo = this.db.getRepoByChannelId(interaction.guildId, resolvedChannelId);
+    if (!repo) {
+      await interaction.reply({
+        content: "This channel (or its parent thread channel) is not mapped to a repository. Run `/connect-repo` first.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    const unavailable = await this.getProviderUnavailableMessage("opencode");
+    if (unavailable) {
+      await interaction.editReply(unavailable);
+      return;
+    }
+
+    const channel = (await interaction.guild.channels.fetch(repo.channel_id)) as GuildTextBasedChannel | null;
+    if (!channel || channel.type !== ChannelType.GuildText) {
+      await interaction.editReply("Mapped repo channel is unavailable or not a text channel.");
+      return;
+    }
+
+    let agentSnapshot: Awaited<ReturnType<typeof createOpencodePlanAgentSnapshot>>;
+    try {
+      agentSnapshot = await createOpencodePlanAgentSnapshot();
+    } catch (error) {
+      this.logger.error({ error }, "Failed to snapshot OpenCode-native agent files");
+      await interaction.editReply("Could not prepare the managed OpenCode agent files for this request.");
+      return;
+    }
+
+    let snapshotEnqueued = false;
+    try {
+      const seedMessage = await channel.send({
+        content: `New OpenCode-native plan request from <@${interaction.user.id}> for \`${repo.full_name}\``
+      });
+      const thread = await seedMessage.startThread({
+        name: buildThreadName(prompt),
+        autoArchiveDuration: this.config.threadAutoArchiveMinutes,
+        reason: `OpenCode-native plan thread for ${repo.full_name} by ${interaction.user.tag}`
+      });
+      await thread.send(["Request by <@" + interaction.user.id + ">", "", "**Prompt**", prompt].join("\n"));
+
+      const request = this.db.createRequest({
+        guildId: interaction.guildId,
+        repoId: repo.id,
+        channelId: repo.channel_id,
+        threadId: thread.id,
+        userId: interaction.user.id,
+        prompt,
+        status: "queued"
+      });
+
+      this.requestQueue.enqueue(interaction.guildId, async () => {
+        await this.runPlanOcRequest({
+          requestId: request.id,
+          threadId: thread.id,
+          repoId: repo.id,
+          repo: {
+            owner: repo.owner,
+            repo: repo.repo,
+            fullName: repo.full_name
+          },
+          prompt,
+          agentSnapshot
+        });
+      }, thread.id);
+      snapshotEnqueued = true;
+
+      const plannerModel = agentSnapshot.models.planner ? `\`${agentSnapshot.models.planner}\`` : "OpenCode default";
+      const implementerModel = agentSnapshot.models.implementer ? `\`${agentSnapshot.models.implementer}\`` : "inherit planner";
+      await interaction.editReply(
+        `Created OpenCode-native plan thread <#${thread.id}>. Planner: ${plannerModel}; implementer: ${implementerModel}.`
+      );
+    } finally {
+      if (!snapshotEnqueued) {
+        await agentSnapshot.cleanup().catch((error: unknown) => {
+          this.logger.warn({ error }, "Failed to remove abandoned OpenCode-native agent snapshot");
+        });
+      }
+    }
   }
 
   private async handleIssueCreate(interaction: ChatInputCommandInteraction, type: "bug" | "issue"): Promise<void> {
@@ -4056,6 +4253,188 @@ export class ActuariusBot {
         }
       }
       this.logger.error({ error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage }, "Plan request failed");
+    }
+  }
+
+  private async runPlanOcRequest(input: {
+    requestId: number;
+    threadId: string;
+    repoId: number;
+    repo: {
+      owner: string;
+      repo: string;
+      fullName: string;
+    };
+    prompt: string;
+    agentSnapshot: Awaited<ReturnType<typeof createOpencodePlanAgentSnapshot>>;
+  }): Promise<void> {
+    const startedAt = Date.now();
+    let worktreePath: string | null = null;
+    let branchName: string | null = null;
+    let statusFinalized = false;
+    let stage = "init";
+    let threadChannel: Awaited<ReturnType<Client["channels"]["fetch"]>> | null = null;
+    const agentSnapshot = input.agentSnapshot;
+
+    const markFailed = (): void => {
+      if (statusFinalized) {
+        return;
+      }
+      this.db.updateRequestStatus(input.requestId, "failed");
+      statusFinalized = true;
+    };
+
+    const sendPreservedWorktreeNotice = async (): Promise<void> => {
+      if (!worktreePath || !branchName || !threadChannel?.isThread()) {
+        return;
+      }
+
+      try {
+        await threadChannel.send(`The request branch \`${branchName}\` remains attached. Send a follow-up message or run \`/revise\` to continue; use \`/delete\` if you want to remove it.`);
+      } catch (error) {
+        this.logger.warn(
+          { error, requestId: input.requestId, worktreePath, branchName },
+          "Failed to send preserved OpenCode-native worktree notice"
+        );
+      }
+    };
+
+    try {
+      this.db.updateRequestStatus(input.requestId, "running");
+      this.logger.info(
+        { requestId: input.requestId, threadId: input.threadId, repo: input.repo.fullName },
+        "OpenCode-native plan request started"
+      );
+
+      stage = "fetch-thread";
+      const channel = await this.client.channels.fetch(input.threadId);
+      if (!channel || !channel.isThread()) {
+        markFailed();
+        this.logger.error(
+          { requestId: input.requestId, threadId: input.threadId },
+          "OpenCode-native plan request thread no longer available"
+        );
+        return;
+      }
+      threadChannel = channel;
+
+      stage = "sync-repo";
+      const checkout = await ensureRepoCheckedOutToMaster(this.config.reposRootPath, {
+        owner: input.repo.owner,
+        repo: input.repo.repo,
+        fullName: input.repo.fullName
+      });
+      await this.prepareRepositoryMemory(input.repo, checkout.localPath, { queueMine: true });
+
+      stage = "create-worktree";
+      const worktree = await createRequestWorktree(this.config.reposRootPath, {
+        owner: input.repo.owner,
+        repo: input.repo.repo,
+        fullName: input.repo.fullName
+      }, input.requestId);
+      worktreePath = worktree.path;
+      branchName = worktree.branchName;
+      await this.prepareWorktreeMemoryConfig(input.repo, worktreePath);
+      this.db.updateRequestWorkspace(input.requestId, worktreePath, branchName);
+
+      const executionEnvironment = this.installService.buildMinimalExecutionEnvironment({
+        repoId: input.repoId,
+        threadId: input.threadId
+      });
+
+      const env: NodeJS.ProcessEnv = {
+        ...executionEnvironment.env,
+        OPENCODE_CONFIG_DIR: agentSnapshot.configDir
+      };
+      delete env.OPENCODE_CONFIG_CONTENT;
+
+      stage = "plan-and-implement";
+      const plannerModel = agentSnapshot.models.planner ?? "OpenCode default";
+      const implementerModel = agentSnapshot.models.implementer ?? "inherit planner";
+      await threadChannel.send(
+        `OpenCode-native planning and implementation started in one CLI session. Planner: \`${plannerModel}\`; implementer: \`${implementerModel}\`.`
+      );
+
+      const result = await runOpencodeAgentRequest({
+        prompt: buildOpencodePlanWorkflowPrompt({
+          repoFullName: input.repo.fullName,
+          requestPrompt: input.prompt,
+          implementerAgent: OPENCODE_IMPLEMENT_OC_AGENT
+        }),
+        cwd: worktreePath,
+        timeoutMs: this.config.askExecutionTimeoutMs,
+        env,
+        agent: OPENCODE_PLAN_OC_AGENT,
+        requiredSubagent: OPENCODE_IMPLEMENT_OC_AGENT
+      }, this.logger);
+
+      for (const chunk of splitPlainTextForDiscord(
+        result.text,
+        "**OpenCode-native plan and implementation completed**"
+      )) {
+        await threadChannel.send(chunk);
+      }
+
+      this.db.updateRequestStatus(input.requestId, "succeeded");
+      statusFinalized = true;
+      await threadChannel.send(
+        "OpenCode-native plan implementation complete. Run `/review` to review the working tree. Commit any remaining changes before `/pr`, then run `/review` again once the committed branch is ready."
+      );
+      this.logger.info(
+        { requestId: input.requestId, durationMs: Date.now() - startedAt },
+        "OpenCode-native plan request succeeded"
+      );
+
+      if (this.memPalace) {
+        const drawerContent = [
+          `# OpenCode-native plan request #${input.requestId}: ${input.prompt}`,
+          "",
+          `Repo: ${input.repo.fullName}`,
+          `Planner agent: ${OPENCODE_PLAN_OC_AGENT} (${plannerModel})`,
+          `Implementer agent: ${OPENCODE_IMPLEMENT_OC_AGENT} (${implementerModel})`,
+          `Duration: ${Date.now() - startedAt}ms`,
+          "",
+          "## Agent Output",
+          "",
+          result.text
+        ].join("\n");
+        this.memPalace.addDrawer(drawerContent, BOT_MEMORY_WING, "requests").catch((error: unknown) => {
+          this.logger.warn({ error, requestId: input.requestId }, "MemPalace addDrawer failed");
+        });
+      }
+    } catch (error) {
+      markFailed();
+      const message = this.describeExecutionError(error);
+      if (threadChannel?.isThread()) {
+        if (isProviderTimeout(error)) {
+          const timeoutReport = await buildTimeoutReportInner(
+            error,
+            worktreePath,
+            branchName,
+            "OpenCode-native plan",
+            this.logger
+          );
+          for (const chunk of splitPlainTextForDiscord(
+            timeoutReport,
+            `**OpenCode-native plan request timed out during ${stage}**`
+          )) {
+            await threadChannel.send({ content: chunk, allowedMentions: { parse: [] } });
+          }
+        } else {
+          await threadChannel.send(
+            `**OpenCode-native plan request failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 80)}`
+          );
+        }
+        await sendPreservedWorktreeNotice();
+      }
+      this.logger.error(
+        { error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage },
+        "OpenCode-native plan request failed"
+      );
+    } finally {
+      await agentSnapshot.cleanup().catch((error: unknown) => {
+        this.logger.warn({ error, requestId: input.requestId }, "Failed to remove OpenCode-native agent snapshot");
+      });
     }
   }
 

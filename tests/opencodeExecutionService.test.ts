@@ -32,6 +32,8 @@ const {
   authenticateOpenAIOpencode,
   OpencodeExecutionError,
   parseOpenAIOpencodeAuthChallenge,
+  parseOpencodeJsonEvents,
+  runOpencodeAgentRequest,
   runOpencodeRequest,
   OPENCODE_TEMPFILE_DIRECTIVE
 } = await import("../src/services/opencodeExecutionService.js");
@@ -404,5 +406,203 @@ describe("runOpencodeRequest", () => {
     expect(reshaped).not.toContain(promptText);
     expect(reshaped).toContain("--file");
     expect(reshaped).toContain("/tmp/actuarius-prompt-xxx/prompt.txt");
+  });
+});
+
+describe("managed OpenCode agent execution", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    process.env.DEEPSEEK_API_KEY = "test-key";
+  });
+
+  afterEach(() => {
+    delete process.env.DEEPSEEK_API_KEY;
+  });
+
+  it("parses final text and only completed task subagents from JSONL events", () => {
+    const output = [
+      "not-json diagnostic noise",
+      JSON.stringify({ type: "text", part: { text: " First section " } }),
+      JSON.stringify({
+        type: "tool_use",
+        part: {
+          tool: "task",
+          state: {
+            status: "running",
+            input: { subagent_type: "still-running" }
+          }
+        }
+      }),
+      JSON.stringify({
+        type: "tool_use",
+        part: {
+          tool: "task",
+          state: {
+            status: "completed",
+            input: { subagent_type: "actuarius-implement-oc" }
+          }
+        }
+      }),
+      JSON.stringify({ type: "text", part: { text: "Second section" } })
+    ].join("\n");
+
+    expect(parseOpencodeJsonEvents(output)).toEqual({
+      text: "First section\n\nSecond section",
+      completedSubagents: ["actuarius-implement-oc"],
+      diagnostics: ["not-json diagnostic noise"]
+    });
+  });
+
+  it("runs one managed primary-agent CLI call and returns its parsed final text", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({
+      stdout: [
+        JSON.stringify({
+          type: "tool_use",
+          part: {
+            id: "task-1",
+            tool: "task",
+            state: {
+              status: "completed",
+              input: { subagent_type: "actuarius-implement-oc" }
+            }
+          }
+        }),
+        JSON.stringify({ type: "text", part: { text: "Implementation verified." } })
+      ].join("\n"),
+      stderr: ""
+    });
+
+    const result = await runOpencodeAgentRequest({
+      prompt: "Plan and implement this request",
+      cwd: "/worktree",
+      timeoutMs: 12_345,
+      env: { DEEPSEEK_API_KEY: "test-key", OPENCODE_CONFIG_DIR: "/snapshot" },
+      agent: "actuarius-plan-oc",
+      requiredSubagent: "actuarius-implement-oc"
+    }, logger);
+
+    expect(result).toEqual({ text: "Implementation verified." });
+    expect(mockSpawnCollectWithTransport).toHaveBeenCalledOnce();
+    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        file: "opencode",
+        args: [
+          "run",
+          "--dir",
+          "/worktree",
+          "Plan and implement this request",
+          "--agent",
+          "actuarius-plan-oc",
+          "--format",
+          "json"
+        ],
+        cwd: "/worktree",
+        timeoutMs: 12_345,
+        env: { DEEPSEEK_API_KEY: "test-key", OPENCODE_CONFIG_DIR: "/snapshot" }
+      })
+    );
+
+    const args = mockSpawnCollectWithTransport.mock.calls[0]![0].args;
+    expect(args).not.toContain("--model");
+    expect(args).not.toContain("--auto");
+    expect(args).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("fails when the required implementation subagent has no completed task event", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({
+      stdout: [
+        JSON.stringify({
+          type: "tool_use",
+          part: {
+            tool: "task",
+            state: {
+              status: "error",
+              input: { subagent_type: "actuarius-implement-oc" }
+            }
+          }
+        }),
+        JSON.stringify({ type: "text", part: { text: "I described the implementation." } })
+      ].join("\n"),
+      stderr: ""
+    });
+
+    await expect(runOpencodeAgentRequest({
+      prompt: "Plan and implement this request",
+      cwd: "/worktree",
+      timeoutMs: 12_345,
+      agent: "actuarius-plan-oc",
+      requiredSubagent: "actuarius-implement-oc"
+    }, logger)).rejects.toMatchObject({
+      name: "OpencodeExecutionError",
+      code: "FAILED",
+      message: expect.stringContaining("did not complete")
+    });
+  });
+
+  it("fails closed when OpenCode emits a non-JSON agent fallback diagnostic", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({
+      stdout: [
+        "! agent \"actuarius-plan-oc\" not found. Falling back to default agent",
+        JSON.stringify({
+          type: "tool_use",
+          part: {
+            id: "task-1",
+            tool: "task",
+            state: {
+              status: "completed",
+              input: { subagent_type: "actuarius-implement-oc" }
+            }
+          }
+        }),
+        JSON.stringify({ type: "text", part: { text: "Fallback agent completed the work." } })
+      ].join("\n"),
+      stderr: ""
+    });
+
+    await expect(runOpencodeAgentRequest({
+      prompt: "Plan and implement this request",
+      cwd: "/worktree",
+      timeoutMs: 12_345,
+      agent: "actuarius-plan-oc",
+      requiredSubagent: "actuarius-implement-oc"
+    }, logger)).rejects.toMatchObject({
+      name: "OpencodeExecutionError",
+      code: "FAILED",
+      message: expect.stringContaining("could not be verified")
+    });
+  });
+
+  it("fails when the implementation subagent completes more than once", async () => {
+    const completedTask = (id: string) => JSON.stringify({
+      type: "tool_use",
+      part: {
+        id,
+        tool: "task",
+        state: {
+          status: "completed",
+          input: { subagent_type: "actuarius-implement-oc" }
+        }
+      }
+    });
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({
+      stdout: [
+        completedTask("task-1"),
+        completedTask("task-2"),
+        JSON.stringify({ type: "text", part: { text: "Two implementations completed." } })
+      ].join("\n"),
+      stderr: ""
+    });
+
+    await expect(runOpencodeAgentRequest({
+      prompt: "Plan and implement this request",
+      cwd: "/worktree",
+      timeoutMs: 12_345,
+      agent: "actuarius-plan-oc",
+      requiredSubagent: "actuarius-implement-oc"
+    }, logger)).rejects.toMatchObject({
+      name: "OpencodeExecutionError",
+      code: "FAILED",
+      message: expect.stringContaining("2 times")
+    });
   });
 });
