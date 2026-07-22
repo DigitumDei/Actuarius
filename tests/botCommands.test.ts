@@ -82,7 +82,21 @@ vi.mock("../src/services/opencodeExecutionService.js", async () => {
   return {
     ...actual,
     authenticateOpenAIOpencode: vi.fn(),
-    hasOpencodeAuth: vi.fn().mockResolvedValue(false)
+    hasOpencodeAuth: vi.fn().mockResolvedValue(false),
+    runOpencodeAgentRequest: vi.fn()
+  };
+});
+
+vi.mock("../src/services/opencodePlanAgentService.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/opencodePlanAgentService.js")>(
+    "../src/services/opencodePlanAgentService.js"
+  );
+
+  return {
+    ...actual,
+    createOpencodePlanAgentSnapshot: vi.fn(),
+    ensureOpencodePlanAgentFiles: vi.fn(),
+    setOpencodePlanAgentModel: vi.fn()
   };
 });
 
@@ -125,7 +139,14 @@ const {
 const { spawnCollect } = await import("../src/utils/spawnCollect.js");
 const { listOpenIssues, viewIssueDetail } = await import("../src/services/githubService.js");
 const { runClaudeRequest } = await import("../src/services/claudeExecutionService.js");
-const { authenticateOpenAIOpencode } = await import("../src/services/opencodeExecutionService.js");
+const { authenticateOpenAIOpencode, hasOpencodeAuth, runOpencodeAgentRequest } = await import("../src/services/opencodeExecutionService.js");
+const {
+  createOpencodePlanAgentSnapshot,
+  ensureOpencodePlanAgentFiles,
+  setOpencodePlanAgentModel,
+  OPENCODE_IMPLEMENT_OC_AGENT,
+  OPENCODE_PLAN_OC_AGENT
+} = await import("../src/services/opencodePlanAgentService.js");
 const { runAdversarialReview } = await import("../src/services/adversarialReviewService.js");
 const { runIterativeTaskLoop } = await import("../src/services/iterativeTaskLoopService.js");
 const { createDraftPullRequest } = await import("../src/services/pullRequestService.js");
@@ -2562,6 +2583,68 @@ describe("ActuariusBot uninstall command", () => {
   });
 });
 
+describe("ActuariusBot model-select-oc command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("requires Manage Server permission before editing managed agent files", async () => {
+    const bot = createBot();
+    (bot as any).config.enableOpencodeExecution = true;
+    const interaction = createInteraction({
+      options: {
+        getString: vi.fn((name: string) => name === "role" ? "planner" : "openai/gpt-5.6-sol"),
+        getBoolean: vi.fn().mockReturnValue(false)
+      }
+    });
+
+    await (bot as any).handleModelSelectOc(interaction);
+
+    expect(setOpencodePlanAgentModel).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Manage Server"),
+      ephemeral: true
+    });
+  });
+
+  it("writes the selected full OpenCode model to the requested agent file", async () => {
+    const addModelToHistory = vi.fn();
+    const upsertGuild = vi.fn();
+    const bot = createBot({ addModelToHistory, upsertGuild });
+    (bot as any).config.enableOpencodeExecution = true;
+    vi.mocked(hasOpencodeAuth).mockResolvedValue(true);
+    vi.mocked(setOpencodePlanAgentModel).mockResolvedValue({
+      configDir: "/data/home/appuser/.config/actuarius-opencode",
+      models: {
+        planner: "openai/gpt-5.6-sol",
+        implementer: "openai/gpt-5.6-terra"
+      }
+    });
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn((name: string) => {
+          if (name === "role") return "implementer";
+          if (name === "model") return "openai/gpt-5.6-terra";
+          return null;
+        }),
+        getBoolean: vi.fn().mockReturnValue(false)
+      }
+    });
+
+    await (bot as any).handleModelSelectOc(interaction);
+
+    expect(setOpencodePlanAgentModel).toHaveBeenCalledOnce();
+    expect(setOpencodePlanAgentModel).toHaveBeenCalledWith("implementer", "openai/gpt-5.6-terra");
+    expect(upsertGuild).toHaveBeenCalledWith("guild-1", "Guild");
+    expect(addModelToHistory).toHaveBeenCalledWith("opencode", "openai/gpt-5.6-terra");
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("openai/gpt-5.6-terra"),
+      ephemeral: true
+    });
+  });
+});
+
 describe("ActuariusBot model-select command", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -3558,6 +3641,122 @@ describe("ActuariusBot pr command", () => {
     }));
     expect(channelSend).toHaveBeenCalledWith(expect.stringContaining("Draft PR opened"));
     expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Draft PR opened for `octocat/hello-world`"));
+  });
+});
+
+describe("ActuariusBot plan-oc command", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("queues and completes one managed OpenCode session while retaining its request worktree", async () => {
+    const updateRequestStatus = vi.fn();
+    const updateRequestWorkspace = vi.fn();
+    const bot = createBot({
+      createRequest: vi.fn().mockReturnValue({ id: 121 }),
+      getRepoByChannelId: vi.fn().mockReturnValue({
+        id: 5,
+        owner: "octocat",
+        repo: "hello-world",
+        full_name: "octocat/hello-world",
+        channel_id: "channel-1"
+      }),
+      updateRequestStatus,
+      updateRequestWorkspace
+    });
+    (bot as any).config.enableOpencodeExecution = true;
+    vi.mocked(hasOpencodeAuth).mockResolvedValue(true);
+    vi.mocked(ensureOpencodePlanAgentFiles).mockResolvedValue({
+      configDir: "/data/home/appuser/.config/actuarius-opencode",
+      models: {
+        planner: "openai/gpt-5.6-sol",
+        implementer: "openai/gpt-5.6-terra"
+      }
+    });
+    const cleanup = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(createOpencodePlanAgentSnapshot).mockResolvedValue({
+      configDir: "/tmp/actuarius-opencode-plan-snapshot",
+      models: {
+        planner: "openai/gpt-5.6-sol",
+        implementer: "openai/gpt-5.6-terra"
+      },
+      cleanup
+    });
+    vi.mocked(runOpencodeAgentRequest).mockResolvedValue({ text: "Plan, implementation, and validation complete." });
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan-oc",
+      branchName: "ask/121-123"
+    });
+    vi.mocked(deleteRequestBranch).mockResolvedValue(undefined);
+
+    const thread = {
+      id: "thread-plan-oc-1",
+      isThread: () => true,
+      send: vi.fn().mockResolvedValue(undefined)
+    };
+    const seedMessage = {
+      startThread: vi.fn().mockResolvedValue(thread)
+    };
+    const repoChannel = {
+      type: ChannelType.GuildText,
+      send: vi.fn().mockResolvedValue(seedMessage)
+    };
+    const enqueue = vi.fn();
+    (bot as any).requestQueue.enqueue = enqueue;
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue(thread);
+    (bot as any).prepareRepositoryMemory = vi.fn().mockResolvedValue(undefined);
+    (bot as any).prepareWorktreeMemoryConfig = vi.fn().mockResolvedValue(undefined);
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: { GH_TOKEN: "test-token", OPENCODE_CONFIG_CONTENT: "untrusted-inline-config" }
+    });
+    const interaction = createInteraction({
+      channelId: "channel-1",
+      channel: { isThread: () => false },
+      user: { id: "user-1", tag: "user#0001" },
+      guild: {
+        id: "guild-1",
+        name: "Guild",
+        channels: { fetch: vi.fn().mockResolvedValue(repoChannel) }
+      },
+      options: {
+        getString: vi.fn().mockReturnValue("Do the native OpenCode thing"),
+        getBoolean: vi.fn().mockReturnValue(null)
+      }
+    });
+
+    await (bot as any).handlePlanOc(interaction);
+    expect(enqueue).toHaveBeenCalledOnce();
+    await enqueue.mock.calls[0]![1]();
+
+    expect(ensureOpencodePlanAgentFiles).not.toHaveBeenCalled();
+    expect(createOpencodePlanAgentSnapshot).toHaveBeenCalledOnce();
+    expect(runOpencodeAgentRequest).toHaveBeenCalledOnce();
+    expect(runOpencodeAgentRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: OPENCODE_PLAN_OC_AGENT,
+        requiredSubagent: OPENCODE_IMPLEMENT_OC_AGENT,
+        cwd: "/tmp/worktree-plan-oc",
+        prompt: expect.stringContaining("Do the native OpenCode thing"),
+        env: expect.objectContaining({
+          GH_TOKEN: "test-token",
+          OPENCODE_CONFIG_DIR: "/tmp/actuarius-opencode-plan-snapshot"
+        })
+      }),
+      logger
+    );
+    expect(vi.mocked(runOpencodeAgentRequest).mock.calls[0]![0].env?.OPENCODE_CONFIG_CONTENT).toBeUndefined();
+    expect(updateRequestStatus).toHaveBeenNthCalledWith(1, 121, "running");
+    expect(updateRequestStatus).toHaveBeenLastCalledWith(121, "succeeded");
+    expect(updateRequestWorkspace).toHaveBeenCalledWith(
+      121,
+      "/tmp/worktree-plan-oc",
+      "ask/121-123"
+    );
+    expect(deleteRequestBranch).not.toHaveBeenCalled();
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(thread.send).toHaveBeenCalledWith(expect.stringContaining("/review"));
   });
 });
 

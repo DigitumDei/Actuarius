@@ -21,4 +21,5 @@ jobs:
         with:
           jules_api_key: ${{ secrets.JULES_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          timeout_minutes: 60
           fail_on: blocking
