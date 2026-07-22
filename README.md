@@ -88,8 +88,9 @@ Provider CLI auth state is persisted under `/data/home/appuser` inside the conta
 
 `/plan-oc prompt:<text>` is a playground workflow that runs alongside the existing
 `/plan` command. It starts one OpenCode CLI session with a read-only primary planner;
-the planner creates the implementation plan and delegates the edits and validation to
-the managed implementation subagent in that same session. The established `/plan`
+the planner creates the implementation plan, delegates one or more implementation
+steps to the managed implementation subagent, and can inspect each result before
+issuing targeted follow-up work in that same session. The established `/plan`
 workflow and its model settings are unchanged.
 
 Use `/model-select-oc role:<planner|implementer> model:<provider/model>` to set an
