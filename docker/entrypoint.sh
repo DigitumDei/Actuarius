@@ -115,6 +115,36 @@ PYEOF
 fi
 
 # ── cache rotation ────────────────────────────────────────────
+# Delete every top-level entry in $1 except the names listed after it.
+# Used instead of a blanket `rm -rf` on ~/.cache so the rotation keeps its
+# catch-all property (any new cache that shows up still gets reaped) without
+# taking expensive-to-rebuild caches with it.
+prune_cache_dir() {
+  cache_dir="$1"
+  shift
+  [ -d "$cache_dir" ] || return 0
+  # Three patterns, because a cache dir must be enumerated exhaustively for the
+  # catch-all to hold: /* skips dotfiles, /.[!.]* catches ".npm" but not "..foo",
+  # and /..?* catches those. None of them match "." or ".." themselves.
+  for entry in "$cache_dir"/* "$cache_dir"/.[!.]* "$cache_dir"/..?*; do
+    # -e alone is false for a broken symlink, which would leave it to
+    # accumulate; -L catches those. An unexpanded glob matches neither, which
+    # is what makes this double as the no-match guard.
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    entry_name="${entry##*/}"
+    keep_entry=false
+    for preserved in "$@"; do
+      if [ "$entry_name" = "$preserved" ]; then
+        keep_entry=true
+      fi
+    done
+    if [ "$keep_entry" != "true" ]; then
+      rm -rf "$entry" 2>/dev/null || true
+    fi
+  done
+  return 0
+}
+
 # Clean accumulating caches on every container start to prevent
 # incremental disk fill (compounding npm/cargo/opencode caches).
 # Skippable via SKIP_CACHE_ROTATION for local testing, where the wipe just
@@ -123,7 +153,12 @@ fi
 # production. Defaults to running the wipe (production-safe).
 if [ "${SKIP_CACHE_ROTATION:-false}" != "true" ]; then
   rm -rf "$HOME/.npm/_cacache" 2>/dev/null || true
-  rm -rf "$HOME/.cache" 2>/dev/null || true
+  # NOT a blanket `rm -rf "$HOME/.cache"`: MemPalace stores its downloaded ONNX
+  # embedding model under $XDG_CACHE_HOME/mempalace (== $HOME/.cache/mempalace
+  # in the image), and wiping it forced an ~86 MB re-download plus a slow first
+  # search on every single container start. Everything else under .cache is
+  # cheap to regenerate locally, so only mempalace is preserved.
+  prune_cache_dir "$HOME/.cache" mempalace
   rm -rf "$HOME/.cargo/registry/cache" 2>/dev/null || true
   rm -f "$HOME/.local/share/opencode/opencode.db" "$HOME/.local/share/opencode/opencode.db-shm" "$HOME/.local/share/opencode/opencode.db-wal" 2>/dev/null || true
   rm -rf "$HOME/.codex/tmp" "$HOME/.codex/sessions" 2>/dev/null || true
