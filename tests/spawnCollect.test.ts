@@ -127,6 +127,11 @@ describe("spawnCollect — stderr trimming", () => {
   // Each duration below therefore has a stated safety factor; keep them if you
   // retune. Total wall-clock cost is ~2s per test, which is the price of not
   // being flaky.
+  //
+  // Both also pass an explicit per-test timeout that sits ABOVE the spawnCollect
+  // budget they exercise. vitest's default is 5000ms, which these would approach
+  // under load — and a generic "Test timed out in 5000ms" would preempt the
+  // ETIMEDOUT assertion, reintroducing the exact flake this file is fixing.
   const WRITE_INTERVAL_MS = 50;
 
   it("resets the inactivity timeout when either output stream produces data", async () => {
@@ -149,7 +154,7 @@ describe("spawnCollect — stderr trimming", () => {
     // Writes alternate stdout/stderr starting with stdout, so each gets half.
     expect(result.stdout).toBe("x".repeat(writes / 2));
     expect(result.stderr).toBe("x".repeat(writes / 2));
-  });
+  }, 35_000); // above the 30s spawnCollect absolute budget above
 
   it("still enforces the absolute timeout while a process keeps producing output", async () => {
     // The child never stops writing, so only a timeout can end it. The idle
@@ -163,7 +168,7 @@ describe("spawnCollect — stderr trimming", () => {
     ).catch((reason: unknown) => reason);
 
     expect(error).toMatchObject({ code: "ETIMEDOUT", timeoutReason: "absolute" });
-  });
+  }, 15_000); // above the 2s spawnCollect absolute budget above
 
   it.each(["stdout", "stderr"] as const)(
     "rejects and terminates the child when an onOutput callback throws from %s",
