@@ -65,6 +65,7 @@ resource "google_compute_instance" "actuarius" {
     env-enable-opencode-execution        = var.enable_opencode_execution
     env-enable-mempalace                 = var.enable_mempalace
     env-enable-mempalace-remote          = var.enable_mempalace_remote
+    env-mempalace-embedding-profile      = var.mempalace_embedding_profile
     env-mempalace-remote-url             = var.mempalace_remote_url
     env-mempalace-remote-bind            = var.mempalace_remote_bind
     env-mempalace-remote-name            = var.mempalace_remote_name

@@ -124,6 +124,7 @@ ENABLE_GEMINI=$(get_meta "env-enable-gemini-execution" || true)
 ENABLE_OPENCODE=$(get_meta "env-enable-opencode-execution" || true)
 ENABLE_MEMPALACE=$(get_meta "env-enable-mempalace" || true)
 ENABLE_MEMPALACE_REMOTE=$(get_meta "env-enable-mempalace-remote" || true)
+MEMPALACE_EMBEDDING_PROFILE=$(get_meta "env-mempalace-embedding-profile" || true)
 MEMPALACE_REMOTE_URL=$(get_meta "env-mempalace-remote-url" || true)
 MEMPALACE_REMOTE_BIND=$(get_meta "env-mempalace-remote-bind" || true)
 MEMPALACE_REMOTE_NAME=$(get_meta "env-mempalace-remote-name" || true)
@@ -176,6 +177,9 @@ if [ "$ENABLE_MEMPALACE_REMOTE" = "true" ]; then
   # docker-proxy. Host exposure is still governed by the 127.0.0.1 publish.
   MEMPALACE_REMOTE_BIND="0.0.0.0:$REMOTE_PORT"
   EXTRA_ARGS+=(-p "127.0.0.1:$REMOTE_PORT:$REMOTE_PORT")
+fi
+if [ -n "$MEMPALACE_EMBEDDING_PROFILE" ]; then
+  EXTRA_ARGS+=(-e "MEMPALACE_EMBEDDING_PROFILE=$MEMPALACE_EMBEDDING_PROFILE")
 fi
 if [ -n "$MEMPALACE_REMOTE_URL" ]; then
   EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_URL=$MEMPALACE_REMOTE_URL")

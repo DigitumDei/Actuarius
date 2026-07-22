@@ -63,6 +63,15 @@ Copy `.env.example` to `.env` and set:
 - `MEMPALACE_REMOTE_URL` (default `http://127.0.0.1:8765`)
 - `MEMPALACE_REMOTE_TOKEN` (optional; generated and persisted if omitted)
 - `MEMPALACE_REMOTE_MINE_ON_SYNC` (default `true`, queues repo mining after connect/sync/checkouts)
+- `MEMPALACE_EMBEDDING_PROFILE` (default `low_cpu`; accepts `low_cpu` or `balanced`)
+
+MemPalace's own default profile is `balanced`, which loads the fp32 embedding model
+and leaves every runtime guardrail unbounded — ingest batch size, queue depth and
+worker threads are all uncapped, and the profile declares no RSS budget. Actuarius
+overrides this to `low_cpu` (quantized model, ingest batches of 8, single worker
+thread, 450 MB idle budget) because the production VM is a 1 GB e2-micro that
+otherwise OOM-kills provider processes. Only move to `balanced` on a host with
+proven memory headroom.
 
 All timeout defaults live together in [`TIMEOUT_DEFAULTS_MS`](src/config.ts) and can be overridden with these millisecond-valued environment variables:
 

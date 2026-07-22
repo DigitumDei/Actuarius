@@ -51,6 +51,7 @@ RUN curl -fsSL \
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/data/app.db
 ENV MEMPALACE_PALACE_PATH=/data/mempalace/palace
+ENV MEMPALACE_EMBEDDING_PROFILE=low_cpu
 ENV HOME=/data/home/appuser
 ENV NPM_CONFIG_PREFIX=/data/home/appuser/.npm-global
 ENV PATH=/data/home/appuser/.npm-global/bin:$PATH

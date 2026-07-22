@@ -500,6 +500,7 @@ export class MemPalaceRemoteService {
     return {
       ...process.env,
       MEMPALACE_REMOTE_TOKEN: this.remoteToken ?? process.env.MEMPALACE_REMOTE_TOKEN ?? "",
+      MEMPALACE_EMBEDDING_PROFILE: this.config.mempalaceEmbeddingProfile,
       MEMPALACE_EMBED_ALLOW_DOWNLOADS: "1"
     };
   }

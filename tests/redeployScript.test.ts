@@ -330,4 +330,21 @@ describe("scripts/redeploy.sh auth validation", () => {
     expect(result.dockerLog).toContain("GEMINI_API_KEY=gemini-key");
     expect(result.dockerLog).toContain("MEMPALACE_REMOTE_TOKEN=fed-token");
   });
+
+  it("forwards the MemPalace embedding profile from instance metadata", () => {
+    const result = runRedeploy(
+      { ...baseMetadata, "env-mempalace-embedding-profile": "low_cpu" },
+      { ...baseSecrets, "actuarius-gh-token": "gh-token" }
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dockerLog).toContain("MEMPALACE_EMBEDDING_PROFILE=low_cpu");
+  });
+
+  it("omits the embedding profile flag when the metadata key is absent", () => {
+    const result = runRedeploy(baseMetadata, { ...baseSecrets, "actuarius-gh-token": "gh-token" });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dockerLog).not.toContain("MEMPALACE_EMBEDDING_PROFILE=");
+  });
 });
