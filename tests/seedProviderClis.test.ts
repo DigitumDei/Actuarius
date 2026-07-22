@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 type SeedResult = {
@@ -54,29 +54,40 @@ function runSeedProviderClis(existingBinaries: string[], failPackages: string[] 
 
   // Mock npm logs each invocation's args. It exits 1 when the args mention any
   // package listed in failPackages, so tests can exercise the best-effort path.
+  //
+  // The mock is a real executable on a PATH prefix dir rather than a shell
+  // function injected via BASH_ENV: BASH_ENV is bash-only, so under Debian's
+  // /bin/sh (dash) the function never loaded and the script shelled out to the
+  // real npm, hitting the network. PATH shadowing works under any shell.
   const failCases = failPackages
-    .map((pkg) => `    *${pkg}*) return 1 ;;`)
+    .map((pkg) => `  *${pkg}*) exit 1 ;;`)
     .join("\n");
-  const bashEnvPath = join(tempDir, "bash-env.sh");
-  writeFileSync(
-    bashEnvPath,
-    `npm() {
+  const mockBinDir = join(tempDir, "mock-bin");
+  mkdirSync(mockBinDir, { recursive: true });
+  createExecutable(
+    join(mockBinDir, "npm"),
+    `#!/bin/sh
 printf '%s\\n' "$*" >> ${JSON.stringify(toBashPath(npmLogPath))}
 case "$*" in
 ${failCases}
 esac
-return 0
-}
+exit 0
 `
   );
 
+  // Windows spells it "Path"; leaving both casings in the child env makes which
+  // one wins undefined, so drop every existing spelling before setting ours.
+  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  const inheritedPath = process.env.PATH ?? "";
+  for (const key of Object.keys(childEnv)) {
+    if (key.toLowerCase() === "path") delete childEnv[key];
+  }
+  childEnv.PATH = `${mockBinDir}${delimiter}${inheritedPath}`;
+  childEnv.NPM_CONFIG_PREFIX = toBashPath(prefixDir);
+
   const result = spawnSync(shellExecutable, [toBashPath(scriptPath)], {
     cwd: repoRoot,
-    env: {
-      ...process.env,
-      NPM_CONFIG_PREFIX: toBashPath(prefixDir),
-      BASH_ENV: toBashPath(bashEnvPath),
-    },
+    env: childEnv,
     encoding: "utf8",
   });
 
@@ -244,8 +255,9 @@ describe("seed-provider-clis.sh", () => {
   });
 
   // Runs the real container entrypoint via `sh`, which invokes Linux-only commands
-  // (returns 127 "command not found" on a Windows shell). Runs in CI (Linux);
-  // skipped on win32 so local `npm test` reports it skipped, not failed.
+  // (returns 127 "command not found" on a Windows shell). Covered by the Linux
+  // `test` job in .github/workflows/ci.yml; skipped on win32 so local `npm test`
+  // reports it skipped, not failed.
   it.skipIf(process.platform === "win32")("continues container startup when provider seeding fails", () => {
     const result = runEntrypointWithFailingSeed();
 
