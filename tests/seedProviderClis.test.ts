@@ -109,6 +109,7 @@ function runEntrypointWithFailingSeed(): { status: number | null; stdout: string
   const xdgDataHome = join(tempDir, "xdg-data");
   const xdgStateHome = join(tempDir, "xdg-state");
   const npmPrefixDir = join(tempDir, "npm-global");
+  const palacePath = join(tempDir, "mempalace", "palace");
   const binDir = join(tempDir, "mock-bin");
   const installScriptPath = join(tempDir, "install-llm-user-instructions.sh");
   const seedScriptPath = join(tempDir, "seed-provider-clis.sh");
@@ -137,6 +138,10 @@ function runEntrypointWithFailingSeed(): { status: number | null; stdout: string
       XDG_DATA_HOME: xdgDataHome,
       XDG_STATE_HOME: xdgStateHome,
       NPM_CONFIG_PREFIX: npmPrefixDir,
+      // Without this the entrypoint falls back to mkdir /data/mempalace/palace,
+      // which fails with EACCES for any non-root user (e.g. a CI runner) and
+      // aborts the whole script under `set -e`.
+      MEMPALACE_PALACE_PATH: palacePath,
       PATH: `${binDir}:${process.env.PATH ?? ""}`,
     },
     encoding: "utf8",
@@ -159,6 +164,7 @@ function runEntrypointCacheRotation(skipCacheRotation: boolean): { status: numbe
   const xdgDataHome = join(tempDir, "xdg-data");
   const xdgStateHome = join(tempDir, "xdg-state");
   const npmPrefixDir = join(tempDir, "npm-global");
+  const palacePath = join(tempDir, "mempalace", "palace");
   const binDir = join(tempDir, "mock-bin");
   const installScriptPath = join(tempDir, "install-llm-user-instructions.sh");
   const seedScriptPath = join(tempDir, "seed-provider-clis.sh");
@@ -198,6 +204,7 @@ function runEntrypointCacheRotation(skipCacheRotation: boolean): { status: numbe
       XDG_DATA_HOME: xdgDataHome,
       XDG_STATE_HOME: xdgStateHome,
       NPM_CONFIG_PREFIX: npmPrefixDir,
+      MEMPALACE_PALACE_PATH: palacePath,
       PATH: `${binDir}:${process.env.PATH ?? ""}`,
       ...(skipCacheRotation ? { SKIP_CACHE_ROTATION: "true" } : {}),
     },

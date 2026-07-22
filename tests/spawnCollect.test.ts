@@ -119,22 +119,29 @@ describe("spawnCollect — stderr trimming", () => {
     expect(error).toMatchObject({ code: "ETIMEDOUT", timeoutReason: "idle" });
   });
 
+  // The child writes every 20ms for ~400ms total, so the run outlasts the 300ms
+  // idle timeout — it can only survive if each write resets that timer. The gap
+  // between write interval and idle timeout is 15x so a loaded machine cannot
+  // stall long enough to trip the idle kill spuriously.
   it("resets the inactivity timeout when either output stream produces data", async () => {
     const result = await spawnCollect(
       node,
-      ["-e", "let count = 0; const timer = setInterval(() => { (count++ % 2 ? process.stderr : process.stdout).write('x'); if (count === 6) { clearInterval(timer); } }, 50);"],
-      { cwd, timeoutMs: 1_000, idleTimeoutMs: 120, maxBuffer: 1024 },
+      ["-e", "let count = 0; const timer = setInterval(() => { (count++ % 2 ? process.stderr : process.stdout).write('x'); if (count === 20) { clearInterval(timer); } }, 20);"],
+      { cwd, timeoutMs: 10_000, idleTimeoutMs: 300, maxBuffer: 1024 },
     );
 
-    expect(result.stdout).toBe("xxx");
-    expect(result.stderr).toBe("xxx");
+    expect(result.stdout).toBe("x".repeat(10));
+    expect(result.stderr).toBe("x".repeat(10));
   });
 
+  // idleTimeoutMs deliberately exceeds timeoutMs: the idle timer then cannot
+  // fire first no matter how badly the machine is loaded, so "absolute" is the
+  // only reachable reason and the assertion is load-independent.
   it("still enforces the absolute timeout while a process keeps producing output", async () => {
     const error = await spawnCollect(
       node,
       ["-e", "setInterval(() => process.stdout.write('x'), 20);"],
-      { cwd, timeoutMs: 180, idleTimeoutMs: 100, maxBuffer: 1024 },
+      { cwd, timeoutMs: 300, idleTimeoutMs: 5_000, maxBuffer: 1024 },
     ).catch((reason: unknown) => reason);
 
     expect(error).toMatchObject({ code: "ETIMEDOUT", timeoutReason: "absolute" });
