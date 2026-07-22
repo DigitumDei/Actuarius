@@ -41,11 +41,20 @@ describe("InstallService", () => {
   let service: InstallService;
   let reposRootPath: string;
   let repoCheckoutPath: string;
+  // runInstall does `mkdir -p` on the install root. Pointing this at the real
+  // /data (the production default) works on Windows, where it quietly creates
+  // D:\data, and as root in a container -- but EACCESes on a non-root CI
+  // runner. Give every test its own temp root, like reposRootPath.
+  let installsRootPath: string;
+  // Build expectations with the same join() the service uses, so they follow
+  // the temp root and stay correct on both path separators.
+  const installPath = (...segments: string[]): string => join(installsRootPath, ...segments);
 
   beforeEach(() => {
     vi.resetAllMocks();
     db = createInMemoryDb();
     reposRootPath = mkdtempSync(join(tmpdir(), "actuarius-install-repos-"));
+    installsRootPath = mkdtempSync(join(tmpdir(), "actuarius-install-root-"));
     repoCheckoutPath = join(reposRootPath, "octocat", "hello-world");
     mkdirSync(repoCheckoutPath, { recursive: true });
     service = new InstallService(
@@ -63,7 +72,7 @@ describe("InstallService", () => {
         geminiApiKey: undefined,
         databasePath: ":memory:",
         reposRootPath,
-        installsRootPath: "/data/tool-installs",
+        installsRootPath,
         githubCliConfigPath: "/data/.gh",
         logLevel: "info",
         threadAutoArchiveMinutes: 1440,
@@ -116,7 +125,7 @@ describe("InstallService", () => {
       package_version: "stable",
       scope: "request",
       status: "approved",
-      install_root: "/data/tool-installs/request/thread-1/rustup-default-stable"
+      install_root: installPath("request", "thread-1", "rustup-default-stable")
     });
     expect(db.getRequestByThreadId("thread-1")?.status).toBe("install_approved");
   });
@@ -141,12 +150,12 @@ describe("InstallService", () => {
       status: "approved",
       requestedByUserId: "user-1",
       approvedByUserId: "admin-1",
-      installRoot: "/data/tool-installs/repo/1/npm-prettier"
+      installRoot: installPath("repo", "1", "npm-prettier")
     });
     db.updateInstallRequest({
       installRequestId: repoInstall.id,
       status: "succeeded",
-      binPath: "/data/tool-installs/repo/1/npm-prettier/bin",
+      binPath: installPath("repo", "1", "npm-prettier", "bin"),
       envJson: "{}",
       completedAt: "2026-03-31T00:00:00.000Z"
     });
@@ -162,12 +171,12 @@ describe("InstallService", () => {
       status: "approved",
       requestedByUserId: "user-1",
       approvedByUserId: "admin-1",
-      installRoot: "/data/tool-installs/request/thread-1/rustup-default-stable"
+      installRoot: installPath("request", "thread-1", "rustup-default-stable")
     });
     db.updateInstallRequest({
       installRequestId: requestInstall.id,
       status: "succeeded",
-      binPath: "/data/tool-installs/request/thread-1/rustup-default-stable/bin",
+      binPath: installPath("request", "thread-1", "rustup-default-stable", "bin"),
       envJson: "{\"RUSTUP_TOOLCHAIN\":\"stable\"}",
       completedAt: "2026-03-31T00:00:00.000Z"
     });
@@ -175,12 +184,12 @@ describe("InstallService", () => {
     const execution = service.buildExecutionEnvironment({ repoId: 1, threadId: "thread-1" });
     expect(execution.packages).toEqual(["npm-prettier", "rustup-default-stable"]);
     expect(execution.pathEntries).toEqual([
-      "/data/tool-installs/repo/1/npm-prettier/bin",
-      "/data/tool-installs/request/thread-1/rustup-default-stable/bin"
+      installPath("repo", "1", "npm-prettier", "bin"),
+      installPath("request", "thread-1", "rustup-default-stable", "bin")
     ]);
     expect(execution.env.RUSTUP_TOOLCHAIN).toBe("stable");
-    expect(execution.env.PATH).toContain("/data/tool-installs/repo/1/npm-prettier/bin");
-    expect(execution.env.PATH).toContain("/data/tool-installs/request/thread-1/rustup-default-stable/bin");
+    expect(execution.env.PATH).toContain(installPath("repo", "1", "npm-prettier", "bin"));
+    expect(execution.env.PATH).toContain(installPath("request", "thread-1", "rustup-default-stable", "bin"));
   });
 
   itPosixOnly("updates request lifecycle states while running a request-scoped install", async () => {
@@ -212,7 +221,7 @@ describe("InstallService", () => {
 
     expect(db.getRequestByThreadId("thread-run")?.status).toBe("install_succeeded");
     expect(mockSpawnCollect).toHaveBeenCalledWith(
-      expect.stringContaining("/data/tool-installs/request/thread-run/npm-prettier/bin/prettier"),
+      expect.stringContaining(installPath("request", "thread-run", "npm-prettier", "bin", "prettier")),
       ["--version"],
       expect.any(Object)
     );
@@ -228,7 +237,7 @@ describe("InstallService", () => {
       status: "approved",
       requestedByUserId: "user-1",
       approvedByUserId: "admin-1",
-      installRoot: "/data/tool-installs/repo/1/rustup-default-stable"
+      installRoot: installPath("repo", "1", "rustup-default-stable")
     });
 
     mockSpawnCollect.mockResolvedValue({ stdout: "ok", stderr: "" });
@@ -240,24 +249,24 @@ describe("InstallService", () => {
       expect.arrayContaining([
         "-c",
         buildRustupInitDownloadUrl(),
-        "/data/tool-installs/repo/1/rustup-default-stable/downloads/rustup-init",
+        installPath("repo", "1", "rustup-default-stable", "downloads", "rustup-init"),
         "755"
       ]),
       expect.objectContaining({
         env: expect.objectContaining({
-          CARGO_HOME: "/data/tool-installs/repo/1/rustup-default-stable/cargo",
-          RUSTUP_HOME: "/data/tool-installs/repo/1/rustup-default-stable/rustup",
+          CARGO_HOME: installPath("repo", "1", "rustup-default-stable", "cargo"),
+          RUSTUP_HOME: installPath("repo", "1", "rustup-default-stable", "rustup"),
           RUSTUP_TOOLCHAIN: "stable"
         })
       })
     );
     expect(mockSpawnCollect).toHaveBeenCalledWith(
-      "/data/tool-installs/repo/1/rustup-default-stable/downloads/rustup-init",
+      installPath("repo", "1", "rustup-default-stable", "downloads", "rustup-init"),
       ["-y", "--profile", "minimal", "--default-toolchain", "stable", "--no-modify-path"],
       expect.objectContaining({
         env: expect.objectContaining({
-          CARGO_HOME: "/data/tool-installs/repo/1/rustup-default-stable/cargo",
-          RUSTUP_HOME: "/data/tool-installs/repo/1/rustup-default-stable/rustup",
+          CARGO_HOME: installPath("repo", "1", "rustup-default-stable", "cargo"),
+          RUSTUP_HOME: installPath("repo", "1", "rustup-default-stable", "rustup"),
           RUSTUP_TOOLCHAIN: "stable"
         })
       })
@@ -283,7 +292,7 @@ describe("InstallService", () => {
       status: "approved",
       requestedByUserId: "user-1",
       approvedByUserId: "admin-1",
-      installRoot: "/data/tool-installs/repo/1/npm-prettier"
+      installRoot: installPath("repo", "1", "npm-prettier")
     });
 
     mockSpawnCollect.mockRejectedValueOnce(new Error("npm exploded"));
@@ -308,7 +317,7 @@ describe("InstallService", () => {
       status: "approved",
       requestedByUserId: "user-1",
       approvedByUserId: "admin-1",
-      installRoot: "/data/tool-installs/repo/1/npm-prettier"
+      installRoot: installPath("repo", "1", "npm-prettier")
     });
 
     mockSpawnCollect
@@ -353,7 +362,7 @@ describe("InstallService", () => {
       package_version: "libssl-dev",
       scope: "repo",
       status: "approved",
-      install_root: expect.stringContaining("/data/tool-installs/system/apt-")
+      install_root: expect.stringContaining(installPath("system", "apt-"))
     });
   });
 
@@ -500,13 +509,13 @@ describe("InstallService", () => {
       status: "approved",
       requestedByUserId: "user-1",
       approvedByUserId: "admin-1",
-      installRoot: "/data/tool-installs/repo/1/java-temurin"
+      installRoot: installPath("repo", "1", "java-temurin")
     });
     db.updateInstallRequest({
       installRequestId: priorInstall.id,
       status: "succeeded",
-      binPath: "/data/tool-installs/repo/1/java-temurin/bin",
-      envJson: JSON.stringify({ JAVA_HOME: "/data/tool-installs/repo/1/java-temurin/home" }),
+      binPath: installPath("repo", "1", "java-temurin", "bin"),
+      envJson: JSON.stringify({ JAVA_HOME: installPath("repo", "1", "java-temurin", "home") }),
       completedAt: "2026-03-31T00:00:00.000Z"
     });
 
@@ -525,14 +534,17 @@ describe("InstallService", () => {
     await service.runInstall(install.id);
 
     expect(mockSpawnCollect).toHaveBeenCalledWith(
-      expect.stringContaining("/data/tool-installs/repo/1/android-sdk/home/cmdline-tools/latest/bin/sdkmanager"),
+      expect.stringContaining(installPath("repo", "1", "android-sdk", "home", "cmdline-tools", "latest", "bin", "sdkmanager")),
       expect.arrayContaining(["platform-tools"]),
       expect.objectContaining({
         env: expect.objectContaining({
-          JAVA_HOME: "/data/tool-installs/repo/1/java-temurin/home",
-          ANDROID_HOME: "/data/tool-installs/repo/1/android-sdk/home",
-          ANDROID_SDK_ROOT: "/data/tool-installs/repo/1/android-sdk/home",
-          PATH: expect.stringContaining("/data/tool-installs/repo/1/android-sdk/bin:/data/tool-installs/repo/1/java-temurin/bin")
+          JAVA_HOME: installPath("repo", "1", "java-temurin", "home"),
+          ANDROID_HOME: installPath("repo", "1", "android-sdk", "home"),
+          ANDROID_SDK_ROOT: installPath("repo", "1", "android-sdk", "home"),
+          // Two PATH entries, colon-separated — not one path.
+          PATH: expect.stringContaining(
+            `${installPath("repo", "1", "android-sdk", "bin")}:${installPath("repo", "1", "java-temurin", "bin")}`
+          )
         })
       })
     );
@@ -577,7 +589,7 @@ describe("InstallService", () => {
       status: "approved",
       requestedByUserId: "user-1",
       approvedByUserId: "admin-1",
-      installRoot: "/data/tool-installs/system/apt-test"
+      installRoot: installPath("system", "apt-test")
     });
 
     await expect(service.runInstall(install.id)).rejects.toMatchObject({
@@ -610,7 +622,7 @@ describe("InstallService", () => {
           geminiApiKey: undefined,
           databasePath: ":memory:",
           reposRootPath,
-          installsRootPath: "/data/tool-installs",
+          installsRootPath,
           githubCliConfigPath: "/data/.gh",
           logLevel: "info",
           threadAutoArchiveMinutes: 1440,
@@ -637,7 +649,7 @@ describe("InstallService", () => {
         status: "approved",
         requestedByUserId: "user-1",
         approvedByUserId: "admin-1",
-        installRoot: "/data/tool-installs/system/apt-test"
+        installRoot: installPath("system", "apt-test")
       });
 
       mockSpawnCollect.mockResolvedValue({ stdout: "ok", stderr: "" });
@@ -648,7 +660,7 @@ describe("InstallService", () => {
         "sudo",
         [helperPath, "libssl-dev", "pkg-config"],
         expect.objectContaining({
-          cwd: "/data/tool-installs/system/apt-test",
+          cwd: installPath("system", "apt-test"),
           env: expect.objectContaining({
             PATH: "/usr/local/bin:/usr/bin"
           })
@@ -767,12 +779,12 @@ describe("InstallService", () => {
         status: "approved",
         requestedByUserId: "user-1",
         approvedByUserId: "admin-1",
-        installRoot: "/data/tool-installs/request/thread-merge/npm-prettier"
+        installRoot: installPath("request", "thread-merge", "npm-prettier")
       });
       db.updateInstallRequest({
         installRequestId: install.id,
         status: "succeeded",
-        binPath: "/data/tool-installs/request/thread-merge/npm-prettier/bin",
+        binPath: installPath("request", "thread-merge", "npm-prettier", "bin"),
         envJson: JSON.stringify({ CUSTOM_VAR: "custom-value", ANOTHER_VAR: "another-value" }),
         completedAt: "2026-03-31T00:00:00.000Z"
       });
@@ -785,7 +797,10 @@ describe("InstallService", () => {
       expect(result.env.ANOTHER_VAR).toBe("another-value");
     });
 
-    it("prepends bin dirs to PATH and deduplicates", () => {
+    // Asserts POSIX PATH semantics (":" delimiter, /usr/bin). It only passed on
+    // Windows while the install root was the literal "/data/tool-installs"; a
+    // real temp root carries a drive letter, whose colon breaks the split.
+    itPosixOnly("prepends bin dirs to PATH and deduplicates", () => {
       const originalPath = process.env.PATH;
       process.env.PATH = "/usr/bin:/usr/local/bin";
 
@@ -810,12 +825,12 @@ describe("InstallService", () => {
         status: "approved",
         requestedByUserId: "user-1",
         approvedByUserId: "admin-1",
-        installRoot: "/data/tool-installs/request/thread-path/npm-prettier"
+        installRoot: installPath("request", "thread-path", "npm-prettier")
       });
       db.updateInstallRequest({
         installRequestId: installA.id,
         status: "succeeded",
-        binPath: "/data/tool-installs/request/thread-path/npm-prettier/bin",
+        binPath: installPath("request", "thread-path", "npm-prettier", "bin"),
         envJson: "{}",
         completedAt: "2026-03-31T00:00:00.000Z"
       });
@@ -831,12 +846,12 @@ describe("InstallService", () => {
         status: "approved",
         requestedByUserId: "user-1",
         approvedByUserId: "admin-1",
-        installRoot: "/data/tool-installs/request/thread-path/java-temurin"
+        installRoot: installPath("request", "thread-path", "java-temurin")
       });
       db.updateInstallRequest({
         installRequestId: installB.id,
         status: "succeeded",
-        binPath: "/data/tool-installs/request/thread-path/java-temurin/bin",
+        binPath: installPath("request", "thread-path", "java-temurin", "bin"),
         envJson: "{}",
         completedAt: "2026-03-31T00:00:00.000Z"
       });
@@ -844,8 +859,8 @@ describe("InstallService", () => {
       const result = service.buildMinimalExecutionEnvironment({ repoId: 1, threadId: "thread-path" });
 
       const pathParts = result.env.PATH!.split(":");
-      expect(pathParts[0]).toBe("/data/tool-installs/request/thread-path/npm-prettier/bin");
-      expect(pathParts[1]).toBe("/data/tool-installs/request/thread-path/java-temurin/bin");
+      expect(pathParts[0]).toBe(installPath("request", "thread-path", "npm-prettier", "bin"));
+      expect(pathParts[1]).toBe(installPath("request", "thread-path", "java-temurin", "bin"));
       expect(result.env.PATH).toContain("/usr/bin");
       expect(result.env.PATH).toContain("/usr/local/bin");
 
@@ -877,7 +892,7 @@ describe("InstallService", () => {
 
   it("skips stale installs from both execution environment builders and logs the missing path", () => {
     const logger = { warn: vi.fn(), info: vi.fn() };
-    const staleRoot = "/data/tool-installs/repo/1/java-temurin";
+    const staleRoot = installPath("repo", "1", "java-temurin");
     const install = db.createInstallRequest({
       guildId: "guild-1",
       repoId: 1,
@@ -912,7 +927,7 @@ describe("InstallService", () => {
   });
 
   it("skips an install when an absolute filesystem-valued environment entry is stale", () => {
-    const root = "/data/tool-installs/repo/1/android-sdk";
+    const root = installPath("repo", "1", "android-sdk");
     const binPath = `${root}/bin`;
     const missingSdk = `${root}/sdk`;
     const install = db.createInstallRequest({
@@ -1027,7 +1042,7 @@ describe("InstallService", () => {
   });
 
   it("does not mark an install stale for missing absolute env values outside the install root", () => {
-    const root = "/data/tool-installs/repo/1/gcc-toolchain";
+    const root = installPath("repo", "1", "gcc-toolchain");
     const binPath = `${root}/bin`;
     const install = db.createInstallRequest({
       guildId: "guild-1",
