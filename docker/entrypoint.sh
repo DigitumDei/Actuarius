@@ -127,7 +127,10 @@ prune_cache_dir() {
   # catch-all to hold: /* skips dotfiles, /.[!.]* catches ".npm" but not "..foo",
   # and /..?* catches those. None of them match "." or ".." themselves.
   for entry in "$cache_dir"/* "$cache_dir"/.[!.]* "$cache_dir"/..?*; do
-    [ -e "$entry" ] || continue
+    # -e alone is false for a broken symlink, which would leave it to
+    # accumulate; -L catches those. An unexpanded glob matches neither, which
+    # is what makes this double as the no-match guard.
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
     entry_name="${entry##*/}"
     keep_entry=false
     for preserved in "$@"; do
