@@ -110,6 +110,17 @@ variable "enable_mempalace_remote" {
   description = "Enable Actuarius' loopback MemPalace federation server for repo memory."
 }
 
+variable "mempalace_embedding_profile" {
+  type        = string
+  default     = "low_cpu"
+  description = "MemPalace embedding profile: low_cpu (quantized model, bounded ingest batches) or balanced (fp32, unbounded). Keep low_cpu on the e2-micro."
+
+  validation {
+    condition     = contains(["low_cpu", "balanced"], var.mempalace_embedding_profile)
+    error_message = "mempalace_embedding_profile must be either \"low_cpu\" or \"balanced\"."
+  }
+}
+
 variable "mempalace_remote_url" {
   type        = string
   default     = ""

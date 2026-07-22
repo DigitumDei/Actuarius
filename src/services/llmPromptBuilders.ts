@@ -161,6 +161,25 @@ export function buildPlanPrompt(input: {
   ].join("\n");
 }
 
+export function buildOpencodePlanWorkflowPrompt(input: {
+  repoFullName: string;
+  requestPrompt: string;
+  implementerAgent: string;
+}): string {
+  return [
+    `Repository: ${input.repoFullName}`,
+    "",
+    "Run the complete managed plan-and-implement workflow for the request below.",
+    `You must plan first, then invoke the foreground \`${input.implementerAgent}\` subagent exactly once to perform all edits and validation.`,
+    "Wait for that task to complete, inspect the resulting diff, and return the required final report.",
+    "Do not edit files directly, do not use a background task, and do not return before the implementation task finishes.",
+    "Actuarius verifies the completed subagent task event and will fail the request if delegation is skipped.",
+    "",
+    "Original request:",
+    input.requestPrompt
+  ].join("\n");
+}
+
 export function buildPlanImplementationPrompt(input: {
   repoFullName: string;
   originalPrompt: string;

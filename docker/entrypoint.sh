@@ -15,76 +15,103 @@ fi
 
 MEMPALACE_BINARY_PATH="${MEMPALACE_BINARY_PATH:-/usr/local/bin/mempalace-mcp}"
 MEMPALACE_PALACE_PATH="${MEMPALACE_PALACE_PATH:-/data/mempalace/palace}"
+# Agent-spawned MCP servers do not reliably inherit the container environment,
+# so the profile is written into each client's server definition explicitly.
+MEMPALACE_EMBEDDING_PROFILE="${MEMPALACE_EMBEDDING_PROFILE:-low_cpu}"
 
 mkdir -p "$HOME/.gemini"
 if [ ! -f "$HOME/.gemini/settings.json" ]; then
   echo '{"security":{"auth":{"selectedType":"oauth-personal"}}}' > "$HOME/.gemini/settings.json"
 fi
-if [ -x "$MEMPALACE_BINARY_PATH" ]; then
-  python3 - "$HOME/.gemini/settings.json" "$MEMPALACE_BINARY_PATH" "$MEMPALACE_PALACE_PATH" <<'PYEOF'
-import json, sys
-path, binary, palace = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(path) as f: cfg = json.load(f)
-if "mcpServers" not in cfg:
-    cfg["mcpServers"] = {}
-if "mempalace" not in cfg["mcpServers"]:
-    cfg["mcpServers"]["mempalace"] = {
-        "command": binary,
-        "env": {"MEMPALACE_PALACE_PATH": palace, "MEMPALACE_EMBED_ALLOW_DOWNLOADS": "1"}
-    }
-    with open(path, "w") as f: json.dump(cfg, f, indent=2)
-PYEOF
-fi
 
+# These registrations converge to the declared state on every start rather than
+# writing only when absent. $HOME is on the persistent data disk, so an upgraded
+# container finds MemPalace already registered from a previous image; a
+# write-if-absent guard would leave those stale definitions untouched and the
+# agents would keep launching MemPalace on whatever profile was baked in when
+# the entry was first written. Each writer is a no-op when the file already
+# matches, so repeated restarts do not churn the file.
 if [ -x "$MEMPALACE_BINARY_PATH" ]; then
-  if ! grep -q '"mempalace"' "$HOME/.claude.json" 2>/dev/null; then
-    python3 - "$HOME/.claude.json" "$MEMPALACE_BINARY_PATH" "$MEMPALACE_PALACE_PATH" <<'PYEOF'
-import json, sys, os
-path, binary, palace = sys.argv[1], sys.argv[2], sys.argv[3]
-cfg = {}
-if os.path.exists(path):
-    with open(path) as f: cfg = json.load(f)
-if "mcpServers" not in cfg: cfg["mcpServers"] = {}
-cfg["mcpServers"]["mempalace"] = {
-    "command": binary,
-    "env": {"MEMPALACE_PALACE_PATH": palace, "MEMPALACE_EMBED_ALLOW_DOWNLOADS": "1"}
-}
-with open(path, "w") as f: json.dump(cfg, f, indent=2)
-PYEOF
-  fi
-
   mkdir -p "$HOME/.codex"
-  if ! grep -q '\[mcp_servers\.mempalace\]' "$HOME/.codex/config.toml" 2>/dev/null; then
-    cat <<EOF >> "$HOME/.codex/config.toml"
-
-[mcp_servers.mempalace]
-command = "$MEMPALACE_BINARY_PATH"
-
-[mcp_servers.mempalace.env]
-MEMPALACE_PALACE_PATH = "$MEMPALACE_PALACE_PATH"
-MEMPALACE_EMBED_ALLOW_DOWNLOADS = "1"
-EOF
-  fi
-
   OPENCODE_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
   mkdir -p "$OPENCODE_CONFIG_DIR"
-  if ! grep -q '"type"' "$OPENCODE_CONFIG_DIR/config.json" 2>/dev/null; then
-    python3 - "$OPENCODE_CONFIG_DIR/config.json" "$MEMPALACE_BINARY_PATH" "$MEMPALACE_PALACE_PATH" <<'PYEOF'
-import json, sys, os
-path, binary, palace = sys.argv[1], sys.argv[2], sys.argv[3]
-cfg = {}
-if os.path.exists(path):
-    with open(path) as f: cfg = json.load(f)
-if "mcp" not in cfg: cfg["mcp"] = {}
-cfg["mcp"]["mempalace"] = {
-    "type": "local",
-    "enabled": True,
-    "command": [binary],
-    "environment": {"MEMPALACE_PALACE_PATH": palace, "MEMPALACE_EMBED_ALLOW_DOWNLOADS": "1"}
+
+  python3 - "$MEMPALACE_BINARY_PATH" "$MEMPALACE_PALACE_PATH" "$MEMPALACE_EMBEDDING_PROFILE" \
+    "$HOME/.gemini/settings.json" "$HOME/.claude.json" "$HOME/.codex/config.toml" \
+    "$OPENCODE_CONFIG_DIR/config.json" <<'PYEOF'
+import json, os, re, sys
+
+binary, palace, profile = sys.argv[1], sys.argv[2], sys.argv[3]
+gemini_path, claude_path, codex_path, opencode_path = sys.argv[4:8]
+
+env = {
+    "MEMPALACE_PALACE_PATH": palace,
+    "MEMPALACE_EMBEDDING_PROFILE": profile,
+    "MEMPALACE_EMBED_ALLOW_DOWNLOADS": "1",
 }
-with open(path, "w") as f: json.dump(cfg, f, indent=2)
+
+
+def load_json(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as handle:
+            return json.load(handle)
+    except (ValueError, OSError) as exc:
+        # A corrupt agent config must not take the whole container down.
+        print("WARNING: could not parse %s (%s); leaving it alone" % (path, exc), file=sys.stderr)
+        return None
+
+
+def write_json_if_changed(path, cfg, before):
+    after = json.dumps(cfg, indent=2, sort_keys=True)
+    if after == before:
+        return
+    with open(path, "w") as handle:
+        json.dump(cfg, handle, indent=2)
+
+
+def upsert_json(path, container_key, entry):
+    cfg = load_json(path)
+    if cfg is None:
+        return
+    before = json.dumps(cfg, indent=2, sort_keys=True)
+    cfg.setdefault(container_key, {})["mempalace"] = entry
+    write_json_if_changed(path, cfg, before)
+
+
+upsert_json(gemini_path, "mcpServers", {"command": binary, "env": dict(env)})
+upsert_json(claude_path, "mcpServers", {"command": binary, "env": dict(env)})
+upsert_json(
+    opencode_path,
+    "mcp",
+    {"type": "local", "enabled": True, "command": [binary], "environment": dict(env)},
+)
+
+# Codex uses TOML and Python ships no stdlib writer, so the mempalace tables are
+# stripped and re-appended. The lookahead ends a section at the next table
+# header at line start (not at any "[") so that a value containing a TOML array
+# does not truncate the match and leave orphaned syntax behind.
+try:
+    with open(codex_path) as handle:
+        codex = handle.read()
+except OSError:
+    codex = ""
+
+stripped = re.sub(
+    r"(?ms)^\[mcp_servers\.mempalace(?:\.[A-Za-z0-9_]+)?\].*?(?=^\[|\Z)",
+    "",
+    codex,
+).rstrip()
+
+block = ['[mcp_servers.mempalace]', 'command = "%s"' % binary, '', '[mcp_servers.mempalace.env]']
+block += ['%s = "%s"' % (key, value) for key, value in env.items()]
+desired = (stripped + "\n\n" if stripped else "") + "\n".join(block) + "\n"
+
+if desired != codex:
+    with open(codex_path, "w") as handle:
+        handle.write(desired)
 PYEOF
-  fi
 fi
 
 # ── cache rotation ────────────────────────────────────────────

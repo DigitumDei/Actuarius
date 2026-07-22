@@ -63,6 +63,15 @@ Copy `.env.example` to `.env` and set:
 - `MEMPALACE_REMOTE_URL` (default `http://127.0.0.1:8765`)
 - `MEMPALACE_REMOTE_TOKEN` (optional; generated and persisted if omitted)
 - `MEMPALACE_REMOTE_MINE_ON_SYNC` (default `true`, queues repo mining after connect/sync/checkouts)
+- `MEMPALACE_EMBEDDING_PROFILE` (default `low_cpu`; accepts `low_cpu` or `balanced`)
+
+MemPalace's own default profile is `balanced`, which loads the fp32 embedding model
+and leaves every runtime guardrail unbounded — ingest batch size, queue depth and
+worker threads are all uncapped, and the profile declares no RSS budget. Actuarius
+overrides this to `low_cpu` (quantized model, ingest batches of 8, single worker
+thread, 450 MB idle budget) because the production VM is a 1 GB e2-micro that
+otherwise OOM-kills provider processes. Only move to `balanced` on a host with
+proven memory headroom.
 
 All timeout defaults live together in [`TIMEOUT_DEFAULTS_MS`](src/config.ts) and can be overridden with these millisecond-valued environment variables:
 
@@ -74,6 +83,25 @@ All timeout defaults live together in [`TIMEOUT_DEFAULTS_MS`](src/config.ts) and
 - `MEMPALACE_REMOTE_TIMEOUT_MS` and `MEMPALACE_REMOTE_MINE_TIMEOUT_MS` — remote request and mine-operation caps (defaults `5000` and `2700000`)
 
 Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global`, with `docker/entrypoint.sh` seeding them on first boot if missing. That keeps provider authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. For OpenCode, use `/auth-openai-opencode` to connect a ChatGPT Pro/Plus subscription with OpenAI's device flow, `/opencode-auth` to store per-provider API keys in `auth.json`, or set provider API keys such as `DEEPSEEK_API_KEY` in the environment. `/opencode-auth` supports DeepSeek, OpenAI, Anthropic, Google, xAI, Groq, OpenRouter, and Together.
+
+### Experimental OpenCode-native planning
+
+`/plan-oc prompt:<text>` is a playground workflow that runs alongside the existing
+`/plan` command. It starts one OpenCode CLI session with a read-only primary planner;
+the planner creates the implementation plan and delegates the edits and validation to
+the managed implementation subagent in that same session. The established `/plan`
+workflow and its model settings are unchanged.
+
+Use `/model-select-oc role:<planner|implementer> model:<provider/model>` to set an
+agent's explicit OpenCode model, or pass `clear:true` instead of `model` to remove the
+override and let OpenCode resolve its normal default or inheritance. This command
+requires Manage Server permission. The managed Markdown agent files persist at
+`/data/home/appuser/.config/actuarius-opencode/agents`; versioned templates seed files
+that do not yet exist, without overwriting later manual edits. Each `/plan-oc` request
+uses a snapshot of those files, so a model change affects subsequent requests rather
+than a workflow already in progress. The implementation subagent has shell access in
+the request worktree; its no-commit/no-push rules are behavioral guardrails rather
+than an OS sandbox, so the private-server trust boundary described below still applies.
 
 Managed tool installs are validated against the filesystem before Actuarius adds
 their binaries or environment values to provider processes. Use `/uninstall`
