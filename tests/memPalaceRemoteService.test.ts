@@ -151,11 +151,35 @@ describe("MemPalaceRemoteService", () => {
     );
     expect(globalConfig.federation.wings[wing]).toEqual({ mode: "combined", remote: "actuarius", write: "remote" });
     expect(globalConfig.federation.kg).toEqual({ mode: "combined", remote: "actuarius", write: "remote" });
+    expect(globalConfig.federation.default_mode).toBe("remote");
     expect(globalConfig.federation.remotes[0]).not.toHaveProperty("token_env");
 
     const tokenEntries = JSON.parse(readFileSync(config.mempalaceRemoteTokenFile, "utf8"));
     expect(tokenEntries[0]).toMatchObject({ name: "actuarius-local", token: "test-token", enabled: true });
     expect(readFileSync(join(checkoutPath, ".git", "info", "exclude"), "utf8")).toContain("mempalace.yaml");
+  });
+
+  it("forces default_mode to remote, overriding a persisted local so all non-diary writes route to the shared palace", async () => {
+    const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-defaultmode-"));
+    const homeDir = join(root, "home");
+    const config = makeConfig(root);
+    const repo = makeRepo();
+    const checkoutPath = join(config.reposRootPath, repo.owner, repo.repo);
+    mkdirSync(join(checkoutPath, ".git", "info"), { recursive: true });
+    mkdirSync(join(homeDir, ".mempalace"), { recursive: true });
+    // The bot's old default "local" gets baked onto the persistent /data disk; it
+    // must not survive — the container routes every non-diary write remote.
+    writeFileSync(
+      join(homeDir, ".mempalace", "config.json"),
+      JSON.stringify({ federation: { default_mode: "local" } }),
+      "utf8"
+    );
+
+    const service = new MemPalaceRemoteService(config, logger, { homeDir });
+    await service.registerRepository(repo, checkoutPath);
+
+    const globalConfig = JSON.parse(readFileSync(join(homeDir, ".mempalace", "config.json"), "utf8"));
+    expect(globalConfig.federation.default_mode).toBe("remote");
   });
 
   it("prunes stale bot-managed wing rules and checkouts, preserving operator-authored rules", async () => {

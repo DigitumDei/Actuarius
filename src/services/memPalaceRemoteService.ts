@@ -485,7 +485,16 @@ export class MemPalaceRemoteService {
       federation: {
         ...federation,
         remotes,
-        default_mode: typeof federation.default_mode === "string" ? federation.default_mode : "local",
+        // Route every non-diary write to the shared (remote) palace: the container
+        // is ephemeral, so its knowledge must live on the canonical serve palace,
+        // not the agent's local store. Set unconditionally — deliberately unlike
+        // the preserve-operator pattern used for wings/kg above — because this is a
+        // hard policy ("all non-diary writes go remote"), and $HOME/.mempalace lives
+        // on the persistent /data disk, so a stale persisted "local" (or an operator
+        // "combined") would otherwise survive redeploys and silently defeat it.
+        // Diaries are always-local by the tool contract; repo wings and kg already
+        // write: remote, so only untracked wings change behavior here.
+        default_mode: "remote",
         wings,
         kg
       }
