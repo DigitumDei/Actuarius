@@ -154,7 +154,11 @@ const { ActuariusBot } = await import("../src/discord/bot.js");
 
 const logger = pino({ level: "silent" });
 
-function createBot(dbOverrides: Record<string, unknown> = {}, memPalace: unknown = null): ActuariusBot {
+function createBot(
+  dbOverrides: Record<string, unknown> = {},
+  memPalace: unknown = null,
+  memPalaceRemote: unknown = null
+): ActuariusBot {
   const config = {
     discordToken: "token",
     discordClientId: "client",
@@ -210,7 +214,7 @@ function createBot(dbOverrides: Record<string, unknown> = {}, memPalace: unknown
     ...dbOverrides
   };
 
-  return new ActuariusBot(config, logger, db as never, memPalace as never);
+  return new ActuariusBot(config, logger, db as never, memPalace as never, memPalaceRemote as never);
 }
 
 function createInteraction(overrides: Record<string, unknown> = {}) {
@@ -1040,6 +1044,56 @@ describe("ActuariusBot thread follow-ups", () => {
     expect(sent.some((message) => message.includes("done"))).toBe(true);
   });
 
+  it("injects the repository-specific MemPalace wing into queued provider prompts", async () => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/shotquill" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-shotquill",
+      branchName: "ask/102-123"
+    });
+    vi.mocked(runClaudeRequest).mockResolvedValue({ text: "done" });
+
+    const memPalaceRemote = {
+      registerRepository: vi.fn().mockResolvedValue("wing_shotquill"),
+      ensureWorktreeConfig: vi.fn().mockResolvedValue("wing_shotquill")
+    };
+    const thread = {
+      isThread: () => true,
+      send: vi.fn().mockResolvedValue(undefined),
+      messages: { fetch: vi.fn().mockResolvedValue(new Map()) }
+    };
+    const bot = createBot({
+      updateRequestStatus: vi.fn(),
+      updateRequestWorkspace: vi.fn()
+    }, null, memPalaceRemote);
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue(thread);
+
+    await (bot as any).runQueuedRequest({
+      requestId: 102,
+      threadId: "thread-shotquill",
+      repoId: 2,
+      repo: {
+        owner: "DigitumDei",
+        repo: "ShotQuill",
+        fullName: "DigitumDei/ShotQuill"
+      },
+      prompt: "Implement the change",
+      provider: "claude"
+    });
+
+    expect(memPalaceRemote.ensureWorktreeConfig).toHaveBeenCalledWith(
+      {
+        owner: "DigitumDei",
+        repo: "ShotQuill",
+        fullName: "DigitumDei/ShotQuill"
+      },
+      "/tmp/worktree-shotquill"
+    );
+    const providerPrompt = vi.mocked(runClaudeRequest).mock.calls[0]![0].prompt;
+    expect(providerPrompt).toContain("Repository: DigitumDei/ShotQuill");
+    expect(providerPrompt).toContain("project memory wing for the repository being worked on is `wing_shotquill`");
+    expect(providerPrompt).not.toContain("`wing_actuarius`");
+  });
+
   it("exercises real buildMinimalExecutionEnvironment in queued ask path — auth vars, bin PATH, no arbitrary env", async () => {
     vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
     vi.mocked(createRequestWorktree).mockResolvedValue({
@@ -1661,6 +1715,32 @@ describe("ActuariusBot review runner selection", () => {
     expect(runners.judge.provider).toBe("claude");
     expect(runners.summarizer.provider).toBe("gemini");
     expect(runners.summarizer.model).toBe("gemini-2.5-pro");
+  });
+
+  it("propagates the resolved repository wing to review provider runs", async () => {
+    const bot = createBot({
+      getReviewerSlots: vi.fn().mockReturnValue([
+        { slot_index: 1, provider: "claude", model: null },
+        { slot_index: 2, provider: "gemini", model: null }
+      ])
+    });
+    (bot as any).runProviderText = vi.fn().mockResolvedValue("review output");
+
+    const runners = (bot as any).buildReviewRunners({
+      guildId: "guild-1",
+      repoId: 1,
+      memoryWing: "wing_shotquill"
+    });
+    await runners.reviewers[0].run({
+      prompt: "Review the change.",
+      cwd: "/tmp/worktree",
+      timeoutMs: 1_000
+    });
+
+    expect((bot as any).runProviderText).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: "Review the change.",
+      memoryWing: "wing_shotquill"
+    }));
   });
 });
 
@@ -3706,7 +3786,7 @@ describe("ActuariusBot plan-oc command", () => {
     (bot as any).requestQueue.enqueue = enqueue;
     (bot as any).client.channels.fetch = vi.fn().mockResolvedValue(thread);
     (bot as any).prepareRepositoryMemory = vi.fn().mockResolvedValue(undefined);
-    (bot as any).prepareWorktreeMemoryConfig = vi.fn().mockResolvedValue(undefined);
+    (bot as any).prepareWorktreeMemoryConfig = vi.fn().mockResolvedValue("wing_hello_world");
     (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
       packages: [],
       env: { GH_TOKEN: "test-token", OPENCODE_CONFIG_CONTENT: "untrusted-inline-config" }
@@ -3746,6 +3826,8 @@ describe("ActuariusBot plan-oc command", () => {
       }),
       logger
     );
+    expect(vi.mocked(runOpencodeAgentRequest).mock.calls[0]![0].prompt)
+      .toContain("project memory wing for the repository being worked on is `wing_hello_world`");
     expect(vi.mocked(runOpencodeAgentRequest).mock.calls[0]![0].env?.OPENCODE_CONFIG_CONTENT).toBeUndefined();
     expect(updateRequestStatus).toHaveBeenNthCalledWith(1, 121, "running");
     expect(updateRequestStatus).toHaveBeenLastCalledWith(121, "succeeded");
@@ -3989,6 +4071,7 @@ describe("ActuariusBot plan runner", () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const updateRequestStatus = vi.fn();
     const bot = createBot({ updateRequestStatus });
+    (bot as any).prepareWorktreeMemoryConfig = vi.fn().mockResolvedValue("wing_hello_world");
     (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
       isThread: () => true,
       send
@@ -4017,9 +4100,11 @@ describe("ActuariusBot plan runner", () => {
     expect(planPrompt).toContain("Produce a structured implementation plan");
     expect(planPrompt).not.toContain("iterative");
     expect(planPrompt).not.toContain("Return ONLY valid JSON");
+    expect(runCalls[0]![0].memoryWing).toBe("wing_hello_world");
 
     const implPrompt = runCalls[1]![0].prompt;
     expect(implPrompt).toContain("Implement the request using the approved plan below");
+    expect(runCalls[1]![0].memoryWing).toBe("wing_hello_world");
 
     expect(updateRequestStatus).toHaveBeenCalledWith(92, "succeeded");
     expect(runIterativeTaskLoop).not.toHaveBeenCalled();
@@ -5416,6 +5501,7 @@ describe("ActuariusBot revise command", () => {
         isThread: () => true,
         send
       });
+      (bot as any).prepareWorktreeMemoryConfig = vi.fn().mockResolvedValue("wing_hello_world");
       (bot as any).runProviderText = vi.fn().mockResolvedValue(JSON.stringify({
         overview: "Fix bugs",
         tasks: [{ title: "Fix bug 1", description: "Fix the first bug" }]
@@ -5440,6 +5526,7 @@ describe("ActuariusBot revise command", () => {
       expect(runCalls.length).toBeGreaterThanOrEqual(1);
       for (const call of runCalls) {
         expect(call[0]).toHaveProperty("env");
+        expect(call[0].memoryWing).toBe("wing_hello_world");
         const env = call[0].env;
         expect(env.OPENAI_API_KEY).toBe("sk-openai-test");
         expect(env.GEMINI_API_KEY).toBe("gemini-test");
