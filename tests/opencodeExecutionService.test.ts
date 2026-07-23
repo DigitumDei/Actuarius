@@ -572,7 +572,7 @@ describe("managed OpenCode agent execution", () => {
     });
   });
 
-  it("fails when the implementation subagent completes more than once", async () => {
+  it("accepts multiple completed implementation tasks for planner-directed follow-up work", async () => {
     const completedTask = (id: string) => JSON.stringify({
       type: "tool_use",
       part: {
@@ -599,10 +599,6 @@ describe("managed OpenCode agent execution", () => {
       timeoutMs: 12_345,
       agent: "actuarius-plan-oc",
       requiredSubagent: "actuarius-implement-oc"
-    }, logger)).rejects.toMatchObject({
-      name: "OpencodeExecutionError",
-      code: "FAILED",
-      message: expect.stringContaining("2 times")
-    });
+    }, logger)).resolves.toEqual({ text: "Two implementations completed." });
   });
 });

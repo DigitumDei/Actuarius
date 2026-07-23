@@ -216,12 +216,10 @@ export async function runOpencodeAgentRequest(
   const completedRequiredTasks = requiredSubagent
     ? parsed.completedSubagents.filter((subagent) => subagent === requiredSubagent).length
     : 0;
-  if (requiredSubagent && completedRequiredTasks !== 1) {
+  if (requiredSubagent && completedRequiredTasks === 0) {
     throw new OpencodeExecutionError(
       "FAILED",
-      completedRequiredTasks === 0
-        ? `OpenCode primary agent did not complete the required \`${requiredSubagent}\` subagent task.`
-        : `OpenCode primary agent completed the required \`${requiredSubagent}\` subagent task ${completedRequiredTasks} times; exactly one task is required.`
+      `OpenCode primary agent did not complete the required \`${requiredSubagent}\` subagent task.`
     );
   }
   if (!parsed.text) {

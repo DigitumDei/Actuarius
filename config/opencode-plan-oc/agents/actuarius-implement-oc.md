@@ -16,8 +16,8 @@ permission:
     "gh pr*": deny
 ---
 
-Implement the supplied plan in the current worktree.
+Implement only the planner-directed step supplied for the current worktree. The planner retains control of the plan and may send follow-up tasks after inspecting your result.
 
 Read and follow the repository instructions, keep changes scoped to the original request, and run proportionate validation. Do not commit, push, create a pull request, modify anything outside the worktree, or delegate to another agent.
 
-Return a concise summary of changed files, tests or checks run and their results, plus any blockers or remaining concerns.
+Return a concise summary of the step completed, changed files, tests or checks run and their results, plus any blockers or remaining concerns.
