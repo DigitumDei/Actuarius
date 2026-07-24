@@ -35,18 +35,18 @@ FROM base AS runtime
 
 WORKDIR /app
 
-# Download MemPalace binaries from the public nightly release on mempalace-rs.
-# No auth required — public release assets are unauthenticated.
-# If the download fails the binaries are simply not installed and MemPalace has no effect.
+# Download pinned MemPalace binaries from the public mempalace-rs release.
+# No auth required — public release assets are unauthenticated. Keep the
+# checksums in sync with the release assets when upgrading this version.
 RUN curl -fsSL \
-      https://github.com/DigitumDei/mempalace-rs/releases/download/nightly/mempalace-mcp-linux-x86_64 \
+      https://github.com/DigitumDei/mempalace-rs/releases/download/v0.1.0/mempalace-mcp-linux-x86_64 \
       -o /usr/local/bin/mempalace-mcp \
-    && chmod 0755 /usr/local/bin/mempalace-mcp \
     && curl -fsSL \
-      https://github.com/DigitumDei/mempalace-rs/releases/download/nightly/mempalace-cli-linux-x86_64 \
+      https://github.com/DigitumDei/mempalace-rs/releases/download/v0.1.0/mempalace-cli-linux-x86_64 \
       -o /usr/local/bin/mempalace-cli \
-    && chmod 0755 /usr/local/bin/mempalace-cli \
-    || echo "WARNING: Failed to download MemPalace binaries — MemPalace will be unavailable"
+    && echo "908c49585c848a1713b48a7e4de873479d96b7b4e090f7932b80bc994b42511b  /usr/local/bin/mempalace-mcp" | sha256sum -c - \
+    && echo "4e71b1d14839c16665295e81927ca161f9be97a702eeae16bb217dda31941a9d  /usr/local/bin/mempalace-cli" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/mempalace-mcp /usr/local/bin/mempalace-cli
 
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/data/app.db
