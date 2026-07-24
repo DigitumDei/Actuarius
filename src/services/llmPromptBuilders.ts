@@ -42,6 +42,24 @@ export function clipPromptText(text: string, maxLength: number): string {
   return text.length <= maxLength ? text : `${text.slice(0, maxLength - 16).trimEnd()}\n...(truncated)`;
 }
 
+export function buildRepositoryMemoryScopedPrompt(input: {
+  prompt: string;
+  memoryWing?: string | null | undefined;
+}): string {
+  if (!input.memoryWing) return input.prompt;
+
+  return [
+    input.prompt,
+    "",
+    "## MemPalace repository memory",
+    "",
+    `The project memory wing for the repository being worked on is \`${input.memoryWing}\`.`,
+    "Use this exact wing for every repo-scoped MemPalace operation. Do not derive or invent a wing from the repository owner/name.",
+    "Store durable repository knowledge with `mempalace_add_drawer` in this wing. Project diary entries are local-only and do not replace durable drawers.",
+    "If you write a project-scoped diary entry, use this same wing. Consult `mempalace.yaml` for the repository's room definitions."
+  ].join("\n");
+}
+
 function matchesNewUserMessage(entryText: string, newMessageContent: string): boolean {
   const normalized = newMessageContent.trim();
   return entryText === normalized || entryText.startsWith(`${normalized}\n\n**Attachments**\n`);

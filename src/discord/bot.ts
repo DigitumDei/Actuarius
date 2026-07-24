@@ -101,6 +101,7 @@ import {
   buildOpencodePlanWorkflowPrompt,
   buildPlanImplementationPrompt,
   buildPlanPrompt,
+  buildRepositoryMemoryScopedPrompt,
   buildRepositoryScopedPrompt,
   buildRevisionPlanPrompt,
   buildThreadFollowUpPrompt
@@ -970,13 +971,14 @@ export class ActuariusBot {
   private async prepareWorktreeMemoryConfig(
     repo: RepoRow | { owner: string; repo: string; fullName: string },
     worktreePath: string
-  ): Promise<void> {
-    if (!this.memPalaceRemote) return;
+  ): Promise<string | null> {
+    if (!this.memPalaceRemote) return null;
     const identity = this.toRepoMemoryIdentity(repo);
     try {
-      await this.memPalaceRemote.ensureWorktreeConfig(identity, worktreePath);
+      return await this.memPalaceRemote.ensureWorktreeConfig(identity, worktreePath);
     } catch (error) {
       this.logger.warn({ error, repo: identity.fullName, worktreePath }, "MemPalace worktree config preparation failed");
+      return null;
     }
   }
 
@@ -3123,7 +3125,14 @@ export class ActuariusBot {
       ...(defaultModel ? { model: defaultModel } : {}),
       label: slotIndex !== undefined ? `${AI_PROVIDER_LABELS[provider]} (Slot ${slotIndex})` : AI_PROVIDER_LABELS[provider],
       run: async ({ prompt, cwd, timeoutMs, model }) =>
-        this.runProviderText({ provider, prompt, cwd, timeoutMs, ...(model ? { model } : {}), env: reviewEnv })
+        this.runProviderText({
+          provider,
+          prompt,
+          cwd,
+          timeoutMs,
+          ...(model ? { model } : {}),
+          env: reviewEnv
+        })
     });
 
     if (slots.length > 0) {
@@ -3229,9 +3238,13 @@ export class ActuariusBot {
     model?: string;
     env?: NodeJS.ProcessEnv;
     role?: "implementation" | "planner" | "verification";
+    memoryWing?: string | null | undefined;
   }): Promise<string> {
     const request = {
-      prompt: input.prompt,
+      prompt: buildRepositoryMemoryScopedPrompt({
+        prompt: input.prompt,
+        memoryWing: input.memoryWing
+      }),
       cwd: input.cwd,
       timeoutMs: input.timeoutMs ?? this.config.askExecutionTimeoutMs,
       idleTimeoutMs: this.config.providerIdleTimeoutMs,
@@ -3951,6 +3964,7 @@ export class ActuariusBot {
     env: NodeJS.ProcessEnv | undefined;
     timeoutMs: number;
     verificationTimeoutMs: number;
+    memoryWing?: string | null | undefined;
   }): Promise<{
     tasks: IterativePlanTask[];
     overview: string;
@@ -3993,7 +4007,12 @@ export class ActuariusBot {
       plannerModel: input.planner.model,
       implementerProvider: input.implementer.provider,
       implementerModel: input.implementer.model,
-      runProviderText: async (opts) => this.runProviderText(opts),
+      runProviderText: async (opts) => this.runProviderText({
+        ...opts,
+        ...(opts.role === "implementation" && input.memoryWing
+          ? { memoryWing: input.memoryWing }
+          : {})
+      }),
       timeoutMs: input.timeoutMs,
       verificationTimeoutMs: input.verificationTimeoutMs,
       env: input.env,
@@ -4093,7 +4112,7 @@ export class ActuariusBot {
       }, input.requestId);
       worktreePath = worktree.path;
       branchName = worktree.branchName;
-      await this.prepareWorktreeMemoryConfig(input.repo, worktreePath);
+      const memoryWing = await this.prepareWorktreeMemoryConfig(input.repo, worktreePath);
       this.db.updateRequestWorkspace(input.requestId, worktreePath, branchName);
 
       const executionEnvironment = this.installService.buildMinimalExecutionEnvironment({
@@ -4147,7 +4166,8 @@ export class ActuariusBot {
           implementer: input.implementer,
           env,
           timeoutMs: this.config.askExecutionTimeoutMs,
-          verificationTimeoutMs: this.config.iterativeVerificationTimeoutMs
+          verificationTimeoutMs: this.config.iterativeVerificationTimeoutMs,
+          memoryWing
         });
 
         this.db.updateRequestStatus(input.requestId, "succeeded");
@@ -4204,7 +4224,8 @@ export class ActuariusBot {
           timeoutMs: this.config.askExecutionTimeoutMs,
           role: "implementation",
           ...(input.implementer.model ? { model: input.implementer.model } : {}),
-          env
+          env,
+          memoryWing
         });
         for (const chunk of splitIntoDiscordMessages(implementationText, implementerLabel)) {
           await threadChannel.send(chunk);
@@ -4334,7 +4355,7 @@ export class ActuariusBot {
       }, input.requestId);
       worktreePath = worktree.path;
       branchName = worktree.branchName;
-      await this.prepareWorktreeMemoryConfig(input.repo, worktreePath);
+      const memoryWing = await this.prepareWorktreeMemoryConfig(input.repo, worktreePath);
       this.db.updateRequestWorkspace(input.requestId, worktreePath, branchName);
 
       const executionEnvironment = this.installService.buildMinimalExecutionEnvironment({
@@ -4356,10 +4377,13 @@ export class ActuariusBot {
       );
 
       const result = await runOpencodeAgentRequest({
-        prompt: buildOpencodePlanWorkflowPrompt({
-          repoFullName: input.repo.fullName,
-          requestPrompt: input.prompt,
-          implementerAgent: OPENCODE_IMPLEMENT_OC_AGENT
+        prompt: buildRepositoryMemoryScopedPrompt({
+          prompt: buildOpencodePlanWorkflowPrompt({
+            repoFullName: input.repo.fullName,
+            requestPrompt: input.prompt,
+            implementerAgent: OPENCODE_IMPLEMENT_OC_AGENT
+          }),
+          memoryWing
         }),
         cwd: worktreePath,
         timeoutMs: this.config.askExecutionTimeoutMs,
@@ -4512,7 +4536,7 @@ export class ActuariusBot {
         this.logger.error({ requestId: input.requestId, worktreePath: input.worktreePath }, "Revise request worktree no longer exists");
         return;
       }
-      await this.prepareWorktreeMemoryConfig(input.repo, input.worktreePath);
+      const memoryWing = await this.prepareWorktreeMemoryConfig(input.repo, input.worktreePath);
       const reviewDiff = await getReviewDiff(input.worktreePath, { headRef: input.branchName, excludePaths: ["docs/reviews/**"] });
       const currentDiff = reviewDiff.diffText;
 
@@ -4566,7 +4590,8 @@ export class ActuariusBot {
         implementer: input.implementer,
         env,
         timeoutMs: this.config.askExecutionTimeoutMs,
-        verificationTimeoutMs: this.config.iterativeVerificationTimeoutMs
+        verificationTimeoutMs: this.config.iterativeVerificationTimeoutMs,
+        memoryWing
       });
 
       this.db.updateRequestStatus(input.requestId, "succeeded");
@@ -4666,6 +4691,7 @@ export class ActuariusBot {
     let statusFinalized = false;
     let stage = "init";
     let threadChannel: Awaited<ReturnType<Client["channels"]["fetch"]>> | null = null;
+    let memoryWing: string | null = null;
 
     const markFailed = (): void => {
       if (statusFinalized) {
@@ -4695,7 +4721,7 @@ export class ActuariusBot {
 
       if (input.existingWorktreePath) {
         worktreePath = input.existingWorktreePath;
-        await this.prepareWorktreeMemoryConfig(input.repo, worktreePath);
+        memoryWing = await this.prepareWorktreeMemoryConfig(input.repo, worktreePath);
         this.logger.info({ requestId: input.requestId, worktreePath, branchName }, "Reusing existing worktree for follow-up");
       } else {
         stage = "sync-repo";
@@ -4722,7 +4748,7 @@ export class ActuariusBot {
         );
         worktreePath = worktree.path;
         branchName = worktree.branchName;
-        await this.prepareWorktreeMemoryConfig(input.repo, worktreePath);
+        memoryWing = await this.prepareWorktreeMemoryConfig(input.repo, worktreePath);
         this.logger.info(
           { requestId: input.requestId, branchName: worktree.branchName, worktreePath: worktree.path },
           "Request worktree created"
@@ -4781,6 +4807,7 @@ export class ActuariusBot {
         prompt: effectivePrompt,
         cwd: worktreePath,
         env: executionEnvironment.env,
+        memoryWing,
         ...(input.model ? { model: input.model } : {})
       });
 
