@@ -3097,7 +3097,6 @@ export class ActuariusBot {
     guildId: string;
     repoId: number;
     threadId?: string | null;
-    memoryWing?: string | null | undefined;
   }): {
     analyzer: ReviewModelRunner;
     reviewers: ReviewModelRunner[];
@@ -3132,8 +3131,7 @@ export class ActuariusBot {
           cwd,
           timeoutMs,
           ...(model ? { model } : {}),
-          env: reviewEnv,
-          memoryWing: input.memoryWing
+          env: reviewEnv
         })
     });
 
@@ -3422,15 +3420,10 @@ export class ActuariusBot {
               await reviewThread.send("Uncommitted changes in the worktree were auto-committed for review.");
             }
 
-            const memoryWing = await this.prepareWorktreeMemoryConfig(
-              { owner: repo.owner, repo: repo.repo, fullName: repo.full_name },
-              latestRequest.worktree_path!
-            );
             const runners = this.buildReviewRunners({
               guildId: interaction.guildId!,
               repoId: repo.id,
-              threadId: interaction.channelId,
-              memoryWing
+              threadId: interaction.channelId
             });
             const threadHistory = await this.buildThreadHistory(reviewThread);
             resolve(await runAdversarialReview({
@@ -4014,7 +4007,12 @@ export class ActuariusBot {
       plannerModel: input.planner.model,
       implementerProvider: input.implementer.provider,
       implementerModel: input.implementer.model,
-      runProviderText: async (opts) => this.runProviderText({ ...opts, memoryWing: input.memoryWing }),
+      runProviderText: async (opts) => this.runProviderText({
+        ...opts,
+        ...(opts.role === "implementation" && input.memoryWing
+          ? { memoryWing: input.memoryWing }
+          : {})
+      }),
       timeoutMs: input.timeoutMs,
       verificationTimeoutMs: input.verificationTimeoutMs,
       env: input.env,
@@ -4142,8 +4140,7 @@ export class ActuariusBot {
         timeoutMs: this.config.askExecutionTimeoutMs,
         role: "planner",
         ...(input.planner.model ? { model: input.planner.model } : {}),
-        env,
-        memoryWing
+        env
       });
       if (!planText.trim()) {
         markFailed();
@@ -4568,8 +4565,7 @@ export class ActuariusBot {
         timeoutMs: this.config.askExecutionTimeoutMs,
         role: "planner",
         ...(input.planner.model ? { model: input.planner.model } : {}),
-        env,
-        memoryWing
+        env
       });
 
       if (!planText.trim()) {

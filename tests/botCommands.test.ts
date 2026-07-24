@@ -1717,7 +1717,7 @@ describe("ActuariusBot review runner selection", () => {
     expect(runners.summarizer.model).toBe("gemini-2.5-pro");
   });
 
-  it("propagates the resolved repository wing to review provider runs", async () => {
+  it("does not inject repository memory into text-only review provider runs", async () => {
     const bot = createBot({
       getReviewerSlots: vi.fn().mockReturnValue([
         { slot_index: 1, provider: "claude", model: null },
@@ -1728,8 +1728,7 @@ describe("ActuariusBot review runner selection", () => {
 
     const runners = (bot as any).buildReviewRunners({
       guildId: "guild-1",
-      repoId: 1,
-      memoryWing: "wing_shotquill"
+      repoId: 1
     });
     await runners.reviewers[0].run({
       prompt: "Review the change.",
@@ -1737,10 +1736,9 @@ describe("ActuariusBot review runner selection", () => {
       timeoutMs: 1_000
     });
 
-    expect((bot as any).runProviderText).toHaveBeenCalledWith(expect.objectContaining({
-      prompt: "Review the change.",
-      memoryWing: "wing_shotquill"
-    }));
+    const call = vi.mocked((bot as any).runProviderText).mock.calls[0]![0];
+    expect(call.prompt).toBe("Review the change.");
+    expect(call).not.toHaveProperty("memoryWing");
   });
 });
 
@@ -4100,7 +4098,7 @@ describe("ActuariusBot plan runner", () => {
     expect(planPrompt).toContain("Produce a structured implementation plan");
     expect(planPrompt).not.toContain("iterative");
     expect(planPrompt).not.toContain("Return ONLY valid JSON");
-    expect(runCalls[0]![0].memoryWing).toBe("wing_hello_world");
+    expect(runCalls[0]![0]).not.toHaveProperty("memoryWing");
 
     const implPrompt = runCalls[1]![0].prompt;
     expect(implPrompt).toContain("Implement the request using the approved plan below");
@@ -4120,6 +4118,7 @@ describe("ActuariusBot plan runner", () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const updateRequestStatus = vi.fn();
     const bot = createBot({ updateRequestStatus });
+    (bot as any).prepareWorktreeMemoryConfig = vi.fn().mockResolvedValue("wing_hello_world");
     (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
       isThread: () => true,
       send
@@ -4166,6 +4165,23 @@ describe("ActuariusBot plan runner", () => {
         worktreePath: "/tmp/worktree-plan"
       })
     );
+    expect(runCalls[0]![0]).not.toHaveProperty("memoryWing");
+
+    const runTaskProvider = vi.mocked(runIterativeTaskLoop).mock.calls[0]![0].runProviderText;
+    await runTaskProvider({
+      provider: "claude",
+      prompt: "Implement task",
+      cwd: "/tmp/worktree-plan",
+      role: "implementation"
+    });
+    await runTaskProvider({
+      provider: "claude",
+      prompt: "Verify task",
+      cwd: "/tmp/worktree-plan",
+      role: "verification"
+    });
+    expect(runCalls[1]![0].memoryWing).toBe("wing_hello_world");
+    expect(runCalls[2]![0]).not.toHaveProperty("memoryWing");
     expect(updateRequestStatus).toHaveBeenCalledWith(93, "succeeded");
     expect(send).toHaveBeenCalledWith(expect.stringContaining("2 tasks"));
   });
@@ -5526,7 +5542,7 @@ describe("ActuariusBot revise command", () => {
       expect(runCalls.length).toBeGreaterThanOrEqual(1);
       for (const call of runCalls) {
         expect(call[0]).toHaveProperty("env");
-        expect(call[0].memoryWing).toBe("wing_hello_world");
+        expect(call[0]).not.toHaveProperty("memoryWing");
         const env = call[0].env;
         expect(env.OPENAI_API_KEY).toBe("sk-openai-test");
         expect(env.GEMINI_API_KEY).toBe("gemini-test");
