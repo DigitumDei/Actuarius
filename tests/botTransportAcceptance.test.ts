@@ -404,8 +404,9 @@ describe("Bot entrypoint transport acceptance", () => {
     const tempFilePath = args![fileFlagIdx + 1]!;
     expect(tempFilePath).toMatch(/prompt\.txt$/);
 
-    const skipIdx = args!.indexOf("--dangerously-skip-permissions");
-    expect(fileFlagIdx).toBeLessThan(skipIdx);
+    const agentIdx = args!.indexOf("--agent");
+    expect(args).not.toContain("--dangerously-skip-permissions");
+    expect(fileFlagIdx).toBeLessThan(agentIdx);
 
     expect(args).toContain("--model");
     expect(args).toContain("o4-mini");
@@ -528,7 +529,7 @@ describe("Bot entrypoint transport acceptance", () => {
     expect(transportLog!.level).toBe(pino.levels.values.info);
   });
 
-  it("opencode oversized prompt through bot runProviderText preserves --dangerously-skip-permissions and --model with --file", async () => {
+  it("opencode oversized prompt through bot runProviderText preserves the supervised agent and --model with --file", async () => {
     const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
     mockSpawn.mockImplementation(() =>
       createMockChild({ stdout: "ok", exitCode: 0 }),
@@ -546,14 +547,16 @@ describe("Bot entrypoint transport acceptance", () => {
     });
 
     const [, args] = mockSpawn.mock.calls[0]!;
-    expect(args).toContain("--dangerously-skip-permissions");
+    expect(args).not.toContain("--dangerously-skip-permissions");
+    expect(args).toContain("--agent");
+    expect(args).toContain("build");
     expect(args).toContain("--model");
     expect(args).toContain("o4-mini");
     expect(args).toContain("--file");
 
-    const skipIdx = args!.indexOf("--dangerously-skip-permissions");
+    const agentIdx = args!.indexOf("--agent");
     const fileIdx = args!.indexOf("--file");
-    expect(fileIdx).toBeLessThan(skipIdx);
+    expect(fileIdx).toBeLessThan(agentIdx);
 
     const transportLog = records.find(
       (r) => (r as Record<string, unknown>).transportReason === "oversized_tempfile_fallback",

@@ -67,7 +67,17 @@ import {
 import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecutionService.js";
 import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
 import { GeminiExecutionError, runGeminiRequest } from "../services/geminiExecutionService.js";
-import { authenticateOpenAIOpencode, OpencodeExecutionError, runOpencodeAgentRequest, runOpencodeRequest, hasOpencodeAuth, OPENCODE_AUTH_PATH, ALLOWED_OPENCODE_PROVIDERS } from "../services/opencodeExecutionService.js";
+import {
+  authenticateOpenAIOpencode,
+  OpencodeExecutionError,
+  parseOpencodeJsonEvents,
+  runOpencodeAgentRequest,
+  runOpencodeRequest,
+  hasOpencodeAuth,
+  OPENCODE_AUTH_PATH,
+  ALLOWED_OPENCODE_PROVIDERS,
+  type CompletedOpencodeTask
+} from "../services/opencodeExecutionService.js";
 import {
   createOpencodePlanAgentSnapshot,
   OPENCODE_IMPLEMENT_OC_AGENT,
@@ -106,6 +116,7 @@ import {
   buildRevisionPlanPrompt,
   buildThreadFollowUpPrompt
 } from "../services/llmPromptBuilders.js";
+import type { ProviderExecutionDiagnostics, ProviderTimeoutKind } from "../utils/runProviderRequest.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
 const PR_TITLE_LIMIT = 120;
@@ -3239,6 +3250,7 @@ export class ActuariusBot {
     env?: NodeJS.ProcessEnv;
     role?: "implementation" | "planner" | "verification";
     memoryWing?: string | null | undefined;
+    diagnostics?: ProviderExecutionDiagnostics;
   }): Promise<string> {
     const request = {
       prompt: buildRepositoryMemoryScopedPrompt({
@@ -3248,6 +3260,7 @@ export class ActuariusBot {
       cwd: input.cwd,
       timeoutMs: input.timeoutMs ?? this.config.askExecutionTimeoutMs,
       idleTimeoutMs: this.config.providerIdleTimeoutMs,
+      ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.env ? { env: input.env } : {})
     };
@@ -3954,6 +3967,8 @@ export class ActuariusBot {
   }
 
   private async runParsedIterativeImplementation(input: {
+    requestId: number;
+    workflow: "plan" | "revise";
     planText: string;
     repoFullName: string;
     originalPrompt: string;
@@ -4002,6 +4017,8 @@ export class ActuariusBot {
       originalPrompt: input.originalPrompt,
       repoFullName: input.repoFullName,
       worktreePath: input.worktreePath,
+      requestId: input.requestId,
+      workflow: input.workflow,
       threadChannel: input.threadChannel,
       plannerProvider: input.planner.provider,
       plannerModel: input.planner.model,
@@ -4139,6 +4156,11 @@ export class ActuariusBot {
         cwd: worktreePath,
         timeoutMs: this.config.askExecutionTimeoutMs,
         role: "planner",
+        diagnostics: {
+          requestId: input.requestId,
+          workflow: "plan",
+          stage: "planning"
+        },
         ...(input.planner.model ? { model: input.planner.model } : {}),
         env
       });
@@ -4157,6 +4179,8 @@ export class ActuariusBot {
       if (input.iterative) {
         stage = "iterative-loop";
         const { tasks, overview, taskResults } = await this.runParsedIterativeImplementation({
+          requestId: input.requestId,
+          workflow: "plan",
           planText,
           repoFullName: input.repo.fullName,
           originalPrompt: input.prompt,
@@ -4223,6 +4247,11 @@ export class ActuariusBot {
           cwd: worktreePath,
           timeoutMs: this.config.askExecutionTimeoutMs,
           role: "implementation",
+          diagnostics: {
+            requestId: input.requestId,
+            workflow: "plan",
+            stage: "implementation"
+          },
           ...(input.implementer.model ? { model: input.implementer.model } : {}),
           env,
           memoryWing
@@ -4273,7 +4302,13 @@ export class ActuariusBot {
           await sendPreservedWorktreeNotice();
         }
       }
-      this.logger.error({ error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage }, "Plan request failed");
+      this.logger.error({
+        ...executionErrorLogFields(error),
+        requestId: input.requestId,
+        workflow: "plan",
+        durationMs: Date.now() - startedAt,
+        stage
+      }, "Plan request failed");
     }
   }
 
@@ -4376,7 +4411,8 @@ export class ActuariusBot {
         `OpenCode-native planning and implementation started in one CLI session. Planner: \`${plannerModel}\`; implementer: \`${implementerModel}\`.`
       );
 
-      const result = await runOpencodeAgentRequest({
+      const result = await this.runCheckpointedPlanOc({
+        requestId: input.requestId,
         prompt: buildRepositoryMemoryScopedPrompt({
           prompt: buildOpencodePlanWorkflowPrompt({
             repoFullName: input.repo.fullName,
@@ -4386,11 +4422,9 @@ export class ActuariusBot {
           memoryWing
         }),
         cwd: worktreePath,
-        timeoutMs: this.config.askExecutionTimeoutMs,
         env,
-        agent: OPENCODE_PLAN_OC_AGENT,
-        requiredSubagent: OPENCODE_IMPLEMENT_OC_AGENT
-      }, this.logger);
+        threadChannel
+      });
 
       for (const chunk of splitPlainTextForDiscord(
         result.text,
@@ -4416,6 +4450,9 @@ export class ActuariusBot {
           `Repo: ${input.repo.fullName}`,
           `Planner agent: ${OPENCODE_PLAN_OC_AGENT} (${plannerModel})`,
           `Implementer agent: ${OPENCODE_IMPLEMENT_OC_AGENT} (${implementerModel})`,
+          `OpenCode session: ${result.sessionId ?? "(not reported)"}`,
+          `Process segments: ${result.segments}`,
+          `Completed managed tasks: ${result.completedTasks.length}`,
           `Duration: ${Date.now() - startedAt}ms`,
           "",
           "## Agent Output",
@@ -4451,14 +4488,156 @@ export class ActuariusBot {
         }
         await sendPreservedWorktreeNotice();
       }
-      this.logger.error(
-        { error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage },
-        "OpenCode-native plan request failed"
-      );
+      this.logger.error({
+        ...executionErrorLogFields(error),
+        requestId: input.requestId,
+        workflow: "plan-oc",
+        durationMs: Date.now() - startedAt,
+        stage
+      }, "OpenCode-native plan request failed");
     } finally {
       await agentSnapshot.cleanup().catch((error: unknown) => {
         this.logger.warn({ error, requestId: input.requestId }, "Failed to remove OpenCode-native agent snapshot");
       });
+    }
+  }
+
+  private async runCheckpointedPlanOc(input: {
+    requestId: number;
+    prompt: string;
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    threadChannel: { send: (content: string) => Promise<unknown> };
+  }): Promise<{
+    text: string;
+    sessionId: string | null;
+    completedTasks: CompletedOpencodeTask[];
+    segments: number;
+  }> {
+    const overallStartedAt = Date.now();
+    const completedTasks = new Map<string, CompletedOpencodeTask>();
+    let sessionId: string | undefined;
+    let segment = 0;
+    let prompt = input.prompt;
+
+    const recordTasks = (tasks: CompletedOpencodeTask[] | undefined): number => {
+      const before = completedTasks.size;
+      for (const task of tasks ?? []) {
+        if (task.subagent === OPENCODE_IMPLEMENT_OC_AGENT) {
+          completedTasks.set(task.id, task);
+        }
+      }
+      return completedTasks.size - before;
+    };
+
+    while (true) {
+      const elapsedMs = Date.now() - overallStartedAt;
+      const remainingMs = this.config.askExecutionTimeoutMs - elapsedMs;
+      if (remainingMs <= 0) {
+        const error = new OpencodeExecutionError(
+          "TIMEOUT",
+          `OpenCode exceeded the total plan-oc execution timeout of ${String(this.config.askExecutionTimeoutMs)}ms.`
+        );
+        error.timeoutKind = "total";
+        error.timeoutMs = this.config.askExecutionTimeoutMs;
+        if (sessionId) error.providerSessionId = sessionId;
+        throw error;
+      }
+
+      segment++;
+      const segmentTimeoutMs = Math.min(this.config.planOcSegmentTimeoutMs, remainingMs);
+
+      try {
+        const result = await runOpencodeAgentRequest({
+          prompt,
+          cwd: input.cwd,
+          timeoutMs: segmentTimeoutMs,
+          idleTimeoutMs: Math.min(this.config.providerIdleTimeoutMs, segmentTimeoutMs),
+          env: input.env,
+          agent: OPENCODE_PLAN_OC_AGENT,
+          ...(sessionId ? { sessionId } : {}),
+          diagnostics: {
+            requestId: input.requestId,
+            workflow: "plan-oc",
+            stage: "plan-and-implement",
+            segment
+          }
+        }, this.logger);
+
+        recordTasks(result.completedTasks);
+        sessionId = result.sessionId ?? sessionId;
+        if (completedTasks.size === 0) {
+          throw new OpencodeExecutionError(
+            "FAILED",
+            `OpenCode primary agent did not complete the required \`${OPENCODE_IMPLEMENT_OC_AGENT}\` subagent task.`
+          );
+        }
+
+        this.logger.info({
+          requestId: input.requestId,
+          workflow: "plan-oc",
+          stage: "plan-and-implement",
+          segment,
+          sessionId,
+          completedTaskCount: completedTasks.size,
+          durationMs: Date.now() - overallStartedAt
+        }, "OpenCode-native plan session completed from checkpoints");
+
+        return {
+          text: result.text,
+          sessionId: sessionId ?? null,
+          completedTasks: [...completedTasks.values()],
+          segments: segment
+        };
+      } catch (error) {
+        if (!(error instanceof OpencodeExecutionError) || error.code !== "TIMEOUT") {
+          throw error;
+        }
+
+        const progress = parseOpencodeJsonEvents(error.partialStdout ?? "");
+        const newTaskCount = recordTasks(progress.completedTasks);
+        sessionId = progress.sessionId ?? error.providerSessionId ?? sessionId;
+        const checkpoint = [...completedTasks.values()];
+        const remainingAfterTimeoutMs = this.config.askExecutionTimeoutMs - (Date.now() - overallStartedAt);
+
+        this.logger.warn({
+          ...executionErrorLogFields(error),
+          requestId: input.requestId,
+          workflow: "plan-oc",
+          stage: "plan-and-implement",
+          segment,
+          sessionId,
+          timeoutKind: error.timeoutKind,
+          timeoutMs: error.timeoutMs,
+          lastActivity: error.lastActivity,
+          newTaskCount,
+          completedTaskCount: checkpoint.length,
+          completedTaskIds: checkpoint.map((task) => task.id),
+          remainingTotalMs: Math.max(0, remainingAfterTimeoutMs)
+        }, "OpenCode-native plan segment timed out");
+
+        if (!sessionId || newTaskCount === 0 || remainingAfterTimeoutMs <= 0) {
+          throw error;
+        }
+
+        await input.threadChannel.send(
+          `OpenCode-native checkpoint saved after segment ${segment}: ${checkpoint.length} managed implementation task${checkpoint.length === 1 ? "" : "s"} completed. Resuming session \`${sessionId}\` with ${Math.ceil(remainingAfterTimeoutMs / 60_000)} minute(s) left in the original total budget.`
+        );
+
+        const completedLines = checkpoint.map((task, index) => {
+          const description = task.description ? ` - ${task.description}` : "";
+          return `${index + 1}. ${task.id}${description}`;
+        });
+        prompt = [
+          "Continue the existing Actuarius plan-oc workflow from the saved checkpoint.",
+          "Do not repeat completed implementation tasks. Inspect their resulting diff, then delegate only the remaining work to the managed implementation agent.",
+          "",
+          "Completed managed task checkpoints:",
+          ...completedLines,
+          "",
+          "Finish validation and return the required final report when all acceptance criteria are met."
+        ].join("\n");
+      }
     }
   }
 
@@ -4564,6 +4743,11 @@ export class ActuariusBot {
         cwd: input.worktreePath,
         timeoutMs: this.config.askExecutionTimeoutMs,
         role: "planner",
+        diagnostics: {
+          requestId: input.requestId,
+          workflow: "revise",
+          stage: "planning"
+        },
         ...(input.planner.model ? { model: input.planner.model } : {}),
         env
       });
@@ -4581,6 +4765,8 @@ export class ActuariusBot {
 
       stage = "iterative-loop";
       const { tasks, overview, taskResults } = await this.runParsedIterativeImplementation({
+        requestId: input.requestId,
+        workflow: "revise",
         planText,
         repoFullName: input.repo.fullName,
         originalPrompt: input.prompt,
@@ -4661,7 +4847,13 @@ export class ActuariusBot {
           await threadChannel.send(`**Revision failed during ${stage}**\n\n${clipForDiscord(message, DISCORD_MESSAGE_LIMIT - 60)}`);
         }
       }
-      this.logger.error({ error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage }, "Revise request failed");
+      this.logger.error({
+        ...executionErrorLogFields(error),
+        requestId: input.requestId,
+        workflow: "revise",
+        durationMs: Date.now() - startedAt,
+        stage
+      }, "Revise request failed");
     }
   }
 
@@ -4808,6 +5000,11 @@ export class ActuariusBot {
         cwd: worktreePath,
         env: executionEnvironment.env,
         memoryWing,
+        diagnostics: {
+          requestId: input.requestId,
+          workflow: "ask",
+          stage: "provider-execution"
+        },
         ...(input.model ? { model: input.model } : {})
       });
 
@@ -4862,7 +5059,14 @@ export class ActuariusBot {
         }
       }
       this.logger.error(
-        { error, requestId: input.requestId, durationMs: Date.now() - startedAt, stage, provider: input.provider },
+        {
+          ...executionErrorLogFields(error),
+          requestId: input.requestId,
+          workflow: "ask",
+          durationMs: Date.now() - startedAt,
+          stage,
+          provider: input.provider
+        },
         "Queued AI request failed"
       );
     }
@@ -4985,6 +5189,38 @@ export function isProviderTimeout(error: unknown): boolean {
   );
 }
 
+export function executionErrorLogFields(error: unknown): {
+  error: unknown;
+  timeoutKind?: ProviderTimeoutKind;
+  timeoutMs?: number;
+  providerSessionId?: string;
+  lastActivity?: string;
+} {
+  if (!(error instanceof Error)) {
+    return { error };
+  }
+
+  const providerError = error as Error & {
+    code?: string;
+    timeoutKind?: ProviderTimeoutKind;
+    timeoutMs?: number;
+    providerSessionId?: string;
+    lastActivity?: string;
+  };
+  return {
+    error: {
+      type: providerError.name,
+      message: providerError.message,
+      stack: providerError.stack,
+      code: providerError.code
+    },
+    ...(providerError.timeoutKind ? { timeoutKind: providerError.timeoutKind } : {}),
+    ...(providerError.timeoutMs !== undefined ? { timeoutMs: providerError.timeoutMs } : {}),
+    ...(providerError.providerSessionId ? { providerSessionId: providerError.providerSessionId } : {}),
+    ...(providerError.lastActivity ? { lastActivity: providerError.lastActivity } : {})
+  };
+}
+
 export async function buildTimeoutReportInner(
   error: unknown,
   worktreePath: string | null,
@@ -4992,11 +5228,32 @@ export async function buildTimeoutReportInner(
   providerLabel: string,
   logger?: pino.Logger
 ): Promise<string> {
-  const err = error as { partialStdout?: string; partialStderr?: string } | null;
+  const err = error as {
+    partialStdout?: string;
+    partialStderr?: string;
+    timeoutKind?: ProviderTimeoutKind;
+    timeoutMs?: number;
+    providerSessionId?: string;
+    lastActivity?: string;
+  } | null;
   const lines: string[] = [];
 
   const partialStdout = err?.partialStdout?.trim();
   const partialStderr = err?.partialStderr?.trim();
+
+  if (err?.timeoutKind && err.timeoutMs !== undefined) {
+    const description = err.timeoutKind === "idle"
+      ? `No provider output was received for ${err.timeoutMs}ms.`
+      : `The provider reached the total execution limit of ${err.timeoutMs}ms.`;
+    lines.push(`**Timeout type:** ${err.timeoutKind}`, description);
+    if (err.providerSessionId) {
+      lines.push(`**Provider session:** \`${err.providerSessionId}\``);
+    }
+    if (err.lastActivity) {
+      lines.push(`**Last recorded activity:** ${escapeDiscordFence(clipForDiscord(err.lastActivity, 1000))}`);
+    }
+    lines.push("");
+  }
 
   if (partialStdout) {
     lines.push("**Partial output (stdout):**");

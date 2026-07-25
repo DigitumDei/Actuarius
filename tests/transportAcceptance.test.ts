@@ -214,8 +214,12 @@ describe("Transport behavior acceptance", () => {
 
     const [file, args] = mockSpawn.mock.calls[0]!;
     expect(file).toBe("opencode");
-    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--agent", "build", "--dangerously-skip-permissions"]);
+    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--agent", "build"]);
     expect(args).not.toContain("--file");
+    expect(args).not.toContain("--dangerously-skip-permissions");
+    const options = mockSpawn.mock.calls[0]![2] as { env?: NodeJS.ProcessEnv };
+    const config = JSON.parse(options.env!.OPENCODE_CONFIG_CONTENT!) as any;
+    expect(config.agent.build.permission.task).toBe("deny");
 
     const transportLog = records.find(
       (r) => (r as Record<string, unknown>).transport === "argv",
@@ -264,7 +268,7 @@ describe("Transport behavior acceptance", () => {
     });
   });
 
-  it("OpenCode oversized prompt preserves --dangerously-skip-permissions and --model with --file", async () => {
+  it("OpenCode oversized prompt preserves the supervised agent and --model with --file", async () => {
     const { writer, records } = createLogCapture();
     const logger = pino(writer);
     const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
@@ -281,14 +285,16 @@ describe("Transport behavior acceptance", () => {
     }, logger);
 
     const [, args] = mockSpawn.mock.calls[0]!;
-    expect(args).toContain("--dangerously-skip-permissions");
+    expect(args).not.toContain("--dangerously-skip-permissions");
+    expect(args).toContain("--agent");
+    expect(args).toContain("build");
     expect(args).toContain("--model");
     expect(args).toContain("o4-mini");
     expect(args).toContain("--file");
 
-    const skipIdx = args!.indexOf("--dangerously-skip-permissions");
+    const agentIdx = args!.indexOf("--agent");
     const fileIdx = args!.indexOf("--file");
-    expect(fileIdx).toBeLessThan(skipIdx);
+    expect(fileIdx).toBeLessThan(agentIdx);
 
     const transportLog = records.find(
       (r) => (r as Record<string, unknown>).transportReason === "oversized_tempfile_fallback",

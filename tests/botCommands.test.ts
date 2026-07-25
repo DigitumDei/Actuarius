@@ -139,7 +139,12 @@ const {
 const { spawnCollect } = await import("../src/utils/spawnCollect.js");
 const { listOpenIssues, viewIssueDetail } = await import("../src/services/githubService.js");
 const { runClaudeRequest } = await import("../src/services/claudeExecutionService.js");
-const { authenticateOpenAIOpencode, hasOpencodeAuth, runOpencodeAgentRequest } = await import("../src/services/opencodeExecutionService.js");
+const {
+  authenticateOpenAIOpencode,
+  hasOpencodeAuth,
+  OpencodeExecutionError,
+  runOpencodeAgentRequest
+} = await import("../src/services/opencodeExecutionService.js");
 const {
   createOpencodePlanAgentSnapshot,
   ensureOpencodePlanAgentFiles,
@@ -179,6 +184,8 @@ function createBot(
     threadAutoArchiveMinutes: 1440,
     askConcurrencyPerGuild: 1,
     askExecutionTimeoutMs: 1000,
+    providerIdleTimeoutMs: 250,
+    planOcSegmentTimeoutMs: 500,
     iterativeVerificationTimeoutMs: 300,
     reviewConcurrency: 1,
     installStepTimeoutMs: 1000,
@@ -3760,7 +3767,12 @@ describe("ActuariusBot plan-oc command", () => {
       },
       cleanup
     });
-    vi.mocked(runOpencodeAgentRequest).mockResolvedValue({ text: "Plan, implementation, and validation complete." });
+    vi.mocked(runOpencodeAgentRequest).mockResolvedValue({
+      text: "Plan, implementation, and validation complete.",
+      completedSubagents: [OPENCODE_IMPLEMENT_OC_AGENT],
+      completedTasks: [{ id: "task-1", subagent: OPENCODE_IMPLEMENT_OC_AGENT }],
+      sessionId: "session-1"
+    });
     vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
     vi.mocked(createRequestWorktree).mockResolvedValue({
       path: "/tmp/worktree-plan-oc",
@@ -3814,9 +3826,10 @@ describe("ActuariusBot plan-oc command", () => {
     expect(runOpencodeAgentRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         agent: OPENCODE_PLAN_OC_AGENT,
-        requiredSubagent: OPENCODE_IMPLEMENT_OC_AGENT,
         cwd: "/tmp/worktree-plan-oc",
         prompt: expect.stringContaining("Do the native OpenCode thing"),
+        timeoutMs: 500,
+        idleTimeoutMs: 250,
         env: expect.objectContaining({
           GH_TOKEN: "test-token",
           OPENCODE_CONFIG_DIR: "/tmp/actuarius-opencode-plan-snapshot"
@@ -3837,6 +3850,90 @@ describe("ActuariusBot plan-oc command", () => {
     expect(deleteRequestBranch).not.toHaveBeenCalled();
     expect(cleanup).toHaveBeenCalledOnce();
     expect(thread.send).toHaveBeenCalledWith(expect.stringContaining("/review"));
+  });
+
+  it("checkpoints completed managed tasks and resumes the same OpenCode session", async () => {
+    const bot = createBot();
+    const threadSend = vi.fn().mockResolvedValue(undefined);
+    const timeout = new OpencodeExecutionError("TIMEOUT", "OpenCode exceeded the total execution timeout of 500ms.");
+    timeout.timeoutKind = "total";
+    timeout.timeoutMs = 500;
+    timeout.providerSessionId = "ses-checkpoint";
+    timeout.partialStdout = [
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: "ses-checkpoint",
+        part: {
+          id: "task-1",
+          tool: "task",
+          state: {
+            status: "completed",
+            input: {
+              subagent_type: OPENCODE_IMPLEMENT_OC_AGENT,
+              description: "Implement timeout typing"
+            }
+          }
+        }
+      })
+    ].join("\n");
+
+    vi.mocked(runOpencodeAgentRequest)
+      .mockRejectedValueOnce(timeout)
+      .mockResolvedValueOnce({
+        text: "All work completed.",
+        completedSubagents: [OPENCODE_IMPLEMENT_OC_AGENT],
+        completedTasks: [{
+          id: "task-2",
+          subagent: OPENCODE_IMPLEMENT_OC_AGENT,
+          description: "Add checkpoint coverage"
+        }],
+        sessionId: "ses-checkpoint"
+      });
+
+    const result = await (bot as any).runCheckpointedPlanOc({
+      requestId: 777,
+      prompt: "Plan and implement",
+      cwd: "/tmp/worktree",
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      threadChannel: { send: threadSend }
+    });
+
+    expect(result).toMatchObject({
+      text: "All work completed.",
+      sessionId: "ses-checkpoint",
+      segments: 2
+    });
+    expect(result.completedTasks.map((task: { id: string }) => task.id)).toEqual(["task-1", "task-2"]);
+    expect(runOpencodeAgentRequest).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runOpencodeAgentRequest).mock.calls[1]![0]).toMatchObject({
+      sessionId: "ses-checkpoint",
+      prompt: expect.stringContaining("task-1")
+    });
+    expect(threadSend).toHaveBeenCalledWith(expect.stringContaining("checkpoint saved"));
+  });
+
+  it("does not resume a timed-out plan-oc segment without a new completed task checkpoint", async () => {
+    const bot = createBot();
+    const timeout = new OpencodeExecutionError("TIMEOUT", "OpenCode produced no output for 250ms.");
+    timeout.timeoutKind = "idle";
+    timeout.timeoutMs = 250;
+    timeout.providerSessionId = "ses-stalled";
+    timeout.partialStdout = JSON.stringify({
+      type: "step_start",
+      sessionID: "ses-stalled",
+      part: { type: "step-start" }
+    });
+    vi.mocked(runOpencodeAgentRequest).mockRejectedValueOnce(timeout);
+
+    await expect((bot as any).runCheckpointedPlanOc({
+      requestId: 778,
+      prompt: "Plan and implement",
+      cwd: "/tmp/worktree",
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      threadChannel: { send: vi.fn() }
+    })).rejects.toBe(timeout);
+
+    expect(runOpencodeAgentRequest).toHaveBeenCalledOnce();
   });
 });
 

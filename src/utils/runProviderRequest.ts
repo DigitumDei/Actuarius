@@ -1,5 +1,19 @@
+import { stripVTControlCharacters } from "node:util";
 import type { Logger } from "pino";
 import { spawnCollect, spawnCollectWithTransport, exceedsArgvLimits, DEFAULT_ARGV_TOTAL_LIMIT, MAX_SINGLE_ARG_BYTES } from "./spawnCollect.js";
+
+export type ProviderTimeoutKind = "idle" | "total";
+
+export interface ProviderExecutionDiagnostics {
+  requestId?: number;
+  workflow?: string;
+  stage?: string;
+  taskIndex?: number;
+  taskCount?: number;
+  taskTitle?: string;
+  attempt?: number;
+  segment?: number;
+}
 
 export interface ProviderRequestInput {
   prompt: string;
@@ -8,11 +22,16 @@ export interface ProviderRequestInput {
   idleTimeoutMs?: number;
   model?: string;
   env?: NodeJS.ProcessEnv;
+  diagnostics?: ProviderExecutionDiagnostics;
 }
 
 export interface ProviderErrorDetails {
   partialStdout?: string;
   partialStderr?: string;
+  timeoutKind?: ProviderTimeoutKind;
+  timeoutMs?: number;
+  providerSessionId?: string;
+  lastActivity?: string;
 }
 
 export interface ProviderRunnerConfig {
@@ -87,6 +106,48 @@ function lastMeaningfulLines(text: string | undefined, count: number): string {
   return count <= 0 ? "" : lines.slice(-count).join("\n");
 }
 
+function extractProviderSessionId(stdout: string | undefined): string | undefined {
+  if (!stdout) return undefined;
+  const matches = [...stdout.matchAll(/"sessionID"\s*:\s*"([^"]+)"/gu)];
+  return matches.at(-1)?.[1];
+}
+
+function summarizeJsonActivity(line: string): string | null {
+  try {
+    const event = JSON.parse(line) as Record<string, unknown>;
+    const part = typeof event.part === "object" && event.part !== null
+      ? event.part as Record<string, unknown>
+      : null;
+    const state = part && typeof part.state === "object" && part.state !== null
+      ? part.state as Record<string, unknown>
+      : null;
+    const input = state && typeof state.input === "object" && state.input !== null
+      ? state.input as Record<string, unknown>
+      : null;
+    const pieces = [
+      typeof event.type === "string" ? event.type : null,
+      part && typeof part.tool === "string" ? `tool=${part.tool}` : null,
+      state && typeof state.status === "string" ? `status=${state.status}` : null,
+      input && typeof input.subagent_type === "string" ? `subagent=${input.subagent_type}` : null,
+      input && typeof input.description === "string" ? `description=${input.description}` : null
+    ].filter((value): value is string => Boolean(value));
+    return pieces.length > 0 ? pieces.join(" ") : null;
+  } catch {
+    return null;
+  }
+}
+
+function summarizeLastActivity(stdout: string | undefined, stderr: string | undefined): string | undefined {
+  const preferredOutput = stderr?.trim() ? stderr : stdout;
+  const lines = (preferredOutput?.split(/\r?\n/u) ?? [])
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const lastLine = lines.at(-1);
+  if (!lastLine) return undefined;
+  const summary = summarizeJsonActivity(lastLine) ?? stripVTControlCharacters(lastLine);
+  return summary.length <= 500 ? summary : `${summary.slice(0, 497)}...`;
+}
+
 /**
  * Generic CLI runner shared by Codex and Gemini execution services.
  * Spawns the binary, handles timeout/ENOENT/empty-output errors, and returns
@@ -113,7 +174,17 @@ export async function runProviderRequest(
   const effectiveEnv = input.env ?? process.env;
   const { exceeds: payloadExceedsLimits, totalBytes, maxArgBytes } = exceedsArgvLimits(args, effectiveEnv);
 
-  logger.debug({ argCount: args.length, totalBytes, maxArgBytes, limitBytes: DEFAULT_ARGV_TOTAL_LIMIT, maxArgLimitBytes: MAX_SINGLE_ARG_BYTES, cwd: input.cwd, timeoutMs: input.timeoutMs }, `${config.logLabel} subprocess args`);
+  logger.debug({
+    ...input.diagnostics,
+    argCount: args.length,
+    totalBytes,
+    maxArgBytes,
+    limitBytes: DEFAULT_ARGV_TOTAL_LIMIT,
+    maxArgLimitBytes: MAX_SINGLE_ARG_BYTES,
+    cwd: input.cwd,
+    timeoutMs: input.timeoutMs,
+    idleTimeoutMs: input.idleTimeoutMs
+  }, `${config.logLabel} subprocess args`);
 
   // Calculate which indices in `args` contain the prompt text (and its flag)
   const promptStartIdx = prefix.length + (config.cwdFlag ? 2 : 0);
@@ -148,6 +219,7 @@ export async function runProviderRequest(
       }
       logger.info(
         {
+          ...input.diagnostics,
           args: stdinArgs,
           stdinLength: input.prompt.length,
           transport: "stdin" as const,
@@ -194,15 +266,32 @@ export async function runProviderRequest(
       signal?: string | null;
       stdout?: string;
       stderr?: string;
+      timeoutReason?: "idle" | "absolute";
     };
+    const isTimeout = nodeError.code === "ETIMEDOUT"
+      || (nodeError.killed === true && nodeError.signal === "SIGTERM")
+      || message.toLowerCase().includes("timed out");
+    const timeoutKind: ProviderTimeoutKind | undefined = isTimeout
+      ? nodeError.timeoutReason === "idle" ? "idle" : "total"
+      : undefined;
+    const expiredTimeoutMs = timeoutKind === "idle"
+      ? Math.min(input.idleTimeoutMs ?? input.timeoutMs, input.timeoutMs)
+      : timeoutKind === "total" ? input.timeoutMs : undefined;
+    const providerSessionId = extractProviderSessionId(nodeError.stdout);
+    const lastActivity = summarizeLastActivity(nodeError.stdout, nodeError.stderr);
 
     logger.error(
       {
+        ...input.diagnostics,
         errorCode: nodeError.code,
         signal: nodeError.signal,
         killed: nodeError.killed,
-        stderr: nodeError.stderr,
-        stdoutPartial: nodeError.stdout?.slice(0, 500),
+        timeoutKind,
+        timeoutMs: expiredTimeoutMs,
+        providerSessionId,
+        lastActivity,
+        stderrTail: lastMeaningfulLines(nodeError.stderr, 20),
+        stdoutHead: nodeError.stdout?.slice(0, 500),
         message,
       },
       `${config.logLabel} subprocess failed`
@@ -216,15 +305,18 @@ export async function runProviderRequest(
       throw config.makeError(config.failedCode, `${config.logLabel} output exceeded the buffer limit.`);
     }
 
-    if (
-      nodeError.code === "ETIMEDOUT" ||
-      (nodeError.killed === true && nodeError.signal === "SIGTERM") ||
-      message.toLowerCase().includes("timed out")
-    ) {
+    if (isTimeout) {
       const errorDetails: ProviderErrorDetails = {};
       if (nodeError.stdout) errorDetails.partialStdout = nodeError.stdout;
       if (nodeError.stderr) errorDetails.partialStderr = nodeError.stderr;
-      throw config.makeError(config.timeoutCode, `${config.logLabel} execution timed out after ${input.timeoutMs}ms.`, errorDetails);
+      if (timeoutKind) errorDetails.timeoutKind = timeoutKind;
+      if (expiredTimeoutMs !== undefined) errorDetails.timeoutMs = expiredTimeoutMs;
+      if (providerSessionId) errorDetails.providerSessionId = providerSessionId;
+      if (lastActivity) errorDetails.lastActivity = lastActivity;
+      const timeoutMessage = timeoutKind === "idle"
+        ? `${config.logLabel} produced no output for ${String(expiredTimeoutMs)}ms.`
+        : `${config.logLabel} exceeded the total execution timeout of ${String(expiredTimeoutMs)}ms.`;
+      throw config.makeError(config.timeoutCode, timeoutMessage, errorDetails);
     }
 
     if (config.authFailurePattern && config.notAuthenticatedCode) {
@@ -251,7 +343,11 @@ export async function runProviderRequest(
   if (stderr) {
     logger.debug({ stderr }, `${config.logLabel} subprocess stderr`);
   }
-  logger.debug({ stdoutLength: stdout.length }, `${config.logLabel} subprocess exited cleanly`);
+  logger.debug({
+    ...input.diagnostics,
+    stdoutLength: stdout.length,
+    providerSessionId: extractProviderSessionId(stdout)
+  }, `${config.logLabel} subprocess exited cleanly`);
 
   // Detect auth prompts that the CLI printed to stdout instead of producing real output.
   // For agentic CLIs (authCheckOnlyStderr=true), skip stdout — it's task output and may

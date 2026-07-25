@@ -290,6 +290,7 @@ export function buildIterativeTaskImplementationPrompt(input: {
     `Description: ${input.task.description}`,
     "",
     "Implement this task. Make code changes in this worktree.",
+    "Work directly in this process. Do not delegate to another agent or invoke a Task/subagent tool.",
     "Do not create or commit a plan file. Keep changes scoped to the request.",
     "Commit all changes for this task before responding. If this is a tweak attempt, add a new commit for the tweak or amend only the current task's latest commit.",
     "Do not rewrite commits from prior tasks. The worktree must be clean when you respond.",

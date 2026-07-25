@@ -153,8 +153,9 @@ describe("runOpencodeRequest — integration (real transport)", () => {
 
     const [file, args] = mockSpawn.mock.calls[0]!;
     expect(file).toBe("opencode");
-    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--agent", "build", "--dangerously-skip-permissions"]);
+    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--agent", "build"]);
     expect(args).not.toContain("--file");
+    expect(args).not.toContain("--dangerously-skip-permissions");
   });
 
   it("uses argv transport with --model for small prompts", async () => {
@@ -170,11 +171,11 @@ describe("runOpencodeRequest — integration (real transport)", () => {
     }, logger);
 
     const [, args] = mockSpawn.mock.calls[0]!;
-    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--agent", "build", "--dangerously-skip-permissions", "--model", "o4-mini"]);
+    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--agent", "build", "--model", "o4-mini"]);
     expect(args).not.toContain("--file");
   });
 
-  it("preserves --dangerously-skip-permissions in tempfile transport", async () => {
+  it("preserves the supervised implementation agent in tempfile transport", async () => {
     const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
 
     mockSpawn.mockImplementation(() =>
@@ -188,9 +189,10 @@ describe("runOpencodeRequest — integration (real transport)", () => {
     }, logger);
 
     const [, args] = mockSpawn.mock.calls[0]!;
-    expect(args).toContain("--dangerously-skip-permissions");
-    const skipIdx = args!.indexOf("--dangerously-skip-permissions");
+    expect(args).not.toContain("--dangerously-skip-permissions");
+    expect(args).toContain("build");
+    const agentIdx = args!.indexOf("--agent");
     const fileIdx = args!.indexOf("--file");
-    expect(fileIdx).toBeLessThan(skipIdx);
+    expect(fileIdx).toBeLessThan(agentIdx);
   });
 });

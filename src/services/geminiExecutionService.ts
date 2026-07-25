@@ -1,13 +1,7 @@
 import type { Logger } from "pino";
-import { runProviderRequest } from "../utils/runProviderRequest.js";
+import { runProviderRequest, type ProviderErrorDetails, type ProviderRequestInput, type ProviderTimeoutKind } from "../utils/runProviderRequest.js";
 
-export interface GeminiExecutionInput {
-  prompt: string;
-  cwd: string;
-  timeoutMs: number;
-  model?: string;
-  env?: NodeJS.ProcessEnv;
-}
+export interface GeminiExecutionInput extends ProviderRequestInput {}
 
 export interface GeminiExecutionResult {
   text: string;
@@ -17,6 +11,10 @@ export class GeminiExecutionError extends Error {
   public readonly code: "GEMINI_UNAVAILABLE" | "GEMINI_DISABLED" | "NOT_AUTHENTICATED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT";
   public partialStdout?: string;
   public partialStderr?: string;
+  public timeoutKind?: ProviderTimeoutKind;
+  public timeoutMs?: number;
+  public providerSessionId?: string;
+  public lastActivity?: string;
 
   public constructor(code: "GEMINI_UNAVAILABLE" | "GEMINI_DISABLED" | "NOT_AUTHENTICATED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT", message: string) {
     super(message);
@@ -43,8 +41,7 @@ export async function runGeminiRequest(input: GeminiExecutionInput, logger: Logg
       makeError: (code, message, details) => {
         const err = new GeminiExecutionError(code as GeminiExecutionError["code"], message);
         if (details) {
-          if (details.partialStdout) err.partialStdout = details.partialStdout;
-          if (details.partialStderr) err.partialStderr = details.partialStderr;
+          Object.assign(err, details satisfies ProviderErrorDetails);
         }
         return err;
       },
