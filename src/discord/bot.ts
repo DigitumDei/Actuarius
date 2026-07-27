@@ -4594,7 +4594,9 @@ export class ActuariusBot {
           throw error;
         }
 
-        const progress = parseOpencodeJsonEvents(error.partialStdout ?? "");
+        const progress = parseOpencodeJsonEvents(error.partialStdout ?? "", {
+          fallbackTaskIdPrefix: `segment-${String(segment)}`
+        });
         const newTaskCount = recordTasks(progress.completedTasks);
         sessionId = progress.sessionId ?? error.providerSessionId ?? sessionId;
         const checkpoint = [...completedTasks.values()];

@@ -1,6 +1,13 @@
 import { stripVTControlCharacters } from "node:util";
 import type { Logger } from "pino";
-import { spawnCollect, spawnCollectWithTransport, exceedsArgvLimits, DEFAULT_ARGV_TOTAL_LIMIT, MAX_SINGLE_ARG_BYTES } from "./spawnCollect.js";
+import {
+  spawnCollect,
+  spawnCollectWithTransport,
+  exceedsArgvLimits,
+  DEFAULT_ARGV_TOTAL_LIMIT,
+  MAX_SINGLE_ARG_BYTES,
+  type SpawnLastOutput
+} from "./spawnCollect.js";
 
 export type ProviderTimeoutKind = "idle" | "total";
 
@@ -137,9 +144,13 @@ function summarizeJsonActivity(line: string): string | null {
   }
 }
 
-function summarizeLastActivity(stdout: string | undefined, stderr: string | undefined): string | undefined {
-  const preferredOutput = stderr?.trim() ? stderr : stdout;
-  const lines = (preferredOutput?.split(/\r?\n/u) ?? [])
+function summarizeLastActivity(
+  stdout: string | undefined,
+  stderr: string | undefined,
+  lastOutput: SpawnLastOutput | undefined
+): string | undefined {
+  const orderedOutput = lastOutput?.text ?? (stderr?.trim() ? stderr : stdout);
+  const lines = (orderedOutput?.split(/\r?\n/u) ?? [])
     .map((line) => line.trim())
     .filter(Boolean);
   const lastLine = lines.at(-1);
@@ -267,6 +278,7 @@ export async function runProviderRequest(
       stdout?: string;
       stderr?: string;
       timeoutReason?: "idle" | "absolute";
+      lastOutput?: SpawnLastOutput;
     };
     const isTimeout = nodeError.code === "ETIMEDOUT"
       || (nodeError.killed === true && nodeError.signal === "SIGTERM")
@@ -278,7 +290,7 @@ export async function runProviderRequest(
       ? Math.min(input.idleTimeoutMs ?? input.timeoutMs, input.timeoutMs)
       : timeoutKind === "total" ? input.timeoutMs : undefined;
     const providerSessionId = extractProviderSessionId(nodeError.stdout);
-    const lastActivity = summarizeLastActivity(nodeError.stdout, nodeError.stderr);
+    const lastActivity = summarizeLastActivity(nodeError.stdout, nodeError.stderr, nodeError.lastOutput);
 
     logger.error(
       {

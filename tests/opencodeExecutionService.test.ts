@@ -410,7 +410,11 @@ describe("runOpencodeRequest", () => {
       killed: true,
       signal: "SIGTERM",
       stdout: JSON.stringify({ type: "step_start", sessionID: "ses-idle" }),
-      stderr: ""
+      stderr: "older startup warning",
+      lastOutput: {
+        stream: "stdout",
+        text: JSON.stringify({ type: "step_start", sessionID: "ses-idle" })
+      }
     });
     mockSpawnCollectWithTransport.mockRejectedValueOnce(err);
 
@@ -424,6 +428,7 @@ describe("runOpencodeRequest", () => {
       timeoutKind: "idle",
       timeoutMs: 900,
       providerSessionId: "ses-idle",
+      lastActivity: "step_start",
       message: "OpenCode produced no output for 900ms."
     });
   });
@@ -503,6 +508,26 @@ describe("managed OpenCode agent execution", () => {
       sessionId: null,
       diagnostics: ["not-json diagnostic noise"]
     });
+  });
+
+  it("namespaces fallback task IDs when parsing a checkpointed segment", () => {
+    const output = JSON.stringify({
+      type: "tool_use",
+      part: {
+        tool: "task",
+        state: {
+          status: "completed",
+          input: { subagent_type: "actuarius-implement-oc" }
+        }
+      }
+    });
+
+    expect(parseOpencodeJsonEvents(output, {
+      fallbackTaskIdPrefix: "segment-2"
+    }).completedTasks).toEqual([{
+      id: "segment-2:line-0",
+      subagent: "actuarius-implement-oc"
+    }]);
   });
 
   it("runs one managed primary-agent CLI call and returns its parsed final text", async () => {

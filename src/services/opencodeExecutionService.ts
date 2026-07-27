@@ -59,6 +59,10 @@ export interface ParsedOpencodeJsonEvents {
   diagnostics: string[];
 }
 
+export interface ParseOpencodeJsonEventsOptions {
+  fallbackTaskIdPrefix?: string;
+}
+
 export class OpencodeExecutionError extends Error {
   public readonly code: "OPENCODE_UNAVAILABLE" | "OPENCODE_DISABLED" | "NOT_AUTHENTICATED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT";
   public partialStdout?: string;
@@ -222,7 +226,11 @@ export async function runOpencodeAgentRequest(
     ],
     logger
   );
-  const parsed = parseOpencodeJsonEvents(rawOutput);
+  const parsed = parseOpencodeJsonEvents(rawOutput, {
+    ...(input.diagnostics?.segment !== undefined
+      ? { fallbackTaskIdPrefix: `segment-${String(input.diagnostics.segment)}` }
+      : {})
+  });
 
   if (parsed.diagnostics.length > 0) {
     throw new OpencodeExecutionError(
@@ -252,7 +260,10 @@ export async function runOpencodeAgentRequest(
   };
 }
 
-export function parseOpencodeJsonEvents(output: string): ParsedOpencodeJsonEvents {
+export function parseOpencodeJsonEvents(
+  output: string,
+  options: ParseOpencodeJsonEventsOptions = {}
+): ParsedOpencodeJsonEvents {
   const textParts: string[] = [];
   const completedSubagents: string[] = [];
   const completedTasks: CompletedOpencodeTask[] = [];
@@ -289,7 +300,12 @@ export function parseOpencodeJsonEvents(output: string): ParsedOpencodeJsonEvent
     const state = isRecord(part.state) ? part.state : null;
     const taskInput = state && isRecord(state.input) ? state.input : null;
     if (state?.status === "completed" && taskInput && typeof taskInput.subagent_type === "string") {
-      const taskId = typeof part.id === "string" ? part.id : `line-${lineIndex}`;
+      const fallbackTaskId = `line-${lineIndex}`;
+      const taskId = typeof part.id === "string"
+        ? part.id
+        : options.fallbackTaskIdPrefix
+          ? `${options.fallbackTaskIdPrefix}:${fallbackTaskId}`
+          : fallbackTaskId;
       const taskKey = `${taskInput.subagent_type}\u0000${taskId}`;
       if (!completedTaskKeys.has(taskKey)) {
         completedTaskKeys.add(taskKey);

@@ -3912,6 +3912,62 @@ describe("ActuariusBot plan-oc command", () => {
     expect(threadSend).toHaveBeenCalledWith(expect.stringContaining("checkpoint saved"));
   });
 
+  it("keeps fallback task checkpoints distinct across resumed plan-oc segments", async () => {
+    const bot = createBot();
+    const threadSend = vi.fn().mockResolvedValue(undefined);
+    const makeTimeout = (description: string): OpencodeExecutionError => {
+      const timeout = new OpencodeExecutionError("TIMEOUT", "OpenCode segment timed out.");
+      timeout.timeoutKind = "total";
+      timeout.timeoutMs = 500;
+      timeout.providerSessionId = "ses-fallback";
+      timeout.partialStdout = JSON.stringify({
+        type: "tool_use",
+        sessionID: "ses-fallback",
+        part: {
+          tool: "task",
+          state: {
+            status: "completed",
+            input: {
+              subagent_type: OPENCODE_IMPLEMENT_OC_AGENT,
+              description
+            }
+          }
+        }
+      });
+      return timeout;
+    };
+
+    vi.mocked(runOpencodeAgentRequest)
+      .mockRejectedValueOnce(makeTimeout("First fallback task"))
+      .mockRejectedValueOnce(makeTimeout("Second fallback task"))
+      .mockResolvedValueOnce({
+        text: "All work completed.",
+        completedSubagents: [OPENCODE_IMPLEMENT_OC_AGENT],
+        completedTasks: [{
+          id: "final-task",
+          subagent: OPENCODE_IMPLEMENT_OC_AGENT
+        }],
+        sessionId: "ses-fallback"
+      });
+
+    const result = await (bot as any).runCheckpointedPlanOc({
+      requestId: 778,
+      prompt: "Plan and implement",
+      cwd: "/tmp/worktree",
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      threadChannel: { send: threadSend }
+    });
+
+    expect(result.segments).toBe(3);
+    expect(result.completedTasks.map((task: { id: string }) => task.id)).toEqual([
+      "segment-1:line-0",
+      "segment-2:line-0",
+      "final-task"
+    ]);
+    expect(runOpencodeAgentRequest).toHaveBeenCalledTimes(3);
+    expect(threadSend).toHaveBeenCalledTimes(2);
+  });
+
   it("does not resume a timed-out plan-oc segment without a new completed task checkpoint", async () => {
     const bot = createBot();
     const timeout = new OpencodeExecutionError("TIMEOUT", "OpenCode produced no output for 250ms.");

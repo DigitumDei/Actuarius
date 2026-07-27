@@ -100,7 +100,7 @@ describe("spawnCollect — stderr trimming", () => {
     const error = await spawnCollect(
       node,
       ["-e", `process.stderr.write("t".repeat(200)); setTimeout(() => {}, 60_000);`],
-      { cwd, timeoutMs: 2000, maxBuffer: 1024 * 1024, maxStderrBuffer: 100 }
+      { cwd, timeoutMs: 2000, killGraceMs: 100, maxBuffer: 1024 * 1024, maxStderrBuffer: 100 }
     ).catch((e: unknown) => e);
 
     expect(error).toMatchObject({
@@ -113,11 +113,48 @@ describe("spawnCollect — stderr trimming", () => {
     const error = await spawnCollect(
       node,
       ["-e", "setTimeout(() => {}, 60_000);"],
-      { cwd, timeoutMs: 1_000, idleTimeoutMs: 100, maxBuffer: 1024 },
+      { cwd, timeoutMs: 1_000, idleTimeoutMs: 100, killGraceMs: 100, maxBuffer: 1024 },
     ).catch((reason: unknown) => reason);
 
     expect(error).toMatchObject({ code: "ETIMEDOUT", timeoutReason: "idle" });
   });
+
+  it("records which output stream produced the latest chunk before timeout", async () => {
+    const error = await spawnCollect(
+      node,
+      [
+        "-e",
+        `process.stderr.write("startup warning\\n"); setTimeout(() => process.stdout.write("latest progress\\n"), 50); setInterval(() => {}, 60_000);`,
+      ],
+      { cwd, timeoutMs: 5_000, idleTimeoutMs: 1_000, killGraceMs: 100, maxBuffer: 1024 },
+    ).catch((reason: unknown) => reason);
+
+    expect(error).toMatchObject({
+      code: "ETIMEDOUT",
+      timeoutReason: "idle",
+      lastOutput: { stream: "stdout", text: "latest progress\n" },
+    });
+  });
+
+  it("force-terminates a timed-out process tree after the grace period", async () => {
+    const startedAt = Date.now();
+    const script = [
+      `const { spawn } = require("node:child_process");`,
+      `spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 60000);"], { stdio: ["ignore", "inherit", "inherit"] });`,
+      `process.stdout.write("ready");`,
+      `process.on("SIGTERM", () => {});`,
+      `setInterval(() => {}, 60_000);`,
+    ].join(" ");
+
+    const error = await spawnCollect(
+      node,
+      ["-e", script],
+      { cwd, timeoutMs: 5_000, idleTimeoutMs: 1_000, killGraceMs: 100, maxBuffer: 1024 },
+    ).catch((reason: unknown) => reason);
+
+    expect(error).toMatchObject({ code: "ETIMEDOUT", timeoutReason: "idle" });
+    expect(Date.now() - startedAt).toBeLessThan(4_000);
+  }, 10_000);
 
   // The two timing tests below race a real child process against real timers,
   // so their durations are chosen as ratios rather than tight absolute values.
@@ -164,7 +201,7 @@ describe("spawnCollect — stderr trimming", () => {
     const error = await spawnCollect(
       node,
       ["-e", `setInterval(() => process.stdout.write('x'), ${WRITE_INTERVAL_MS});`],
-      { cwd, timeoutMs: 2_000, idleTimeoutMs: 1_000, maxBuffer: 1024 * 1024 },
+      { cwd, timeoutMs: 2_000, idleTimeoutMs: 1_000, killGraceMs: 100, maxBuffer: 1024 * 1024 },
     ).catch((reason: unknown) => reason);
 
     expect(error).toMatchObject({ code: "ETIMEDOUT", timeoutReason: "absolute" });
@@ -180,7 +217,7 @@ describe("spawnCollect — stderr trimming", () => {
       await expect(spawnCollect(
         node,
         ["-e", script],
-        { cwd, timeoutMs, maxBuffer: 1024, onOutput }
+        { cwd, timeoutMs, killGraceMs: 100, maxBuffer: 1024, onOutput }
       )).rejects.toBe(callbackError);
 
       expect(onOutput).toHaveBeenCalledOnce();
