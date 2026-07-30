@@ -208,6 +208,7 @@ export function buildPlanImplementationPrompt(input: {
     `Repository: ${input.repoFullName}`,
     "",
     "Implement the request using the approved plan below. Make code changes in this worktree.",
+    "Work directly in this process. Do not delegate to another agent or invoke a Task/subagent tool.",
     "Do not create or commit a plan file. Keep changes scoped to the request.",
     "",
     "Original request:",

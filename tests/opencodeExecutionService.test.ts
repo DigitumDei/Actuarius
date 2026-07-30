@@ -22,7 +22,11 @@ vi.mock("../src/utils/spawnCollect.js", async (importActual) => {
   };
 });
 
-const { spawnCollect, spawnCollectWithTransport } = await import("../src/utils/spawnCollect.js");
+const {
+  DEFAULT_TERMINATION_GRACE_MS,
+  spawnCollect,
+  spawnCollectWithTransport
+} = await import("../src/utils/spawnCollect.js");
 const { readFile } = await import("node:fs/promises");
 const mockSpawnCollect = vi.mocked(spawnCollect);
 const mockSpawnCollectWithTransport = vi.mocked(spawnCollectWithTransport);
@@ -115,6 +119,7 @@ describe("authenticateOpenAIOpencode", () => {
       expect.objectContaining({
         cwd: "/app",
         timeoutMs: 1234,
+        killGraceMs: DEFAULT_TERMINATION_GRACE_MS,
         maxBuffer: 4 * 1024 * 1024,
         onOutput: expect.any(Function)
       })
@@ -181,13 +186,19 @@ describe("runOpencodeRequest", () => {
 
   it("uses the supervised build agent with nested agents denied", async () => {
     mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
-    await runOpencodeRequest({ prompt: "my prompt", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    await runOpencodeRequest({
+      prompt: "my prompt",
+      cwd: "/tmp",
+      timeoutMs: 5000,
+      role: "implementation"
+    }, logger);
     expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
       expect.objectContaining({
         file: "opencode",
         args: ["run", "--dir", "/tmp", "my prompt", "--agent", "build"],
         cwd: "/tmp",
         timeoutMs: 5000,
+        killGraceMs: DEFAULT_TERMINATION_GRACE_MS,
         maxBuffer: 4 * 1024 * 1024,
       })
     );
@@ -208,28 +219,72 @@ describe("runOpencodeRequest", () => {
     });
   });
 
+  it("keeps role-less requests on the legacy unrestricted build profile and preserves env", async () => {
+    mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
+    const env = {
+      PATH: "/scoped/bin",
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({
+        agent: {
+          custom: {
+            mode: "primary"
+          }
+        }
+      })
+    };
+
+    await runOpencodeRequest({
+      prompt: "my prompt",
+      cwd: "/tmp",
+      timeoutMs: 5000,
+      env
+    }, logger);
+
+    expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: [
+          "run",
+          "--dir",
+          "/tmp",
+          "my prompt",
+          "--agent",
+          "build",
+          "--dangerously-skip-permissions"
+        ],
+        env
+      })
+    );
+  });
+
   it("appends --model flag when model is provided", async () => {
     mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
     await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, model: "o4-mini" }, logger);
     expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
       expect.objectContaining({
         file: "opencode",
-        args: ["run", "--dir", "/tmp", "hello", "--agent", "build", "--model", "o4-mini"],
+        args: [
+          "run",
+          "--dir",
+          "/tmp",
+          "hello",
+          "--agent",
+          "build",
+          "--dangerously-skip-permissions",
+          "--model",
+          "o4-mini"
+        ],
         cwd: "/tmp",
       })
     );
   });
 
-  it("passes scoped env vars to the opencode CLI", async () => {
+  it("passes scoped env vars to the opencode CLI without rewriting them", async () => {
     mockSpawnCollectWithTransport.mockResolvedValueOnce({ stdout: "ok", stderr: "" });
-    await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, env: { PATH: "/scoped/bin" } }, logger);
+    const env = { PATH: "/scoped/bin" };
+    await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, env }, logger);
     expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
       expect.objectContaining({
         file: "opencode",
-        env: expect.objectContaining({
-          PATH: "/scoped/bin",
-          OPENCODE_CONFIG_CONTENT: expect.any(String)
-        }),
+        env,
       })
     );
   });
@@ -404,16 +459,32 @@ describe("runOpencodeRequest", () => {
   });
 
   it("preserves the idle timeout kind and its actual expired budget", async () => {
+    const latestActivity = JSON.stringify({
+      type: "tool_use",
+      part: {
+        tool: "task",
+        state: {
+          status: "running",
+          input: {
+            subagent_type: "actuarius-implement-oc",
+            description: "Finish validation"
+          }
+        }
+      }
+    });
     const err = Object.assign(new Error("Process produced no stdout or stderr for 900ms"), {
       code: "ETIMEDOUT",
       timeoutReason: "idle",
       killed: true,
       signal: "SIGTERM",
-      stdout: JSON.stringify({ type: "step_start", sessionID: "ses-idle" }),
+      stdout: [
+        JSON.stringify({ type: "step_start", sessionID: "ses-idle" }),
+        latestActivity
+      ].join("\n"),
       stderr: "older startup warning",
       lastOutput: {
         stream: "stdout",
-        text: JSON.stringify({ type: "step_start", sessionID: "ses-idle" })
+        text: `_type":"actuarius-implement-oc"}}}`
       }
     });
     mockSpawnCollectWithTransport.mockRejectedValueOnce(err);
@@ -428,9 +499,41 @@ describe("runOpencodeRequest", () => {
       timeoutKind: "idle",
       timeoutMs: 900,
       providerSessionId: "ses-idle",
-      lastActivity: "step_start",
+      lastActivity: "tool_use tool=task status=running subagent=actuarius-implement-oc description=Finish validation",
       message: "OpenCode produced no output for 900ms."
     });
+  });
+
+  it("does not classify an output-buffer overflow as a timeout in diagnostics", async () => {
+    const logError = vi.fn();
+    const diagnosticLogger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: logError
+    } as unknown as typeof logger;
+    const err = Object.assign(new Error("stdout exceeded maxBuffer"), {
+      code: "EMSGSIZE",
+      killed: true,
+      signal: "SIGTERM",
+      stdout: "partial output",
+      stderr: ""
+    });
+    mockSpawnCollectWithTransport.mockRejectedValueOnce(err);
+
+    await expect(runOpencodeRequest({
+      prompt: "hello",
+      cwd: "/tmp",
+      timeoutMs: 5000
+    }, diagnosticLogger)).rejects.toMatchObject({
+      code: "FAILED",
+      message: "OpenCode output exceeded the buffer limit."
+    });
+
+    expect(logError).toHaveBeenCalledOnce();
+    const loggedDetails = logError.mock.calls[0]![0] as Record<string, unknown>;
+    expect(loggedDetails.timeoutKind).toBeUndefined();
+    expect(loggedDetails.timeoutMs).toBeUndefined();
   });
 
   it("throws FAILED when process exits non-zero", async () => {
@@ -504,30 +607,51 @@ describe("managed OpenCode agent execution", () => {
     expect(parseOpencodeJsonEvents(output)).toEqual({
       text: "First section\n\nSecond section",
       completedSubagents: ["actuarius-implement-oc"],
-      completedTasks: [{ id: "line-3", subagent: "actuarius-implement-oc" }],
+      completedTasks: [{
+        id: expect.stringMatching(/^fallback-[0-9a-f]{16}$/u),
+        subagent: "actuarius-implement-oc"
+      }],
       sessionId: null,
       diagnostics: ["not-json diagnostic noise"]
     });
   });
 
-  it("namespaces fallback task IDs when parsing a checkpointed segment", () => {
-    const output = JSON.stringify({
+  it("keeps fallback task IDs stable across replayed segments while separating different work", () => {
+    const completedTask = (input: Record<string, unknown>) => JSON.stringify({
       type: "tool_use",
       part: {
         tool: "task",
         state: {
           status: "completed",
-          input: { subagent_type: "actuarius-implement-oc" }
+          input
         }
       }
     });
+    const first = parseOpencodeJsonEvents(completedTask({
+      subagent_type: "actuarius-implement-oc",
+      description: " Finish   validation ",
+      prompt: "Run the TEST suite",
+      command: "npm test"
+    })).completedTasks[0]!;
+    const replay = parseOpencodeJsonEvents([
+      JSON.stringify({ type: "step_start" }),
+      completedTask({
+        subagent_type: "ACTUARIUS-IMPLEMENT-OC",
+        description: "finish validation",
+        prompt: " run the test suite ",
+        command: "NPM   TEST"
+      })
+    ].join("\n")).completedTasks[0]!;
+    const different = parseOpencodeJsonEvents(completedTask({
+      subagent_type: "actuarius-implement-oc",
+      description: "Fix remaining lint errors",
+      prompt: "Run the test suite",
+      command: "npm test"
+    })).completedTasks[0]!;
 
-    expect(parseOpencodeJsonEvents(output, {
-      fallbackTaskIdPrefix: "segment-2"
-    }).completedTasks).toEqual([{
-      id: "segment-2:line-0",
-      subagent: "actuarius-implement-oc"
-    }]);
+    expect(first.id).toMatch(/^fallback-[0-9a-f]{16}$/u);
+    expect(replay.id).toBe(first.id);
+    expect(different.id).not.toBe(first.id);
   });
 
   it("runs one managed primary-agent CLI call and returns its parsed final text", async () => {
@@ -581,6 +705,7 @@ describe("managed OpenCode agent execution", () => {
         ],
         cwd: "/worktree",
         timeoutMs: 12_345,
+        killGraceMs: DEFAULT_TERMINATION_GRACE_MS,
         env: { DEEPSEEK_API_KEY: "test-key", OPENCODE_CONFIG_DIR: "/snapshot" }
       })
     );

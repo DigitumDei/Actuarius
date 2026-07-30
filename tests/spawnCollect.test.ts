@@ -136,7 +136,7 @@ describe("spawnCollect — stderr trimming", () => {
     });
   });
 
-  it("force-terminates a timed-out process tree after the grace period", async () => {
+  it("forwards an explicit grace period and force-terminates a timed-out process tree", async () => {
     const startedAt = Date.now();
     const script = [
       `const { spawn } = require("node:child_process");`,
@@ -146,15 +146,53 @@ describe("spawnCollect — stderr trimming", () => {
       `setInterval(() => {}, 60_000);`,
     ].join(" ");
 
-    const error = await spawnCollect(
-      node,
-      ["-e", script],
-      { cwd, timeoutMs: 5_000, idleTimeoutMs: 1_000, killGraceMs: 100, maxBuffer: 1024 },
-    ).catch((reason: unknown) => reason);
+    const error = await spawnCollectWithTransport({
+      file: node,
+      args: ["-e", script],
+      promptArgIndices: [],
+      cwd,
+      timeoutMs: 5_000,
+      idleTimeoutMs: 1_000,
+      killGraceMs: 100,
+      maxBuffer: 1024,
+    }).catch((reason: unknown) => reason);
 
     expect(error).toMatchObject({ code: "ETIMEDOUT", timeoutReason: "idle" });
     expect(Date.now() - startedAt).toBeLessThan(4_000);
   }, 10_000);
+
+  it.skipIf(process.platform === "win32")(
+    "lets a SIGTERM handler finish cleanup when force-kill escalation is omitted",
+    async () => {
+      const cleanupDelayMs = 300;
+      const startedAt = Date.now();
+      const script = [
+        `let stopping = false;`,
+        `process.on("SIGTERM", () => {`,
+        `  if (stopping) return;`,
+        `  stopping = true;`,
+        `  setTimeout(() => process.exit(0), ${cleanupDelayMs});`,
+        `});`,
+        `process.stdout.write("ready");`,
+        `setInterval(() => {}, 60_000);`,
+      ].join(" ");
+
+      const error = await spawnCollect(
+        node,
+        ["-e", script],
+        { cwd, timeoutMs: 5_000, idleTimeoutMs: 200, maxBuffer: 1024 },
+      ).catch((reason: unknown) => reason);
+
+      expect(error).toMatchObject({
+        code: "ETIMEDOUT",
+        timeoutReason: "idle",
+        killed: false,
+      });
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(cleanupDelayMs + 150);
+      expect(Date.now() - startedAt).toBeLessThan(4_000);
+    },
+    10_000,
+  );
 
   // The two timing tests below race a real child process against real timers,
   // so their durations are chosen as ratios rather than tight absolute values.

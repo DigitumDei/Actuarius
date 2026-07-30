@@ -4594,9 +4594,7 @@ export class ActuariusBot {
           throw error;
         }
 
-        const progress = parseOpencodeJsonEvents(error.partialStdout ?? "", {
-          fallbackTaskIdPrefix: `segment-${String(segment)}`
-        });
+        const progress = parseOpencodeJsonEvents(error.partialStdout ?? "");
         const newTaskCount = recordTasks(progress.completedTasks);
         sessionId = progress.sessionId ?? error.providerSessionId ?? sessionId;
         const checkpoint = [...completedTasks.values()];
@@ -4624,7 +4622,12 @@ export class ActuariusBot {
 
         await input.threadChannel.send(
           `OpenCode-native checkpoint saved after segment ${segment}: ${checkpoint.length} managed implementation task${checkpoint.length === 1 ? "" : "s"} completed. Resuming session \`${sessionId}\` with ${Math.ceil(remainingAfterTimeoutMs / 60_000)} minute(s) left in the original total budget.`
-        );
+        ).catch((sendError: unknown) => {
+          this.logger.warn(
+            { error: sendError, requestId: input.requestId, segment },
+            "Failed to post plan-oc checkpoint notice"
+          );
+        });
 
         const completedLines = checkpoint.map((task, index) => {
           const description = task.description ? ` - ${task.description}` : "";

@@ -112,10 +112,11 @@ than a workflow already in progress. The implementation subagent has shell acces
 the request worktree; its no-commit/no-push rules are behavioral guardrails rather
 than an OS sandbox, so the private-server trust boundary described below still applies.
 
-Regular iterative `/plan` and `/revise` OpenCode implementation calls use a
-supervised build-agent permission profile that denies nested Task/subagent calls.
-This keeps provider output and idle-timeout supervision attached to the process
-Actuarius started.
+Regular `/plan` and `/revise` OpenCode implementation calls—including iterative
+task steps—use a supervised build-agent permission profile that denies nested
+Task/subagent calls. `/ask` and thread follow-ups retain OpenCode's regular build
+profile. This keeps provider output and idle-timeout supervision attached to the
+process Actuarius started.
 
 Managed tool installs are validated against the filesystem before Actuarius adds
 their binaries or environment values to provider processes. Use `/uninstall`

@@ -5,6 +5,7 @@ import {
   spawnCollectWithTransport,
   exceedsArgvLimits,
   DEFAULT_ARGV_TOTAL_LIMIT,
+  DEFAULT_TERMINATION_GRACE_MS,
   MAX_SINGLE_ARG_BYTES,
   type SpawnLastOutput
 } from "./spawnCollect.js";
@@ -149,7 +150,9 @@ function summarizeLastActivity(
   stderr: string | undefined,
   lastOutput: SpawnLastOutput | undefined
 ): string | undefined {
-  const orderedOutput = lastOutput?.text ?? (stderr?.trim() ? stderr : stdout);
+  const orderedOutput = lastOutput
+    ? (lastOutput.stream === "stderr" ? stderr : stdout)
+    : (stderr?.trim() ? stderr : stdout);
   const lines = (orderedOutput?.split(/\r?\n/u) ?? [])
     .map((line) => line.trim())
     .filter(Boolean);
@@ -248,6 +251,7 @@ export async function runProviderRequest(
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,
         ...(input.idleTimeoutMs !== undefined ? { idleTimeoutMs: Math.min(input.idleTimeoutMs, input.timeoutMs) } : {}),
+        killGraceMs: DEFAULT_TERMINATION_GRACE_MS,
         maxBuffer: 4 * 1024 * 1024,
         ...(input.env ? { env: input.env } : {}),
         stdin: input.prompt,
@@ -261,6 +265,7 @@ export async function runProviderRequest(
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,
         ...(input.idleTimeoutMs !== undefined ? { idleTimeoutMs: Math.min(input.idleTimeoutMs, input.timeoutMs) } : {}),
+        killGraceMs: DEFAULT_TERMINATION_GRACE_MS,
         maxBuffer: 4 * 1024 * 1024,
         logger,
         logLabel: config.logLabel,
@@ -280,9 +285,10 @@ export async function runProviderRequest(
       timeoutReason?: "idle" | "absolute";
       lastOutput?: SpawnLastOutput;
     };
-    const isTimeout = nodeError.code === "ETIMEDOUT"
-      || (nodeError.killed === true && nodeError.signal === "SIGTERM")
-      || message.toLowerCase().includes("timed out");
+    const isTimeout = nodeError.code !== "EMSGSIZE"
+      && (nodeError.code === "ETIMEDOUT"
+        || (nodeError.killed === true && nodeError.signal === "SIGTERM")
+        || message.toLowerCase().includes("timed out"));
     const timeoutKind: ProviderTimeoutKind | undefined = isTimeout
       ? nodeError.timeoutReason === "idle" ? "idle" : "total"
       : undefined;

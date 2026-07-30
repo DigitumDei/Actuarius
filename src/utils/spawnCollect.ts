@@ -305,6 +305,8 @@ export interface SpawnCollectTransportOptions {
   timeoutMs: number;
   /** Kill the process if neither stdout nor stderr has produced data for this long. */
   idleTimeoutMs?: number;
+  /** Force-kill the child process tree after this SIGTERM grace period. */
+  killGraceMs?: number;
   /** Hard limit for stdout in bytes. */
   maxBuffer: number;
   /** Soft limit for stderr in bytes (default 64 KB). */
@@ -349,6 +351,7 @@ function buildOptions(base: {
   cwd: string;
   timeoutMs: number;
   idleTimeoutMs?: number;
+  killGraceMs?: number;
   maxBuffer: number;
   maxStderrBuffer?: number;
   env?: NodeJS.ProcessEnv;
@@ -361,6 +364,7 @@ function buildOptions(base: {
   };
   if (base.maxStderrBuffer !== undefined) opts.maxStderrBuffer = base.maxStderrBuffer;
   if (base.idleTimeoutMs !== undefined) opts.idleTimeoutMs = base.idleTimeoutMs;
+  if (base.killGraceMs !== undefined) opts.killGraceMs = base.killGraceMs;
   if (base.env !== undefined) opts.env = base.env;
   if (base.stdin !== undefined) opts.stdin = base.stdin;
   return opts;
@@ -389,6 +393,7 @@ export async function spawnCollectWithTransport(
     cwd,
     timeoutMs,
     idleTimeoutMs,
+    killGraceMs,
     maxBuffer,
     maxStderrBuffer,
     env,
@@ -451,6 +456,7 @@ export async function spawnCollectWithTransport(
       return await spawnCollect(file, fileArgs, buildOptions({
         cwd, timeoutMs, maxBuffer,
         ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
+        ...(killGraceMs !== undefined ? { killGraceMs } : {}),
         ...(maxStderrBuffer !== undefined ? { maxStderrBuffer } : {}),
         ...(env !== undefined ? { env } : {}),
       }));
@@ -459,6 +465,7 @@ export async function spawnCollectWithTransport(
     return await spawnCollect(file, decision.args, buildOptions({
       cwd, timeoutMs, maxBuffer,
       ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
+      ...(killGraceMs !== undefined ? { killGraceMs } : {}),
       ...(maxStderrBuffer !== undefined ? { maxStderrBuffer } : {}),
       ...(env !== undefined ? { env } : {}),
       ...(decision.stdinPayload !== undefined ? { stdin: decision.stdinPayload } : {}),
@@ -533,7 +540,7 @@ export function spawnCollect(
     idleTimeoutMs?: number;
     maxBuffer: number;
     maxStderrBuffer?: number;
-    /** Force-kill the child process tree if it has not closed after SIGTERM. */
+    /** Opt in to force-killing the child process tree if it has not closed after SIGTERM. */
     killGraceMs?: number;
     env?: NodeJS.ProcessEnv;
     stdin?: string;
@@ -542,10 +549,11 @@ export function spawnCollect(
   }
 ): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
+    const forceTreeTermination = options.killGraceMs !== undefined;
     const child = spawn(file, args, {
       cwd: options.cwd,
       env: options.env,
-      detached: process.platform !== "win32",
+      detached: forceTreeTermination && process.platform !== "win32",
       stdio: [options.stdin !== undefined ? "pipe" : "ignore", "pipe", "pipe"] as const,
     });
 
@@ -565,9 +573,15 @@ export function spawnCollect(
     let forceKillTimer: NodeJS.Timeout | undefined;
 
     const effectiveStderrMax = options.maxStderrBuffer ?? DEFAULT_STDERR_MAX;
-    const killGraceMs = Math.max(0, options.killGraceMs ?? DEFAULT_TERMINATION_GRACE_MS);
+    const killGraceMs = options.killGraceMs === undefined
+      ? undefined
+      : Math.max(0, options.killGraceMs);
 
     const requestTermination = (): void => {
+      if (killGraceMs === undefined) {
+        child.kill("SIGTERM");
+        return;
+      }
       signalChildTree(child, "SIGTERM");
       if (forceKillTimer) return;
       forceKillTimer = setTimeout(() => {

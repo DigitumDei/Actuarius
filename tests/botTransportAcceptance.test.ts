@@ -405,8 +405,10 @@ describe("Bot entrypoint transport acceptance", () => {
     expect(tempFilePath).toMatch(/prompt\.txt$/);
 
     const agentIdx = args!.indexOf("--agent");
-    expect(args).not.toContain("--dangerously-skip-permissions");
+    const skipIdx = args!.indexOf("--dangerously-skip-permissions");
+    expect(skipIdx).not.toBe(-1);
     expect(fileFlagIdx).toBeLessThan(agentIdx);
+    expect(agentIdx).toBeLessThan(skipIdx);
 
     expect(args).toContain("--model");
     expect(args).toContain("o4-mini");
@@ -544,6 +546,7 @@ describe("Bot entrypoint transport acceptance", () => {
       prompt: hugePrompt,
       cwd: "/work",
       model: "o4-mini",
+      role: "implementation",
     });
 
     const [, args] = mockSpawn.mock.calls[0]!;

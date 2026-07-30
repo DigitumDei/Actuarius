@@ -153,9 +153,12 @@ describe("runOpencodeRequest — integration (real transport)", () => {
 
     const [file, args] = mockSpawn.mock.calls[0]!;
     expect(file).toBe("opencode");
-    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--agent", "build"]);
+    expect(args).toEqual([
+      "run", "--dir", "/tmp", "hello",
+      "--agent", "build", "--dangerously-skip-permissions"
+    ]);
     expect(args).not.toContain("--file");
-    expect(args).not.toContain("--dangerously-skip-permissions");
+    expect(args).toContain("--dangerously-skip-permissions");
   });
 
   it("uses argv transport with --model for small prompts", async () => {
@@ -171,7 +174,11 @@ describe("runOpencodeRequest — integration (real transport)", () => {
     }, logger);
 
     const [, args] = mockSpawn.mock.calls[0]!;
-    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--agent", "build", "--model", "o4-mini"]);
+    expect(args).toEqual([
+      "run", "--dir", "/tmp", "hello",
+      "--agent", "build", "--dangerously-skip-permissions",
+      "--model", "o4-mini"
+    ]);
     expect(args).not.toContain("--file");
   });
 
@@ -186,6 +193,7 @@ describe("runOpencodeRequest — integration (real transport)", () => {
       prompt: hugePrompt,
       cwd: "/work",
       timeoutMs: 5000,
+      role: "implementation",
     }, logger);
 
     const [, args] = mockSpawn.mock.calls[0]!;

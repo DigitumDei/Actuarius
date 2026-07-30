@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -10,7 +11,7 @@ import {
   type ProviderRequestInput,
   type ProviderTimeoutKind
 } from "../utils/runProviderRequest.js";
-import { spawnCollect } from "../utils/spawnCollect.js";
+import { DEFAULT_TERMINATION_GRACE_MS, spawnCollect } from "../utils/spawnCollect.js";
 import { OPENCODE_TEMPFILE_DIRECTIVE } from "./llmPromptBuilders.js";
 
 export { OPENCODE_TEMPFILE_DIRECTIVE };
@@ -57,10 +58,6 @@ export interface ParsedOpencodeJsonEvents {
   completedTasks: CompletedOpencodeTask[];
   sessionId: string | null;
   diagnostics: string[];
-}
-
-export interface ParseOpencodeJsonEventsOptions {
-  fallbackTaskIdPrefix?: string;
 }
 
 export class OpencodeExecutionError extends Error {
@@ -148,6 +145,7 @@ export async function authenticateOpenAIOpencode(input: OpenAIOpencodeAuthInput)
     {
       cwd: input.cwd,
       timeoutMs: input.timeoutMs ?? OPENAI_OPENCODE_AUTH_TIMEOUT_MS,
+      killGraceMs: DEFAULT_TERMINATION_GRACE_MS,
       // Clack redraws its waiting spinner frequently for the entire device
       // flow. Keep enough headroom for the full ten-minute timeout.
       maxBuffer: OPENAI_OPENCODE_AUTH_MAX_BUFFER,
@@ -195,12 +193,18 @@ export async function hasOpencodeAuth(): Promise<boolean> {
 export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: Logger): Promise<OpencodeExecutionResult> {
   await assertOpencodeAuthenticated(input.env);
 
-  const role = input.role ?? "implementation";
-  const agent = role === "implementation" ? "build" : `actuarius-${role}`;
-  const extraArgs = ["--agent", agent];
+  const role = input.role;
+  const agent = !role || role === "implementation" ? "build" : `actuarius-${role}`;
+  const extraArgs = [
+    "--agent",
+    agent,
+    ...(!role ? ["--dangerously-skip-permissions"] : [])
+  ];
   const request = role === "implementation"
     ? { ...input, env: buildRestrictedImplementationEnvironment(input.env) }
-    : { ...input, env: buildRestrictedRoleEnvironment(input.env, role) };
+    : role
+      ? { ...input, env: buildRestrictedRoleEnvironment(input.env, role) }
+      : input;
 
   return { text: await runOpencodeCommand(request, extraArgs, logger) };
 }
@@ -226,11 +230,7 @@ export async function runOpencodeAgentRequest(
     ],
     logger
   );
-  const parsed = parseOpencodeJsonEvents(rawOutput, {
-    ...(input.diagnostics?.segment !== undefined
-      ? { fallbackTaskIdPrefix: `segment-${String(input.diagnostics.segment)}` }
-      : {})
-  });
+  const parsed = parseOpencodeJsonEvents(rawOutput);
 
   if (parsed.diagnostics.length > 0) {
     throw new OpencodeExecutionError(
@@ -260,10 +260,7 @@ export async function runOpencodeAgentRequest(
   };
 }
 
-export function parseOpencodeJsonEvents(
-  output: string,
-  options: ParseOpencodeJsonEventsOptions = {}
-): ParsedOpencodeJsonEvents {
+export function parseOpencodeJsonEvents(output: string): ParsedOpencodeJsonEvents {
   const textParts: string[] = [];
   const completedSubagents: string[] = [];
   const completedTasks: CompletedOpencodeTask[] = [];
@@ -271,7 +268,7 @@ export function parseOpencodeJsonEvents(
   const diagnostics: string[] = [];
   let sessionId: string | null = null;
 
-  for (const [lineIndex, line] of output.split(/\r?\n/u).entries()) {
+  for (const line of output.split(/\r?\n/u)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
@@ -300,12 +297,9 @@ export function parseOpencodeJsonEvents(
     const state = isRecord(part.state) ? part.state : null;
     const taskInput = state && isRecord(state.input) ? state.input : null;
     if (state?.status === "completed" && taskInput && typeof taskInput.subagent_type === "string") {
-      const fallbackTaskId = `line-${lineIndex}`;
       const taskId = typeof part.id === "string"
         ? part.id
-        : options.fallbackTaskIdPrefix
-          ? `${options.fallbackTaskIdPrefix}:${fallbackTaskId}`
-          : fallbackTaskId;
+        : buildFallbackTaskId(taskInput);
       const taskKey = `${taskInput.subagent_type}\u0000${taskId}`;
       if (!completedTaskKeys.has(taskKey)) {
         completedTaskKeys.add(taskKey);
@@ -328,6 +322,20 @@ export function parseOpencodeJsonEvents(
     sessionId,
     diagnostics
   };
+}
+
+function buildFallbackTaskId(taskInput: Record<string, unknown>): string {
+  const normalize = (value: unknown): string => typeof value === "string"
+    ? value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase()
+    : "";
+  const identity = [
+    normalize(taskInput.subagent_type),
+    normalize(taskInput.description),
+    normalize(taskInput.prompt),
+    normalize(taskInput.command)
+  ].join("\u0000");
+  const digest = createHash("sha256").update(identity).digest("hex").slice(0, 16);
+  return `fallback-${digest}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
