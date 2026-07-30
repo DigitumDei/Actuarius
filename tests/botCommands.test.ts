@@ -3947,6 +3947,60 @@ describe("ActuariusBot plan runner", () => {
     vi.resetAllMocks();
   });
 
+  it.each([
+    { mode: "single-shot", iterative: false, planText: "plan text" },
+    {
+      mode: "iterative",
+      iterative: true,
+      planText: JSON.stringify({
+        overview: "Test plan",
+        tasks: [{ title: "Task 1", description: "First task" }]
+      })
+    }
+  ])("does not announce $mode plan success when cancellation wins completion", async ({ iterative, planText }) => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan-cancelled",
+      branchName: "ask/90-123"
+    });
+    vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
+
+    const send = vi.fn().mockResolvedValue(undefined);
+    const completeRequestIfActive = vi.fn().mockReturnValue(false);
+    const addDrawer = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot({
+      updateRequestStatus: vi.fn(),
+      updateRequestWorkspace: vi.fn(),
+      completeRequestIfActive
+    }, { addDrawer });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn()
+      .mockResolvedValueOnce(planText)
+      .mockResolvedValueOnce("implementation output");
+
+    await (bot as any).runPlanRequest({
+      requestId: 90,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Do the thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      iterative
+    });
+
+    expect(completeRequestIfActive).toHaveBeenCalledWith(90);
+    expect(send).not.toHaveBeenCalledWith(expect.stringContaining("Plan implementation complete"));
+    expect(addDrawer).not.toHaveBeenCalled();
+  });
+
   it("preserves the request worktree when single-shot implementation fails after creation", async () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const updateRequestStatus = vi.fn();

@@ -20,7 +20,7 @@ export const TIMEOUT_DEFAULTS_MS = {
   installStep: 60 * 60 * 1000,
   mempalaceRemote: 5 * 1000,
   mempalaceRemoteMine: 45 * 60 * 1000,
-  requestStuck: 5 * 60 * 1000,
+  requestStuck: 20 * 60 * 1000,
   requestStuckScan: 60 * 1000,
 } as const;
 

@@ -615,18 +615,21 @@ describe("AppDatabase startup reconciliation of interrupted work", () => {
     expect([queued.id, running.id, installApproved.id, installRunning.id, succeeded.id, failed.id]).toHaveLength(6);
   });
 
-  it("finds stale active requests and records a cancellation reason atomically", () => {
+  it("finds stale running requests without expiring queued work", () => {
     const request = createRequestWithStatus("thread-stale", "running");
+    const queued = createRequestWithStatus("thread-queued-stale", "queued");
 
-    expect(db.listStaleActiveRequests("9999-12-31 23:59:59").map((row) => row.id)).toContain(request.id);
-    expect(db.failRequestIfActive(request.id, "No activity for five minutes.")).toBe(true);
+    const staleRequestIds = db.listStaleRunningRequests("9999-12-31 23:59:59").map((row) => row.id);
+    expect(staleRequestIds).toContain(request.id);
+    expect(staleRequestIds).not.toContain(queued.id);
+    expect(db.failRequestIfActive(request.id, "No activity before the configured cutoff.")).toBe(true);
     expect(db.failRequestIfActive(request.id, "second failure")).toBe(false);
     expect(db.completeRequestIfActive(request.id)).toBe(false);
 
     const failed = db.getRequestByThreadId("thread-stale");
     expect(failed?.status).toBe("failed");
-    expect(failed?.status_reason).toBe("No activity for five minutes.");
-    expect(db.listStaleActiveRequests("9999-12-31 23:59:59")).not.toContainEqual(
+    expect(failed?.status_reason).toBe("No activity before the configured cutoff.");
+    expect(db.listStaleRunningRequests("9999-12-31 23:59:59")).not.toContainEqual(
       expect.objectContaining({ id: request.id })
     );
   });

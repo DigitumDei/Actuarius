@@ -726,7 +726,7 @@ export class ActuariusBot {
   private async sweepStuckRequests(): Promise<void> {
     const cutoffDate = new Date(Date.now() - this.config.requestStuckTimeoutMs);
     const cutoff = cutoffDate.toISOString().replace("T", " ").replace(/\.\d{3}Z$/u, "");
-    const stale = this.db.listStaleActiveRequests(cutoff);
+    const stale = this.db.listStaleRunningRequests(cutoff);
     for (const request of stale) {
       const reason = `No request activity was recorded for ${formatRequestAge(request.updated_at)}; automatically marked as stuck.`;
       if (!this.failActiveRequest(request.id, reason)) continue;
@@ -4359,8 +4359,9 @@ export class ActuariusBot {
           memoryWing
         });
 
-        this.completeActiveRequest(input.requestId);
+        const completed = this.completeActiveRequest(input.requestId);
         statusFinalized = true;
+        if (!completed) return;
         const approvedCount = taskResults.filter((result) => result.approved).length;
         const issueCount = taskResults.length - approvedCount;
         const outcomeLine = issueCount > 0
@@ -4420,8 +4421,9 @@ export class ActuariusBot {
           await threadChannel.send(chunk);
         }
 
-        this.completeActiveRequest(input.requestId);
+        const completed = this.completeActiveRequest(input.requestId);
         statusFinalized = true;
+        if (!completed) return;
         await threadChannel.send("Plan implementation complete. Run `/review` to review the working tree. Commit any remaining changes before `/pr`, then run `/review` again once the committed branch is ready.");
         this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Plan request succeeded");
 
@@ -4596,8 +4598,9 @@ export class ActuariusBot {
         await threadChannel.send(chunk);
       }
 
-      this.completeActiveRequest(input.requestId);
+      const completed = this.completeActiveRequest(input.requestId);
       statusFinalized = true;
+      if (!completed) return;
       await threadChannel.send(
         "OpenCode-native plan implementation complete. Run `/review` to review the working tree. Commit any remaining changes before `/pr`, then run `/review` again once the committed branch is ready."
       );
@@ -4791,8 +4794,9 @@ export class ActuariusBot {
         memoryWing
       });
 
-      this.completeActiveRequest(input.requestId);
+      const completed = this.completeActiveRequest(input.requestId);
       statusFinalized = true;
+      if (!completed) return;
       const approvedCount = taskResults.filter((r) => r.approved).length;
       const issueCount = taskResults.length - approvedCount;
       const outcomeLine = issueCount > 0
@@ -5022,8 +5026,9 @@ export class ActuariusBot {
           await channel.send(chunk);
         }
       }
-      this.completeActiveRequest(input.requestId);
+      const completed = this.completeActiveRequest(input.requestId);
       statusFinalized = true;
+      if (!completed) return;
       this.logger.info(
         { requestId: input.requestId, durationMs: Date.now() - startedAt, provider: input.provider },
         "Queued AI request succeeded"

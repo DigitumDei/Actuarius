@@ -691,12 +691,12 @@ export class AppDatabase {
     return Number(result.changes) > 0;
   }
 
-  public listStaleActiveRequests(cutoff: string): RequestRow[] {
+  public listStaleRunningRequests(cutoff: string): RequestRow[] {
     const rows = z.array(requestRowRawSchema).parse(
       this.db
         .prepare(
           `SELECT * FROM requests
-           WHERE status IN ('queued', 'running')
+           WHERE status = 'running'
              AND updated_at <= ?
            ORDER BY updated_at ASC`
         )

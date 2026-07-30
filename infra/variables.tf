@@ -29,13 +29,13 @@ variable "ask_concurrency" {
 
 variable "request_stuck_timeout_ms" {
   type        = number
-  description = "Maximum time without queued/running request activity before automatic cancellation."
-  default     = 300000
+  description = "Maximum time without running-request activity before automatic cancellation."
+  default     = 1200000
 }
 
 variable "request_stuck_scan_interval_ms" {
   type        = number
-  description = "Interval between scans for stuck queued/running requests."
+  description = "Interval between scans for stuck running requests."
   default     = 60000
 }
 
