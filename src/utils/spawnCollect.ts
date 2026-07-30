@@ -311,6 +311,8 @@ export interface SpawnCollectTransportOptions {
   maxStderrBuffer?: number;
   /** Environment variables for the child process. */
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  onOutput?: (snapshot: SpawnOutputSnapshot) => void;
   /** Whether the CLI accepts prompt input via stdin (default `true`). */
   supportsStdinFallback?: boolean;
   /**
@@ -353,6 +355,8 @@ function buildOptions(base: {
   maxStderrBuffer?: number;
   env?: NodeJS.ProcessEnv;
   stdin?: string;
+  signal?: AbortSignal;
+  onOutput?: (snapshot: SpawnOutputSnapshot) => void;
 }) {
   const opts: Parameters<typeof spawnCollect>[2] = {
     cwd: base.cwd,
@@ -363,6 +367,8 @@ function buildOptions(base: {
   if (base.idleTimeoutMs !== undefined) opts.idleTimeoutMs = base.idleTimeoutMs;
   if (base.env !== undefined) opts.env = base.env;
   if (base.stdin !== undefined) opts.stdin = base.stdin;
+  if (base.signal !== undefined) opts.signal = base.signal;
+  if (base.onOutput !== undefined) opts.onOutput = base.onOutput;
   return opts;
 }
 
@@ -392,6 +398,8 @@ export async function spawnCollectWithTransport(
     maxBuffer,
     maxStderrBuffer,
     env,
+    signal,
+    onOutput,
     supportsStdinFallback,
     tempfileFlag,
     reshapeArgsForTempfile,
@@ -453,6 +461,8 @@ export async function spawnCollectWithTransport(
         ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
         ...(maxStderrBuffer !== undefined ? { maxStderrBuffer } : {}),
         ...(env !== undefined ? { env } : {}),
+        ...(signal !== undefined ? { signal } : {}),
+        ...(onOutput !== undefined ? { onOutput } : {}),
       }));
     }
 
@@ -461,6 +471,8 @@ export async function spawnCollectWithTransport(
       ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
       ...(maxStderrBuffer !== undefined ? { maxStderrBuffer } : {}),
       ...(env !== undefined ? { env } : {}),
+      ...(signal !== undefined ? { signal } : {}),
+      ...(onOutput !== undefined ? { onOutput } : {}),
       ...(decision.stdinPayload !== undefined ? { stdin: decision.stdinPayload } : {}),
     }));
   } finally {
@@ -509,9 +521,15 @@ export function spawnCollect(
     stdin?: string;
     /** Called after stdout or stderr changes, with the output collected so far. */
     onOutput?: (snapshot: SpawnOutputSnapshot) => void;
+    /** Abort the child process when the owning request is cancelled. */
+    signal?: AbortSignal;
   }
 ): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) {
+      reject(Object.assign(new Error("Process cancelled before it started"), { code: "ABORT_ERR", killed: false }));
+      return;
+    }
     const child = spawn(file, args, {
       cwd: options.cwd,
       env: options.env,
@@ -530,6 +548,7 @@ export function spawnCollect(
     let bufferOverflow = false;
     let stderrTruncated = false;
     let outputCallbackError: Error | undefined;
+    let aborted = false;
 
     const effectiveStderrMax = options.maxStderrBuffer ?? DEFAULT_STDERR_MAX;
 
@@ -554,7 +573,15 @@ export function spawnCollect(
     const clearTimers = () => {
       clearTimeout(absoluteTimer);
       if (idleTimer) clearTimeout(idleTimer);
+      options.signal?.removeEventListener("abort", abortChild);
     };
+
+    const abortChild = (): void => {
+      if (aborted) return;
+      aborted = true;
+      child.kill("SIGTERM");
+    };
+    options.signal?.addEventListener("abort", abortChild, { once: true });
 
     const notifyOutput = (): void => {
       if (!options.onOutput || outputCallbackError) return;
@@ -604,6 +631,12 @@ export function spawnCollect(
 
       if (outputCallbackError) {
         reject(outputCallbackError);
+        return;
+      }
+      if (aborted) {
+        reject(Object.assign(new Error("Process cancelled by user request"), {
+          code: "ABORT_ERR", killed: true, signal, stdout, stderr: finalStderr,
+        }));
         return;
       }
       if (bufferOverflow) {

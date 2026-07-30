@@ -77,6 +77,8 @@ All timeout defaults live together in [`TIMEOUT_DEFAULTS_MS`](src/config.ts) and
 
 - `ASK_EXECUTION_TIMEOUT_MS` — absolute cap for a provider invocation (default `5400000`)
 - `PROVIDER_IDLE_TIMEOUT_MS` — no-output timeout for a provider (default `900000`)
+- `REQUEST_STUCK_TIMEOUT_MS` — maximum time without request activity before automatic cancellation (default `300000`)
+- `REQUEST_STUCK_SCAN_INTERVAL_MS` — interval between stale-request scans (default `60000`)
 - `REVIEWER_TIMEOUT_MS` — fixed cap for each primary reviewer per round (default `1200000`)
 - `ITERATIVE_VERIFICATION_TIMEOUT_MS` — iterative planner-verification cap (default `600000`)
 - `INSTALL_STEP_TIMEOUT_MS` — tool-install step cap (default `3600000`)

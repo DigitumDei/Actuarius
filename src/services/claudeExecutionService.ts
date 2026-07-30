@@ -7,6 +7,8 @@ export interface ClaudeExecutionInput {
   timeoutMs: number;
   model?: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  onActivity?: () => void;
 }
 
 export interface ClaudeExecutionResult {

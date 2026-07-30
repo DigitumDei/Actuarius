@@ -27,6 +27,8 @@ export interface OpencodeExecutionInput {
   timeoutMs: number;
   model?: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  onActivity?: () => void;
   role?: OpencodeExecutionRole;
 }
 
@@ -37,6 +39,8 @@ export interface OpencodeAgentExecutionInput {
   env?: NodeJS.ProcessEnv;
   agent: string;
   requiredSubagent?: string;
+  signal?: AbortSignal;
+  onActivity?: () => void;
 }
 
 export type OpencodeExecutionRole = "implementation" | "planner" | "verification";

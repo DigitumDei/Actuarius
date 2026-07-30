@@ -246,6 +246,52 @@ function createInteraction(overrides: Record<string, unknown> = {}) {
   };
 }
 
+describe("ActuariusBot request recovery commands", () => {
+  it("shows state age, activity age, and the stored failure reason", async () => {
+    const interaction = createInteraction();
+    const bot = createBot({
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 161,
+        status: "failed",
+        status_reason: "Server restarted while this request was active.",
+        status_changed_at: "2026-07-30 18:00:00",
+        updated_at: "2026-07-30 18:00:00"
+      })
+    });
+
+    await (bot as any).handleStatus(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Server restarted while this request was active."),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Last activity:"),
+      ephemeral: true
+    });
+  });
+
+  it("lets the request owner cancel an active request and records who cancelled it", async () => {
+    const failRequestIfActive = vi.fn().mockReturnValue(true);
+    const interaction = createInteraction();
+    const bot = createBot({
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 161,
+        guild_id: "guild-1",
+        thread_id: "thread-1",
+        user_id: "user-1",
+        status: "running"
+      }),
+      failRequestIfActive
+    });
+
+    await (bot as any).handleCancel(interaction);
+
+    expect(failRequestIfActive).toHaveBeenCalledWith(161, "Cancelled by user user-1.");
+    expect(interaction.reply).toHaveBeenCalledWith("Request #161 was cancelled.");
+  });
+});
+
 describe("ActuariusBot auth-openai-opencode command", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -435,7 +481,7 @@ describe("ActuariusBot ask command", () => {
       prompt: "Review this log",
       status: "queued"
     }));
-    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function), "thread-ask-1");
+    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function), "thread-ask-1", "104");
 
     await enqueue.mock.calls[0]![1]();
     expect(runQueuedRequest).toHaveBeenCalledWith(expect.objectContaining({
@@ -686,7 +732,7 @@ describe("ActuariusBot thread follow-ups", () => {
       })
     );
     expect(enqueue).toHaveBeenCalledTimes(1);
-    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function), "thread-1");
+    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function), "thread-1", "77");
   });
 
   it("rejects follow-up messages while another request in the thread is active", async () => {

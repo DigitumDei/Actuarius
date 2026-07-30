@@ -27,6 +27,18 @@ variable "ask_concurrency" {
   default     = 1
 }
 
+variable "request_stuck_timeout_ms" {
+  type        = number
+  description = "Maximum time without queued/running request activity before automatic cancellation."
+  default     = 300000
+}
+
+variable "request_stuck_scan_interval_ms" {
+  type        = number
+  description = "Interval between scans for stuck queued/running requests."
+  default     = 60000
+}
+
 variable "container_memory" {
   type        = string
   description = "Docker RAM limit. Keep below VM RAM to preserve host headroom."

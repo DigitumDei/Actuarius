@@ -47,6 +47,8 @@ GITHUB_APP_PRIVATE_KEY=$(get_secret actuarius-github-app-private-key || true)
 GITHUB_APP_PRIVATE_KEY_B64=$(get_secret actuarius-github-app-private-key-b64 || true)
 CLAUDE_CODE_OAUTH_TOKEN=$(get_secret actuarius-claude-oauth-token || true)
 ASK_CONCURRENCY=$(get_meta env-ask-concurrency)
+REQUEST_STUCK_TIMEOUT_MS=$(get_meta env-request-stuck-timeout-ms || true)
+REQUEST_STUCK_SCAN_INTERVAL_MS=$(get_meta env-request-stuck-scan-interval-ms || true)
 CONTAINER_MEMORY=$(get_meta env-container-memory || true)
 CONTAINER_MEMORY_SWAP=$(get_meta env-container-memory-swap || true)
 CONTAINER_CPUS=$(get_meta env-container-cpus || true)
@@ -138,6 +140,12 @@ GEMINI_API_KEY=$(get_secret actuarius-gemini-api-key || true)
 EXTRA_ARGS=()
 if [ -n "$GUILD_ID" ]; then
   EXTRA_ARGS+=(-e "DISCORD_GUILD_ID=$GUILD_ID")
+fi
+if [ -n "$REQUEST_STUCK_TIMEOUT_MS" ]; then
+  EXTRA_ARGS+=(-e "REQUEST_STUCK_TIMEOUT_MS=$REQUEST_STUCK_TIMEOUT_MS")
+fi
+if [ -n "$REQUEST_STUCK_SCAN_INTERVAL_MS" ]; then
+  EXTRA_ARGS+=(-e "REQUEST_STUCK_SCAN_INTERVAL_MS=$REQUEST_STUCK_SCAN_INTERVAL_MS")
 fi
 if [ -n "$GH_TOKEN" ]; then
   EXTRA_ARGS+=(-e "GH_TOKEN=$GH_TOKEN")

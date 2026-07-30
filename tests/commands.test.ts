@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import { commandBuilders } from "../src/discord/commands.js";
 
 describe("command registration", () => {
-  it("registers the branches, cleanup, issues, plan, install, uninstall, delete, and pr commands", () => {
+  it("registers repository, request recovery, install, review, and PR commands", () => {
     const names = commandBuilders.map((builder) => builder.name);
     expect(names).toContain("branches");
     expect(names).toContain("cleanup");
     expect(names).toContain("issues");
     expect(names).toContain("plan");
+    expect(names).toContain("status");
+    expect(names).toContain("cancel");
     expect(names).toContain("install");
     expect(names).toContain("uninstall");
     expect(names).toContain("delete");

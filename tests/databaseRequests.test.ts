@@ -491,6 +491,79 @@ describe("AppDatabase migration from legacy reviewer_slots", () => {
   });
 });
 
+describe("AppDatabase migration from legacy requests", () => {
+  it("adds and backfills request activity timestamps without unsupported ALTER defaults", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "actuarius-request-migration-test-"));
+    const dbPath = join(tmpDir, "legacy-requests.db");
+    const legacyDb = new DatabaseSync(dbPath);
+    legacyDb.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE guilds (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE repos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        full_name TEXT NOT NULL,
+        visibility TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        linked_by_user_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (guild_id, full_name)
+      );
+      CREATE TABLE requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        repo_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      INSERT INTO guilds (id, name) VALUES ('guild-1', 'Legacy Guild');
+      INSERT INTO repos (
+        guild_id, owner, repo, full_name, visibility, channel_id, linked_by_user_id
+      ) VALUES (
+        'guild-1', 'octocat', 'hello-world', 'octocat/hello-world',
+        'private', 'channel-1', 'user-1'
+      );
+      INSERT INTO requests (
+        guild_id, repo_id, channel_id, thread_id, user_id, prompt, status
+      ) VALUES (
+        'guild-1', 1, 'channel-1', 'thread-legacy', 'user-1', 'legacy prompt', 'running'
+      );
+    `);
+    legacyDb.close();
+
+    const db = new AppDatabase(dbPath);
+    expect(() => db.runMigrations()).not.toThrow();
+
+    const legacyRequest = db.getRequestByThreadId("thread-legacy");
+    expect(legacyRequest?.updated_at).toMatch(/^\d{4}-\d{2}-\d{2}/u);
+    expect(legacyRequest?.status_changed_at).toMatch(/^\d{4}-\d{2}-\d{2}/u);
+
+    const newRequest = db.createRequest({
+      guildId: "guild-1",
+      repoId: 1,
+      channelId: "channel-1",
+      threadId: "thread-new",
+      userId: "user-1",
+      prompt: "new prompt",
+      status: "queued"
+    });
+    expect(newRequest.updated_at).toMatch(/^\d{4}-\d{2}-\d{2}/u);
+    expect(newRequest.status_changed_at).toMatch(/^\d{4}-\d{2}-\d{2}/u);
+    db.close();
+  });
+});
+
 describe("AppDatabase startup reconciliation of interrupted work", () => {
   let db: AppDatabase;
 
@@ -538,7 +611,24 @@ describe("AppDatabase startup reconciliation of interrupted work", () => {
     expect(db.getRequestByThreadId("thread-install-running")?.status).toBe("failed");
     expect(db.getRequestByThreadId("thread-succeeded")?.status).toBe("succeeded");
     expect(db.getRequestByThreadId("thread-failed")?.status).toBe("failed");
+    expect(db.getRequestByThreadId("thread-running")?.status_reason).toContain("Server restarted");
     expect([queued.id, running.id, installApproved.id, installRunning.id, succeeded.id, failed.id]).toHaveLength(6);
+  });
+
+  it("finds stale active requests and records a cancellation reason atomically", () => {
+    const request = createRequestWithStatus("thread-stale", "running");
+
+    expect(db.listStaleActiveRequests("9999-12-31 23:59:59").map((row) => row.id)).toContain(request.id);
+    expect(db.failRequestIfActive(request.id, "No activity for five minutes.")).toBe(true);
+    expect(db.failRequestIfActive(request.id, "second failure")).toBe(false);
+    expect(db.completeRequestIfActive(request.id)).toBe(false);
+
+    const failed = db.getRequestByThreadId("thread-stale");
+    expect(failed?.status).toBe("failed");
+    expect(failed?.status_reason).toBe("No activity for five minutes.");
+    expect(db.listStaleActiveRequests("9999-12-31 23:59:59")).not.toContainEqual(
+      expect.objectContaining({ id: request.id })
+    );
   });
 
   it("fails active install requests so the install root is released", () => {

@@ -8,6 +8,8 @@ export interface ProviderRequestInput {
   idleTimeoutMs?: number;
   model?: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  onActivity?: () => void;
 }
 
 export interface ProviderErrorDetails {
@@ -167,6 +169,8 @@ export async function runProviderRequest(
         ...(input.idleTimeoutMs !== undefined ? { idleTimeoutMs: Math.min(input.idleTimeoutMs, input.timeoutMs) } : {}),
         maxBuffer: 4 * 1024 * 1024,
         ...(input.env ? { env: input.env } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+        ...(input.onActivity ? { onOutput: input.onActivity } : {}),
         stdin: input.prompt,
       });
       ({ stdout, stderr } = result);
@@ -182,6 +186,8 @@ export async function runProviderRequest(
         logger,
         logLabel: config.logLabel,
         ...(input.env ? { env: input.env } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+        ...(input.onActivity ? { onOutput: input.onActivity } : {}),
         ...(config.supportsStdinFallback !== undefined ? { supportsStdinFallback: config.supportsStdinFallback } : {}),
         ...(config.tempfileFlag !== undefined ? { tempfileFlag: config.tempfileFlag } : {}),
         ...(config.reshapeArgsForTempfile !== undefined ? { reshapeArgsForTempfile: config.reshapeArgsForTempfile } : {}),
@@ -214,6 +220,10 @@ export async function runProviderRequest(
 
     if (nodeError.code === "EMSGSIZE") {
       throw config.makeError(config.failedCode, `${config.logLabel} output exceeded the buffer limit.`);
+    }
+
+    if (nodeError.code === "ABORT_ERR") {
+      throw config.makeError(config.failedCode, `${config.logLabel} execution was cancelled.`);
     }
 
     if (

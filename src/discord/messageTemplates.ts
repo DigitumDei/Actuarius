@@ -8,6 +8,8 @@ export function buildHelpText(): string {
     "- `/repos` List connected repos and their channels.",
     "- `/issues [mode:<list|summary|detail>] [issue:<number>]` Read open GitHub issues for the connected repo.",
     "- `/ask prompt:<text>` Create a new request thread and run AI in an isolated worktree.",
+    "- `/status` Show the latest request state, state age, and failure reason in the current request thread.",
+    "- `/cancel` Cancel the queued or running request in the current request thread (request owner or Manage Server).",
     "- `/plan prompt:<text> [iterative:false]` Create a request thread, run a planner, then run iterative per-task implementation and verification by default.",
     "- `/plan-oc prompt:<text>` Run the experimental OpenCode-native planner and implementation subagent in one CLI session.",
     "- `/install [package:<allowed-package-id>] [apt-package:<deb-specs>] scope:<repo|request>` Install an allowlisted tool or apt package (admin only; specify exactly one of `package` or `apt-package`).",

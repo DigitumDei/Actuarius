@@ -7,6 +7,8 @@ export interface CodexExecutionInput {
   timeoutMs: number;
   model?: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  onActivity?: () => void;
 }
 
 export interface CodexExecutionResult {

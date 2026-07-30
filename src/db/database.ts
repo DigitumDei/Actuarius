@@ -92,7 +92,10 @@ export class AppDatabase {
         user_id TEXT NOT NULL,
         prompt TEXT NOT NULL,
         status TEXT NOT NULL,
+        status_reason TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        status_changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE,
         FOREIGN KEY (repo_id) REFERENCES repos(id) ON DELETE CASCADE
       );
@@ -165,6 +168,34 @@ export class AppDatabase {
     } catch {
       // Column already exists
     }
+
+    try {
+      this.db.exec("ALTER TABLE requests ADD COLUMN status_reason TEXT");
+    } catch {
+      // Column already exists
+    }
+
+    try {
+      this.db.exec("ALTER TABLE requests ADD COLUMN updated_at TEXT");
+    } catch {
+      // Column already exists
+    }
+
+    try {
+      this.db.exec("ALTER TABLE requests ADD COLUMN status_changed_at TEXT");
+    } catch {
+      // Column already exists
+    }
+
+    // SQLite rejects CURRENT_TIMESTAMP defaults in ALTER TABLE ADD COLUMN.
+    // Backfill legacy rows explicitly; createRequest supplies timestamps for
+    // future inserts even when these migrated columns have no schema default.
+    this.db.exec(`
+      UPDATE requests
+      SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP),
+          status_changed_at = COALESCE(status_changed_at, created_at, CURRENT_TIMESTAMP)
+      WHERE updated_at IS NULL OR status_changed_at IS NULL
+    `);
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS guild_model_config (
@@ -540,8 +571,11 @@ export class AppDatabase {
     const raw = requestRowRawSchema.parse(
       this.db
         .prepare(
-          `INSERT INTO requests (guild_id, repo_id, channel_id, thread_id, user_id, prompt, status, revision_of_request_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO requests (
+             guild_id, repo_id, channel_id, thread_id, user_id, prompt,
+             status, revision_of_request_id, status_changed_at, updated_at
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
            RETURNING *`
         )
         .get(
@@ -610,8 +644,65 @@ export class AppDatabase {
     };
   }
 
-  public updateRequestStatus(requestId: number, status: RequestStatus): void {
-    this.db.prepare("UPDATE requests SET status = ? WHERE id = ?").run(status, requestId);
+  public updateRequestStatus(requestId: number, status: RequestStatus, reason?: string): void {
+    this.db
+      .prepare(
+        `UPDATE requests
+         SET status = ?,
+             status_reason = ?,
+             status_changed_at = CURRENT_TIMESTAMP,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`
+      )
+      .run(status, reason ?? null, requestId);
+  }
+
+  public touchRequestActivity(requestId: number): void {
+    this.db
+      .prepare("UPDATE requests SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('queued', 'running')")
+      .run(requestId);
+  }
+
+  public failRequestIfActive(requestId: number, reason: string): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE requests
+         SET status = 'failed',
+             status_reason = ?,
+             status_changed_at = CURRENT_TIMESTAMP,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND status IN ('queued', 'running')`
+      )
+      .run(reason, requestId);
+    return Number(result.changes) > 0;
+  }
+
+  public completeRequestIfActive(requestId: number): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE requests
+         SET status = 'succeeded',
+             status_reason = NULL,
+             status_changed_at = CURRENT_TIMESTAMP,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND status IN ('queued', 'running')`
+      )
+      .run(requestId);
+    return Number(result.changes) > 0;
+  }
+
+  public listStaleActiveRequests(cutoff: string): RequestRow[] {
+    const rows = z.array(requestRowRawSchema).parse(
+      this.db
+        .prepare(
+          `SELECT * FROM requests
+           WHERE status IN ('queued', 'running')
+             AND updated_at <= ?
+           ORDER BY updated_at ASC`
+        )
+        .all(cutoff)
+    );
+    return rows.map((row) => this.mapRequestRow(row)!);
   }
 
   // A freshly booted process has no in-flight work (single-instance
@@ -627,20 +718,27 @@ export class AppDatabase {
       // stamping a completed install as failed.
       const installSucceeded = this.db
         .prepare(
-          `UPDATE requests SET status = 'install_succeeded'
+          `UPDATE requests SET status = 'install_succeeded', status_reason = NULL, status_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
            WHERE status IN ('install_approved', 'install_running')
              AND (SELECT ir.status FROM install_requests ir WHERE ir.request_id = requests.id ORDER BY ir.id DESC LIMIT 1) = 'succeeded'`
         )
         .run();
       const installFailed = this.db
         .prepare(
-          `UPDATE requests SET status = 'install_failed'
+          `UPDATE requests SET status = 'install_failed', status_reason = 'Install failed before the server restarted.', status_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
            WHERE status IN ('install_approved', 'install_running')
              AND (SELECT ir.status FROM install_requests ir WHERE ir.request_id = requests.id ORDER BY ir.id DESC LIMIT 1) = 'failed'`
         )
         .run();
       const requests = this.db
-        .prepare("UPDATE requests SET status = 'failed' WHERE status IN ('queued', 'running', 'install_approved', 'install_running')")
+        .prepare(
+          `UPDATE requests
+           SET status = 'failed',
+               status_reason = 'Server restarted while this request was active.',
+               status_changed_at = CURRENT_TIMESTAMP,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE status IN ('queued', 'running', 'install_approved', 'install_running')`
+        )
         .run();
       const installRequests = this.db
         .prepare("UPDATE install_requests SET status = 'failed' WHERE status IN ('approved', 'running')")
