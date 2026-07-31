@@ -4515,10 +4515,29 @@ export class ActuariusBot {
     segments: number;
   }> {
     const overallStartedAt = Date.now();
+    const minimumResumeBudgetMs = Math.min(
+      this.config.providerIdleTimeoutMs,
+      this.config.planOcSegmentTimeoutMs
+    );
     const completedTasks = new Map<string, CompletedOpencodeTask>();
     let sessionId: string | undefined;
     let segment = 0;
     let prompt = input.prompt;
+
+    const createTotalTimeoutError = (
+      message: string,
+      previousError?: OpencodeExecutionError
+    ): OpencodeExecutionError => {
+      const totalError = new OpencodeExecutionError("TIMEOUT", message);
+      totalError.timeoutKind = "total";
+      totalError.timeoutMs = this.config.askExecutionTimeoutMs;
+      const providerSessionId = sessionId ?? previousError?.providerSessionId;
+      if (providerSessionId) totalError.providerSessionId = providerSessionId;
+      if (previousError?.partialStdout !== undefined) totalError.partialStdout = previousError.partialStdout;
+      if (previousError?.partialStderr !== undefined) totalError.partialStderr = previousError.partialStderr;
+      if (previousError?.lastActivity !== undefined) totalError.lastActivity = previousError.lastActivity;
+      return totalError;
+    };
 
     const recordTasks = (tasks: CompletedOpencodeTask[] | undefined): number => {
       const before = completedTasks.size;
@@ -4534,14 +4553,9 @@ export class ActuariusBot {
       const elapsedMs = Date.now() - overallStartedAt;
       const remainingMs = this.config.askExecutionTimeoutMs - elapsedMs;
       if (remainingMs <= 0) {
-        const error = new OpencodeExecutionError(
-          "TIMEOUT",
+        throw createTotalTimeoutError(
           `OpenCode exceeded the total plan-oc execution timeout of ${String(this.config.askExecutionTimeoutMs)}ms.`
         );
-        error.timeoutKind = "total";
-        error.timeoutMs = this.config.askExecutionTimeoutMs;
-        if (sessionId) error.providerSessionId = sessionId;
-        throw error;
       }
 
       segment++;
@@ -4616,8 +4630,14 @@ export class ActuariusBot {
           remainingTotalMs: Math.max(0, remainingAfterTimeoutMs)
         }, "OpenCode-native plan segment timed out");
 
-        if (!sessionId || newTaskCount === 0 || remainingAfterTimeoutMs <= 0) {
+        if (!sessionId || newTaskCount === 0) {
           throw error;
+        }
+        if (remainingAfterTimeoutMs <= minimumResumeBudgetMs) {
+          throw createTotalTimeoutError(
+            `OpenCode could not resume within the total plan-oc execution timeout of ${String(this.config.askExecutionTimeoutMs)}ms: ${String(Math.max(0, remainingAfterTimeoutMs))}ms remained, which is not greater than the ${String(minimumResumeBudgetMs)}ms minimum resume budget.`,
+            error
+          );
         }
 
         await input.threadChannel.send(
@@ -5240,6 +5260,7 @@ export async function buildTimeoutReportInner(
     timeoutMs?: number;
     providerSessionId?: string;
     lastActivity?: string;
+    message?: string;
   } | null;
   const lines: string[] = [];
 
@@ -5249,7 +5270,9 @@ export async function buildTimeoutReportInner(
   if (err?.timeoutKind && err.timeoutMs !== undefined) {
     const description = err.timeoutKind === "idle"
       ? `No provider output was received for ${err.timeoutMs}ms.`
-      : `The provider reached the total execution limit of ${err.timeoutMs}ms.`;
+      : err.message?.trim()
+        ? escapeDiscordFence(clipForDiscord(err.message.trim(), 1000))
+        : `The provider reached the total execution limit of ${err.timeoutMs}ms.`;
     lines.push(`**Timeout type:** ${err.timeoutKind}`, description);
     if (err.providerSessionId) {
       lines.push(`**Provider session:** \`${err.providerSessionId}\``);

@@ -195,7 +195,14 @@ describe("runOpencodeRequest", () => {
     expect(mockSpawnCollectWithTransport).toHaveBeenCalledWith(
       expect.objectContaining({
         file: "opencode",
-        args: ["run", "--dir", "/tmp", "my prompt", "--agent", "build"],
+        args: [
+          "run",
+          "--dir",
+          "/tmp",
+          "my prompt\n\nWork directly in this process. Do not delegate to another agent or invoke a Task/subagent tool.",
+          "--agent",
+          "build"
+        ],
         cwd: "/tmp",
         timeoutMs: 5000,
         killGraceMs: DEFAULT_TERMINATION_GRACE_MS,

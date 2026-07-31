@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildRepositoryMemoryScopedPrompt } from "../src/services/llmPromptBuilders.js";
+import {
+  buildIterativeTaskImplementationPrompt,
+  buildPlanImplementationPrompt,
+  buildRepositoryMemoryScopedPrompt
+} from "../src/services/llmPromptBuilders.js";
 
 describe("buildRepositoryMemoryScopedPrompt", () => {
   it("injects the exact dynamically resolved repository wing", () => {
@@ -30,5 +34,28 @@ describe("buildRepositoryMemoryScopedPrompt", () => {
       prompt: "Answer the question.",
       memoryWing: null
     })).toBe("Answer the question.");
+  });
+});
+
+describe("provider-neutral implementation prompts", () => {
+  it("does not impose OpenCode's no-delegation restriction on other providers", () => {
+    const guidance = "Do not delegate to another agent";
+    const planPrompt = buildPlanImplementationPrompt({
+      repoFullName: "octocat/hello-world",
+      originalPrompt: "Refactor the feature",
+      planText: "Implement the independent changes"
+    });
+    const iterativePrompt = buildIterativeTaskImplementationPrompt({
+      repoFullName: "octocat/hello-world",
+      originalPrompt: "Refactor the feature",
+      overview: "Split the work safely",
+      task: {
+        title: "Implement one part",
+        description: "Make the scoped changes"
+      }
+    });
+
+    expect(planPrompt).not.toContain(guidance);
+    expect(iterativePrompt).not.toContain(guidance);
   });
 });

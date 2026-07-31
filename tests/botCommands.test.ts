@@ -3912,6 +3912,72 @@ describe("ActuariusBot plan-oc command", () => {
     expect(threadSend).toHaveBeenCalledWith(expect.stringContaining("checkpoint saved"));
   });
 
+  it("reports total-budget exhaustion instead of starting a too-short resume segment", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(0));
+      const bot = createBot();
+      const threadSend = vi.fn().mockResolvedValue(undefined);
+      const partialStdout = JSON.stringify({
+        type: "tool_use",
+        sessionID: "ses-low-budget",
+        part: {
+          id: "task-before-budget-floor",
+          tool: "task",
+          state: {
+            status: "completed",
+            input: {
+              subagent_type: OPENCODE_IMPLEMENT_OC_AGENT,
+              description: "Complete work near the total budget"
+            }
+          }
+        }
+      });
+      const segmentTimeout = new OpencodeExecutionError(
+        "TIMEOUT",
+        "OpenCode produced no output for 250ms."
+      );
+      segmentTimeout.timeoutKind = "idle";
+      segmentTimeout.timeoutMs = 250;
+      segmentTimeout.providerSessionId = "ses-low-budget";
+      segmentTimeout.partialStdout = partialStdout;
+      segmentTimeout.partialStderr = "startup warning";
+      segmentTimeout.lastActivity = "tool_use tool=task status=completed";
+
+      vi.mocked(runOpencodeAgentRequest).mockImplementationOnce(async () => {
+        vi.setSystemTime(new Date(750));
+        throw segmentTimeout;
+      });
+
+      const failure = await (bot as any).runCheckpointedPlanOc({
+        requestId: 781,
+        prompt: "Plan and implement",
+        cwd: "/tmp/worktree",
+        env: { DEEPSEEK_API_KEY: "test-key" },
+        threadChannel: { send: threadSend }
+      }).catch((error: unknown) => error);
+
+      expect(failure).not.toBe(segmentTimeout);
+      expect(failure).toMatchObject({
+        name: "OpencodeExecutionError",
+        code: "TIMEOUT",
+        timeoutKind: "total",
+        timeoutMs: 1000,
+        providerSessionId: "ses-low-budget",
+        partialStdout,
+        partialStderr: "startup warning",
+        lastActivity: "tool_use tool=task status=completed",
+        message: expect.stringContaining(
+          "250ms remained, which is not greater than the 250ms minimum resume budget"
+        )
+      });
+      expect(runOpencodeAgentRequest).toHaveBeenCalledOnce();
+      expect(threadSend).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps different id-less task checkpoints distinct across resumed plan-oc segments", async () => {
     const bot = createBot();
     const threadSend = vi.fn().mockResolvedValue(undefined);

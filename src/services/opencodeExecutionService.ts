@@ -20,6 +20,8 @@ export const ALLOWED_OPENCODE_PROVIDERS = ["deepseek", "openai", "anthropic", "g
 export const OPENCODE_AUTH_PATH = join(homedir(), ".local", "share", "opencode", "auth.json");
 const OPENAI_OPENCODE_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 const OPENAI_OPENCODE_AUTH_MAX_BUFFER = 4 * 1024 * 1024;
+const OPENCODE_DIRECT_IMPLEMENTATION_GUIDANCE =
+  "Work directly in this process. Do not delegate to another agent or invoke a Task/subagent tool.";
 
 // opencode's `-f/--file` flag "attaches file(s) to the message" rather than
 // replacing the message — so an oversized prompt delivered purely via --file
@@ -201,7 +203,11 @@ export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: 
     ...(!role ? ["--dangerously-skip-permissions"] : [])
   ];
   const request = role === "implementation"
-    ? { ...input, env: buildRestrictedImplementationEnvironment(input.env) }
+    ? {
+        ...input,
+        prompt: `${input.prompt}\n\n${OPENCODE_DIRECT_IMPLEMENTATION_GUIDANCE}`,
+        env: buildRestrictedImplementationEnvironment(input.env)
+      }
     : role
       ? { ...input, env: buildRestrictedRoleEnvironment(input.env, role) }
       : input;
