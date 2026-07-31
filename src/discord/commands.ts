@@ -70,6 +70,12 @@ export const commandBuilders = [
     .addAttachmentOption((option) => option.setName("attachment4").setDescription("Optional file attachment").setRequired(false))
     .addAttachmentOption((option) => option.setName("attachment5").setDescription("Optional file attachment").setRequired(false)),
   new SlashCommandBuilder()
+    .setName("status")
+    .setDescription("Show the latest request state and how long it has been unchanged in this thread."),
+  new SlashCommandBuilder()
+    .setName("cancel")
+    .setDescription("Cancel the queued or running request in this thread."),
+  new SlashCommandBuilder()
     .setName("plan")
     .setDescription("Plan with a deep model, implement with a flash model, then stop for review.")
     .addStringOption((option) => option.setName("prompt").setDescription("Request text for the plan-and-implement thread.").setRequired(true))
@@ -347,6 +353,8 @@ export type CommandName =
   | "repos"
   | "issues"
   | "ask"
+  | "status"
+  | "cancel"
   | "plan"
   | "plan-oc"
   | "install"

@@ -77,6 +77,8 @@ All timeout defaults live together in [`TIMEOUT_DEFAULTS_MS`](src/config.ts) and
 
 - `ASK_EXECUTION_TIMEOUT_MS` — absolute cap for a provider invocation (default `5400000`)
 - `PROVIDER_IDLE_TIMEOUT_MS` — no-output timeout for a provider (default `900000`)
+- `REQUEST_STUCK_TIMEOUT_MS` — maximum time without running-request activity before automatic cancellation (default `1200000`; keep overrides above `PROVIDER_IDLE_TIMEOUT_MS`)
+- `REQUEST_STUCK_SCAN_INTERVAL_MS` — interval between stale-request scans (default `60000`)
 - `PLAN_OC_SEGMENT_TIMEOUT_MS` — per-process `/plan-oc` segment cap; completed managed tasks are checkpointed before the same OpenCode session resumes (default `1800000`)
 - `REVIEWER_TIMEOUT_MS` — fixed cap for each primary reviewer per round (default `1200000`)
 - `ITERATIVE_VERIFICATION_TIMEOUT_MS` — iterative planner-verification cap (default `600000`)

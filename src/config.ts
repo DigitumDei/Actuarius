@@ -21,6 +21,8 @@ export const TIMEOUT_DEFAULTS_MS = {
   installStep: 60 * 60 * 1000,
   mempalaceRemote: 5 * 1000,
   mempalaceRemoteMine: 45 * 60 * 1000,
+  requestStuck: 20 * 60 * 1000,
+  requestStuckScan: 60 * 1000,
 } as const;
 
 function normalizeArchiveDuration(rawValue: number): AllowedArchiveDuration {
@@ -68,6 +70,16 @@ const envSchema = z.object({
     .default(String(TIMEOUT_DEFAULTS_MS.askExecution))
     .transform((value) => Number.parseInt(value, 10))
     .refine((value) => Number.isFinite(value) && value > 0, "ASK_EXECUTION_TIMEOUT_MS must be a positive number"),
+  REQUEST_STUCK_TIMEOUT_MS: z
+    .string()
+    .default(String(TIMEOUT_DEFAULTS_MS.requestStuck))
+    .transform((value) => Number.parseInt(value, 10))
+    .refine((value) => Number.isFinite(value) && value > 0, "REQUEST_STUCK_TIMEOUT_MS must be a positive number"),
+  REQUEST_STUCK_SCAN_INTERVAL_MS: z
+    .string()
+    .default(String(TIMEOUT_DEFAULTS_MS.requestStuckScan))
+    .transform((value) => Number.parseInt(value, 10))
+    .refine((value) => Number.isFinite(value) && value > 0, "REQUEST_STUCK_SCAN_INTERVAL_MS must be a positive number"),
   PROVIDER_IDLE_TIMEOUT_MS: z
     .string()
     .default(String(TIMEOUT_DEFAULTS_MS.providerIdle))
@@ -223,6 +235,8 @@ export const appConfig = {
   threadAutoArchiveMinutes: normalizeArchiveDuration(rawConfig.THREAD_AUTO_ARCHIVE_MINUTES),
   askConcurrencyPerGuild: rawConfig.ASK_CONCURRENCY_PER_GUILD,
   askExecutionTimeoutMs: rawConfig.ASK_EXECUTION_TIMEOUT_MS,
+  requestStuckTimeoutMs: rawConfig.REQUEST_STUCK_TIMEOUT_MS,
+  requestStuckScanIntervalMs: rawConfig.REQUEST_STUCK_SCAN_INTERVAL_MS,
   providerIdleTimeoutMs: rawConfig.PROVIDER_IDLE_TIMEOUT_MS,
   planOcSegmentTimeoutMs: rawConfig.PLAN_OC_SEGMENT_TIMEOUT_MS,
   reviewerTimeoutMs: rawConfig.REVIEWER_TIMEOUT_MS,

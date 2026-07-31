@@ -56,6 +56,8 @@ resource "google_compute_instance" "actuarius" {
     env-github-app-installation-id       = var.github_app_installation_id
     env-docker-image                     = var.docker_image
     env-ask-concurrency                  = var.ask_concurrency
+    env-request-stuck-timeout-ms         = var.request_stuck_timeout_ms
+    env-request-stuck-scan-interval-ms   = var.request_stuck_scan_interval_ms
     env-container-memory                 = var.container_memory
     env-container-memory-swap            = var.container_memory_swap
     env-container-cpus                   = var.container_cpus

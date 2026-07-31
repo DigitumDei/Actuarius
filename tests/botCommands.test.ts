@@ -253,6 +253,52 @@ function createInteraction(overrides: Record<string, unknown> = {}) {
   };
 }
 
+describe("ActuariusBot request recovery commands", () => {
+  it("shows state age, activity age, and the stored failure reason", async () => {
+    const interaction = createInteraction();
+    const bot = createBot({
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 161,
+        status: "failed",
+        status_reason: "Server restarted while this request was active.",
+        status_changed_at: "2026-07-30 18:00:00",
+        updated_at: "2026-07-30 18:00:00"
+      })
+    });
+
+    await (bot as any).handleStatus(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Server restarted while this request was active."),
+      ephemeral: true
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Last activity:"),
+      ephemeral: true
+    });
+  });
+
+  it("lets the request owner cancel an active request and records who cancelled it", async () => {
+    const failRequestIfActive = vi.fn().mockReturnValue(true);
+    const interaction = createInteraction();
+    const bot = createBot({
+      getRequestByThreadId: vi.fn().mockReturnValue({
+        id: 161,
+        guild_id: "guild-1",
+        thread_id: "thread-1",
+        user_id: "user-1",
+        status: "running"
+      }),
+      failRequestIfActive
+    });
+
+    await (bot as any).handleCancel(interaction);
+
+    expect(failRequestIfActive).toHaveBeenCalledWith(161, "Cancelled by user user-1.");
+    expect(interaction.reply).toHaveBeenCalledWith("Request #161 was cancelled.");
+  });
+});
+
 describe("ActuariusBot auth-openai-opencode command", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -442,7 +488,7 @@ describe("ActuariusBot ask command", () => {
       prompt: "Review this log",
       status: "queued"
     }));
-    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function), "thread-ask-1");
+    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function), "thread-ask-1", "104");
 
     await enqueue.mock.calls[0]![1]();
     expect(runQueuedRequest).toHaveBeenCalledWith(expect.objectContaining({
@@ -693,7 +739,7 @@ describe("ActuariusBot thread follow-ups", () => {
       })
     );
     expect(enqueue).toHaveBeenCalledTimes(1);
-    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function), "thread-1");
+    expect(enqueue).toHaveBeenCalledWith("guild-1", expect.any(Function), "thread-1", "77");
   });
 
   it("rejects follow-up messages while another request in the thread is active", async () => {
@@ -4169,6 +4215,79 @@ describe("ActuariusBot plan-oc command", () => {
 
     expect(runOpencodeAgentRequest).toHaveBeenCalledOnce();
   });
+
+  it("propagates request cancellation and activity tracking through plan-oc segments", async () => {
+    const touchRequestActivity = vi.fn();
+    const bot = createBot({ touchRequestActivity });
+    const controller = new AbortController();
+    const threadSend = vi.fn().mockResolvedValue(undefined);
+
+    vi.mocked(runOpencodeAgentRequest).mockImplementationOnce(async (input) => {
+      expect(input.signal).toBe(controller.signal);
+      input.onActivity?.();
+      return {
+        text: "All work completed.",
+        completedSubagents: [OPENCODE_IMPLEMENT_OC_AGENT],
+        completedTasks: [{
+          id: "task-with-activity",
+          subagent: OPENCODE_IMPLEMENT_OC_AGENT
+        }],
+        sessionId: "ses-with-activity"
+      };
+    });
+
+    await (bot as any).requestContext.run(
+      { requestId: 782, signal: controller.signal },
+      () => (bot as any).runCheckpointedPlanOc({
+        requestId: 782,
+        prompt: "Plan and implement",
+        cwd: "/tmp/worktree",
+        env: { DEEPSEEK_API_KEY: "test-key" },
+        threadChannel: { send: threadSend }
+      })
+    );
+
+    expect(touchRequestActivity).toHaveBeenCalledWith(782);
+    expect(runOpencodeAgentRequest).toHaveBeenCalledOnce();
+  });
+
+  it("does not checkpoint or resume a plan-oc segment cancelled during timeout handling", async () => {
+    const bot = createBot();
+    const controller = new AbortController();
+    const threadSend = vi.fn().mockResolvedValue(undefined);
+    const timeout = new OpencodeExecutionError("TIMEOUT", "OpenCode segment timed out.");
+    timeout.providerSessionId = "ses-cancelled";
+    timeout.partialStdout = JSON.stringify({
+      type: "tool_use",
+      sessionID: "ses-cancelled",
+      part: {
+        id: "task-before-cancel",
+        tool: "task",
+        state: {
+          status: "completed",
+          input: { subagent_type: OPENCODE_IMPLEMENT_OC_AGENT }
+        }
+      }
+    });
+    vi.mocked(runOpencodeAgentRequest).mockImplementationOnce(async () => {
+      controller.abort();
+      throw timeout;
+    });
+
+    await expect((bot as any).requestContext.run(
+      { requestId: 783, signal: controller.signal },
+      () => (bot as any).runCheckpointedPlanOc({
+        requestId: 783,
+        prompt: "Plan and implement",
+        cwd: "/tmp/worktree",
+        env: { DEEPSEEK_API_KEY: "test-key" },
+        threadChannel: { send: threadSend }
+      })
+    )).rejects.toThrow("Request was cancelled.");
+
+    expect(runOpencodeAgentRequest).toHaveBeenCalledOnce();
+    expect(threadSend).not.toHaveBeenCalled();
+  });
 });
 
 describe("ActuariusBot plan command", () => {
@@ -4230,6 +4349,60 @@ describe("ActuariusBot plan command", () => {
 describe("ActuariusBot plan runner", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+  });
+
+  it.each([
+    { mode: "single-shot", iterative: false, planText: "plan text" },
+    {
+      mode: "iterative",
+      iterative: true,
+      planText: JSON.stringify({
+        overview: "Test plan",
+        tasks: [{ title: "Task 1", description: "First task" }]
+      })
+    }
+  ])("does not announce $mode plan success when cancellation wins completion", async ({ iterative, planText }) => {
+    vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
+    vi.mocked(createRequestWorktree).mockResolvedValue({
+      path: "/tmp/worktree-plan-cancelled",
+      branchName: "ask/90-123"
+    });
+    vi.mocked(runIterativeTaskLoop).mockResolvedValue({ taskResults: [] });
+
+    const send = vi.fn().mockResolvedValue(undefined);
+    const completeRequestIfActive = vi.fn().mockReturnValue(false);
+    const addDrawer = vi.fn().mockResolvedValue(undefined);
+    const bot = createBot({
+      updateRequestStatus: vi.fn(),
+      updateRequestWorkspace: vi.fn(),
+      completeRequestIfActive
+    }, { addDrawer });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue({
+      isThread: () => true,
+      send
+    });
+    (bot as any).installService.buildMinimalExecutionEnvironment = vi.fn().mockReturnValue({
+      packages: [],
+      env: {}
+    });
+    (bot as any).runProviderText = vi.fn()
+      .mockResolvedValueOnce(planText)
+      .mockResolvedValueOnce("implementation output");
+
+    await (bot as any).runPlanRequest({
+      requestId: 90,
+      threadId: "thread-1",
+      repoId: 5,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Do the thing",
+      planner: { provider: "claude" },
+      implementer: { provider: "claude" },
+      iterative
+    });
+
+    expect(completeRequestIfActive).toHaveBeenCalledWith(90);
+    expect(send).not.toHaveBeenCalledWith(expect.stringContaining("Plan implementation complete"));
+    expect(addDrawer).not.toHaveBeenCalled();
   });
 
   it("preserves the request worktree when single-shot implementation fails after creation", async () => {

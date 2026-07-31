@@ -30,6 +30,8 @@ export interface ProviderRequestInput {
   idleTimeoutMs?: number;
   model?: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  onActivity?: () => void;
   diagnostics?: ProviderExecutionDiagnostics;
 }
 
@@ -254,6 +256,8 @@ export async function runProviderRequest(
         killGraceMs: DEFAULT_TERMINATION_GRACE_MS,
         maxBuffer: 4 * 1024 * 1024,
         ...(input.env ? { env: input.env } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+        ...(input.onActivity ? { onOutput: input.onActivity } : {}),
         stdin: input.prompt,
       });
       ({ stdout, stderr } = result);
@@ -270,6 +274,8 @@ export async function runProviderRequest(
         logger,
         logLabel: config.logLabel,
         ...(input.env ? { env: input.env } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+        ...(input.onActivity ? { onOutput: input.onActivity } : {}),
         ...(config.supportsStdinFallback !== undefined ? { supportsStdinFallback: config.supportsStdinFallback } : {}),
         ...(config.tempfileFlag !== undefined ? { tempfileFlag: config.tempfileFlag } : {}),
         ...(config.reshapeArgsForTempfile !== undefined ? { reshapeArgsForTempfile: config.reshapeArgsForTempfile } : {}),
@@ -285,7 +291,9 @@ export async function runProviderRequest(
       timeoutReason?: "idle" | "absolute";
       lastOutput?: SpawnLastOutput;
     };
-    const isTimeout = nodeError.code !== "EMSGSIZE"
+    const isAborted = nodeError.code === "ABORT_ERR";
+    const isTimeout = !isAborted
+      && nodeError.code !== "EMSGSIZE"
       && (nodeError.code === "ETIMEDOUT"
         || (nodeError.killed === true && nodeError.signal === "SIGTERM")
         || message.toLowerCase().includes("timed out"));
@@ -321,6 +329,10 @@ export async function runProviderRequest(
 
     if (nodeError.code === "EMSGSIZE") {
       throw config.makeError(config.failedCode, `${config.logLabel} output exceeded the buffer limit.`);
+    }
+
+    if (isAborted) {
+      throw config.makeError(config.failedCode, `${config.logLabel} execution was cancelled.`);
     }
 
     if (isTimeout) {

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -163,6 +164,21 @@ const KNOWN_MODELS_BY_PROVIDER: Partial<Record<AiProvider, string[]>> = {
 
 function isActiveRequestStatus(status: RequestStatus): boolean {
   return status === "queued" || status === "running" || status === "install_approved" || status === "install_running";
+}
+
+function parseSqliteTimestamp(value: string): number {
+  const normalized = value.includes("T") ? value : value.replace(" ", "T");
+  return Date.parse(/[zZ]|[+-]\d\d:\d\d$/u.test(normalized) ? normalized : `${normalized}Z`);
+}
+
+function formatRequestAge(updatedAt: string, now: number = Date.now()): string {
+  const elapsedMs = Math.max(0, now - parseSqliteTimestamp(updatedAt));
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}m ${totalSeconds % 60}s`;
+  const totalHours = Math.floor(totalMinutes / 60);
+  return `${totalHours}h ${totalMinutes % 60}m`;
 }
 
 export function escapeDiscordFence(input: string): string {
@@ -601,6 +617,10 @@ export class ActuariusBot {
   private readonly installService: InstallService;
   private readonly memPalace: MemPalaceClient | null;
   private readonly memPalaceRemote: MemPalaceRemoteService | null;
+  private readonly requestContext = new AsyncLocalStorage<{ requestId: number; signal: AbortSignal }>();
+  private readonly requestControllers = new Map<number, AbortController>();
+  private readonly lastActivityWrite = new Map<number, number>();
+  private stuckRequestTimer: NodeJS.Timeout | null = null;
   private opencodeOpenAIAuthInProgress = false;
 
   public constructor(
@@ -634,10 +654,163 @@ export class ActuariusBot {
   public async start(): Promise<void> {
     this.bindEvents();
     await this.client.login(this.config.discordToken);
+    await this.sweepStuckRequestsSafely();
+    this.stuckRequestTimer = setInterval(() => {
+      void this.sweepStuckRequestsSafely();
+    }, this.config.requestStuckScanIntervalMs);
+    this.stuckRequestTimer.unref();
   }
 
   public async stop(): Promise<void> {
+    if (this.stuckRequestTimer) {
+      clearInterval(this.stuckRequestTimer);
+      this.stuckRequestTimer = null;
+    }
+    for (const controller of this.requestControllers.values()) {
+      controller.abort();
+    }
     await this.client.destroy();
+  }
+
+  private enqueueRequest(guildId: string, requestId: number, threadId: string, task: () => Promise<void>): void {
+    const controller = new AbortController();
+    this.requestControllers.set(requestId, controller);
+    this.requestQueue.enqueue(guildId, async () => {
+      try {
+        if (controller.signal.aborted) return;
+        await this.requestContext.run({ requestId, signal: controller.signal }, task);
+      } finally {
+        if (this.requestControllers.get(requestId) === controller) {
+          this.requestControllers.delete(requestId);
+        }
+        this.lastActivityWrite.delete(requestId);
+      }
+    }, threadId, String(requestId));
+  }
+
+  private failActiveRequest(requestId: number, reason: string): boolean {
+    const database = this.db as AppDatabase & {
+      failRequestIfActive?: (id: number, failureReason: string) => boolean;
+    };
+    if (typeof database.failRequestIfActive === "function") {
+      return database.failRequestIfActive(requestId, reason);
+    }
+    // Compatibility for narrow database doubles used by command-level tests.
+    this.db.updateRequestStatus(requestId, "failed");
+    return true;
+  }
+
+  private completeActiveRequest(requestId: number): boolean {
+    const database = this.db as AppDatabase & {
+      completeRequestIfActive?: (id: number) => boolean;
+    };
+    if (typeof database.completeRequestIfActive === "function") {
+      return database.completeRequestIfActive(requestId);
+    }
+    // Compatibility for narrow database doubles used by command-level tests.
+    this.db.updateRequestStatus(requestId, "succeeded");
+    return true;
+  }
+
+  private recordRequestActivity(context: { requestId: number }): void {
+    const now = Date.now();
+    const previous = this.lastActivityWrite.get(context.requestId) ?? 0;
+    if (now - previous < 5_000) return;
+    this.lastActivityWrite.set(context.requestId, now);
+    this.db.touchRequestActivity(context.requestId);
+  }
+
+  private throwIfRequestCancelled(): void {
+    if (this.requestContext.getStore()?.signal.aborted) {
+      throw new Error("Request was cancelled.");
+    }
+  }
+
+  private async sweepStuckRequestsSafely(): Promise<void> {
+    try {
+      await this.sweepStuckRequests();
+    } catch (error) {
+      this.logger.error({ error }, "Stuck request scan failed");
+    }
+  }
+
+  private async sweepStuckRequests(): Promise<void> {
+    const cutoffDate = new Date(Date.now() - this.config.requestStuckTimeoutMs);
+    const cutoff = cutoffDate.toISOString().replace("T", " ").replace(/\.\d{3}Z$/u, "");
+    const stale = this.db.listStaleRunningRequests(cutoff);
+    for (const request of stale) {
+      const reason = `No request activity was recorded for ${formatRequestAge(request.updated_at)}; automatically marked as stuck.`;
+      if (!this.failActiveRequest(request.id, reason)) continue;
+      this.requestQueue.cancelPending(request.guild_id, String(request.id));
+      this.requestControllers.get(request.id)?.abort();
+      this.logger.warn(
+        { requestId: request.id, threadId: request.thread_id, updatedAt: request.updated_at },
+        "Automatically failed stuck request"
+      );
+      try {
+        const channel = await this.client.channels.fetch(request.thread_id);
+        if (channel?.isThread()) {
+          await channel.send(`**Request automatically cancelled as stuck**\n\n${reason}`);
+        }
+      } catch (error) {
+        this.logger.warn({ error, requestId: request.id }, "Failed to notify thread about stuck request");
+      }
+    }
+  }
+
+  private async handleStatus(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId || !interaction.channel?.isThread()) {
+      await interaction.reply({ content: "`/status` must be used in a request thread.", ephemeral: true });
+      return;
+    }
+    const request = this.db.getRequestByThreadId(interaction.channelId);
+    if (!request) {
+      await interaction.reply({ content: "No request is tracked for this thread.", ephemeral: true });
+      return;
+    }
+    const lines = [
+      `Request #${request.id}: \`${request.status}\``,
+      `In this state: ${formatRequestAge(request.status_changed_at)}`,
+      `Last activity: ${formatRequestAge(request.updated_at)} ago`
+    ];
+    if (request.status_reason) {
+      lines.push(`Reason: ${request.status_reason}`);
+    }
+    await interaction.reply({ content: lines.join("\n"), ephemeral: true });
+  }
+
+  private async handleCancel(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId || !interaction.channel?.isThread()) {
+      await interaction.reply({ content: "`/cancel` must be used in a request thread.", ephemeral: true });
+      return;
+    }
+    const request = this.db.getRequestByThreadId(interaction.channelId);
+    if (!request || (request.status !== "queued" && request.status !== "running")) {
+      await interaction.reply({ content: "There is no queued or running request to cancel in this thread.", ephemeral: true });
+      return;
+    }
+    const canManage = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
+    if (request.user_id !== interaction.user.id && !canManage) {
+      await interaction.reply({ content: "Only the request owner or a server manager can cancel this request.", ephemeral: true });
+      return;
+    }
+    const reason = `Cancelled by user ${interaction.user.id}.`;
+    if (!this.failActiveRequest(request.id, reason)) {
+      await interaction.reply({ content: "The request finished before it could be cancelled.", ephemeral: true });
+      return;
+    }
+    const removed = this.requestQueue.cancelPending(interaction.guildId, String(request.id));
+    const controller = this.requestControllers.get(request.id);
+    controller?.abort();
+    if (removed > 0) {
+      this.requestControllers.delete(request.id);
+      this.lastActivityWrite.delete(request.id);
+    }
+    this.logger.info(
+      { requestId: request.id, threadId: request.thread_id, userId: interaction.user.id, pendingRemoved: removed },
+      "Request cancelled by user"
+    );
+    await interaction.reply(`Request #${request.id} was cancelled.`);
   }
 
   private bindEvents(): void {
@@ -811,7 +984,7 @@ export class ActuariusBot {
       status: "queued"
     });
 
-    this.requestQueue.enqueue(message.guildId, async () => {
+    this.enqueueRequest(message.guildId, request.id, message.channelId, async () => {
       const followUpInput: {
         requestId: number;
         threadId: string;
@@ -836,7 +1009,7 @@ export class ActuariusBot {
       if (latestRequest.branch_name) followUpInput.existingBranchName = latestRequest.branch_name;
       if (pendingAttachments.length > 0) followUpInput.attachments = pendingAttachments;
       await this.runQueuedRequest(followUpInput);
-    }, message.channelId);
+    });
   }
 
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -864,6 +1037,12 @@ export class ActuariusBot {
         return;
       case "ask":
         await this.handleAsk(interaction);
+        return;
+      case "status":
+        await this.handleStatus(interaction);
+        return;
+      case "cancel":
+        await this.handleCancel(interaction);
         return;
       case "plan":
         await this.handlePlan(interaction);
@@ -2706,7 +2885,7 @@ export class ActuariusBot {
       status: "queued"
     });
 
-    this.requestQueue.enqueue(interaction.guildId, async () => {
+    this.enqueueRequest(interaction.guildId, request.id, thread.id, async () => {
       const queuedInput: {
         requestId: number;
         threadId: string;
@@ -2733,7 +2912,7 @@ export class ActuariusBot {
       if (options.detachWorktree) queuedInput.detachWorktree = true;
       if (options.attachments?.length) queuedInput.attachments = options.attachments;
       await this.runQueuedRequest(queuedInput);
-    }, thread.id);
+    });
 
     await interaction.editReply(
       `Created ${options.label} thread <#${thread.id}>. Request queued for ${AI_PROVIDER_LABELS[provider]} execution.`
@@ -2829,7 +3008,7 @@ export class ActuariusBot {
       status: "queued"
     });
 
-    this.requestQueue.enqueue(interaction.guildId, async () => {
+    this.enqueueRequest(interaction.guildId, request.id, thread.id, async () => {
       await this.runPlanRequest({
         requestId: request.id,
         threadId: thread.id,
@@ -2844,7 +3023,7 @@ export class ActuariusBot {
         implementer: roles.implementer,
         iterative
       });
-    }, thread.id);
+    });
 
     const iterativeSuffix = iterative ? " (iterative)" : "";
     await interaction.editReply(
@@ -2925,7 +3104,7 @@ export class ActuariusBot {
         status: "queued"
       });
 
-      this.requestQueue.enqueue(interaction.guildId, async () => {
+      this.enqueueRequest(interaction.guildId, request.id, thread.id, async () => {
         await this.runPlanOcRequest({
           requestId: request.id,
           threadId: thread.id,
@@ -2938,7 +3117,7 @@ export class ActuariusBot {
           prompt,
           agentSnapshot
         });
-      }, thread.id);
+      });
       snapshotEnqueued = true;
 
       const plannerModel = agentSnapshot.models.planner ? `\`${agentSnapshot.models.planner}\`` : "OpenCode default";
@@ -3252,6 +3431,10 @@ export class ActuariusBot {
     memoryWing?: string | null | undefined;
     diagnostics?: ProviderExecutionDiagnostics;
   }): Promise<string> {
+    const context = this.requestContext.getStore();
+    const onActivity = context
+      ? (): void => this.recordRequestActivity(context)
+      : undefined;
     const request = {
       prompt: buildRepositoryMemoryScopedPrompt({
         prompt: input.prompt,
@@ -3262,7 +3445,9 @@ export class ActuariusBot {
       idleTimeoutMs: this.config.providerIdleTimeoutMs,
       ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
       ...(input.model ? { model: input.model } : {}),
-      ...(input.env ? { env: input.env } : {})
+      ...(input.env ? { env: input.env } : {}),
+      ...(context ? { signal: context.signal } : {}),
+      ...(onActivity ? { onActivity } : {})
     };
 
     switch (input.provider) {
@@ -3275,6 +3460,7 @@ export class ActuariusBot {
         }
 
         const result = await runCodexRequest(request, this.logger);
+        this.throwIfRequestCancelled();
         return result.text;
       }
       case "gemini": {
@@ -3286,6 +3472,7 @@ export class ActuariusBot {
         }
 
         const result = await runGeminiRequest(request, this.logger);
+        this.throwIfRequestCancelled();
         return result.text;
       }
       case "opencode": {
@@ -3300,11 +3487,13 @@ export class ActuariusBot {
           ...request,
           ...(input.role ? { role: input.role } : {})
         }, this.logger);
+        this.throwIfRequestCancelled();
         return result.text;
       }
       case "claude":
       default: {
         const result = await runClaudeRequest(request, this.logger);
+        this.throwIfRequestCancelled();
         return result.text;
       }
     }
@@ -3661,7 +3850,7 @@ export class ActuariusBot {
 
       roles = await this.resolvePlanRoleModels(interaction.guildId);
 
-      this.requestQueue.enqueue(interaction.guildId, async () => {
+      this.enqueueRequest(interaction.guildId, revisionRequest.id, interaction.channelId, async () => {
         await this.runReviseRequest({
           requestId: revisionRequest.id,
           sourceRequestId,
@@ -3679,7 +3868,7 @@ export class ActuariusBot {
           implementer: roles.implementer,
           findings
         });
-      }, interaction.channelId);
+      });
     } catch (error) {
       if (revisionRequestId !== null) {
         try {
@@ -4067,7 +4256,7 @@ export class ActuariusBot {
       if (statusFinalized) {
         return;
       }
-      this.db.updateRequestStatus(input.requestId, "failed");
+      this.failActiveRequest(input.requestId, "Request execution failed.");
       statusFinalized = true;
     };
 
@@ -4194,8 +4383,9 @@ export class ActuariusBot {
           memoryWing
         });
 
-        this.db.updateRequestStatus(input.requestId, "succeeded");
+        const completed = this.completeActiveRequest(input.requestId);
         statusFinalized = true;
+        if (!completed) return;
         const approvedCount = taskResults.filter((result) => result.approved).length;
         const issueCount = taskResults.length - approvedCount;
         const outcomeLine = issueCount > 0
@@ -4260,8 +4450,9 @@ export class ActuariusBot {
           await threadChannel.send(chunk);
         }
 
-        this.db.updateRequestStatus(input.requestId, "succeeded");
+        const completed = this.completeActiveRequest(input.requestId);
         statusFinalized = true;
+        if (!completed) return;
         await threadChannel.send("Plan implementation complete. Run `/review` to review the working tree. Commit any remaining changes before `/pr`, then run `/review` again once the committed branch is ready.");
         this.logger.info({ requestId: input.requestId, durationMs: Date.now() - startedAt }, "Plan request succeeded");
 
@@ -4336,7 +4527,7 @@ export class ActuariusBot {
       if (statusFinalized) {
         return;
       }
-      this.db.updateRequestStatus(input.requestId, "failed");
+      this.failActiveRequest(input.requestId, "OpenCode plan execution failed.");
       statusFinalized = true;
     };
 
@@ -4425,6 +4616,7 @@ export class ActuariusBot {
         env,
         threadChannel
       });
+      this.throwIfRequestCancelled();
 
       for (const chunk of splitPlainTextForDiscord(
         result.text,
@@ -4433,8 +4625,9 @@ export class ActuariusBot {
         await threadChannel.send(chunk);
       }
 
-      this.db.updateRequestStatus(input.requestId, "succeeded");
+      const completed = this.completeActiveRequest(input.requestId);
       statusFinalized = true;
+      if (!completed) return;
       await threadChannel.send(
         "OpenCode-native plan implementation complete. Run `/review` to review the working tree. Commit any remaining changes before `/pr`, then run `/review` again once the committed branch is ready."
       );
@@ -4520,6 +4713,10 @@ export class ActuariusBot {
       this.config.planOcSegmentTimeoutMs
     );
     const completedTasks = new Map<string, CompletedOpencodeTask>();
+    const requestContext = this.requestContext.getStore();
+    const onActivity = requestContext
+      ? (): void => this.recordRequestActivity(requestContext)
+      : undefined;
     let sessionId: string | undefined;
     let segment = 0;
     let prompt = input.prompt;
@@ -4575,8 +4772,11 @@ export class ActuariusBot {
             workflow: "plan-oc",
             stage: "plan-and-implement",
             segment
-          }
+          },
+          ...(requestContext ? { signal: requestContext.signal } : {}),
+          ...(onActivity ? { onActivity } : {})
         }, this.logger);
+        this.throwIfRequestCancelled();
 
         recordTasks(result.completedTasks);
         sessionId = result.sessionId ?? sessionId;
@@ -4604,6 +4804,7 @@ export class ActuariusBot {
           segments: segment
         };
       } catch (error) {
+        this.throwIfRequestCancelled();
         if (!(error instanceof OpencodeExecutionError) || error.code !== "TIMEOUT") {
           throw error;
         }
@@ -4686,7 +4887,7 @@ export class ActuariusBot {
 
     const markFailed = (): void => {
       if (statusFinalized) return;
-      this.db.updateRequestStatus(input.requestId, "failed");
+      this.failActiveRequest(input.requestId, "Revision execution failed.");
       statusFinalized = true;
     };
 
@@ -4805,8 +5006,9 @@ export class ActuariusBot {
         memoryWing
       });
 
-      this.db.updateRequestStatus(input.requestId, "succeeded");
+      const completed = this.completeActiveRequest(input.requestId);
       statusFinalized = true;
+      if (!completed) return;
       const approvedCount = taskResults.filter((r) => r.approved).length;
       const issueCount = taskResults.length - approvedCount;
       const outcomeLine = issueCount > 0
@@ -4914,7 +5116,7 @@ export class ActuariusBot {
       if (statusFinalized) {
         return;
       }
-      this.db.updateRequestStatus(input.requestId, "failed");
+      this.failActiveRequest(input.requestId, "Provider execution failed.");
       statusFinalized = true;
     };
 
@@ -5047,8 +5249,9 @@ export class ActuariusBot {
           await channel.send(chunk);
         }
       }
-      this.db.updateRequestStatus(input.requestId, "succeeded");
+      const completed = this.completeActiveRequest(input.requestId);
       statusFinalized = true;
+      if (!completed) return;
       this.logger.info(
         { requestId: input.requestId, durationMs: Date.now() - startedAt, provider: input.provider },
         "Queued AI request succeeded"

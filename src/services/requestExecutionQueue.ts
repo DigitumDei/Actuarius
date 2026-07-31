@@ -2,11 +2,12 @@ type QueueTask = () => Promise<void>;
 interface QueueEntry {
   task: QueueTask;
   resourceKey?: string;
+  entryId?: string;
 }
 type QueueTaskErrorHandler = (input: { guildId: string; error: unknown }) => void;
 type QueueStateHandler = (input: {
   guildId: string;
-  event: "enqueued" | "started" | "finished";
+  event: "enqueued" | "started" | "finished" | "cancelled";
   running: number;
   pending: number;
 }) => void;
@@ -25,9 +26,13 @@ export class RequestExecutionQueue {
     this.onStateChange = onStateChange;
   }
 
-  public enqueue(guildId: string, task: QueueTask, resourceKey?: string): void {
+  public enqueue(guildId: string, task: QueueTask, resourceKey?: string, entryId?: string): void {
     const pending = this.pendingByGuild.get(guildId) ?? [];
-    pending.push({ task, ...(resourceKey ? { resourceKey } : {}) });
+    pending.push({
+      task,
+      ...(resourceKey ? { resourceKey } : {}),
+      ...(entryId ? { entryId } : {})
+    });
     this.pendingByGuild.set(guildId, pending);
     this.onStateChange?.({
       guildId,
@@ -44,6 +49,27 @@ export class RequestExecutionQueue {
     }
 
     return (this.pendingByGuild.get(guildId) ?? []).some((entry) => entry.resourceKey === resourceKey);
+  }
+
+  public cancelPending(guildId: string, entryId: string): number {
+    const pending = this.pendingByGuild.get(guildId) ?? [];
+    const remaining = pending.filter((entry) => entry.entryId !== entryId);
+    const cancelled = pending.length - remaining.length;
+    if (cancelled === 0) {
+      return 0;
+    }
+    if (remaining.length === 0) {
+      this.pendingByGuild.delete(guildId);
+    } else {
+      this.pendingByGuild.set(guildId, remaining);
+    }
+    this.onStateChange?.({
+      guildId,
+      event: "cancelled",
+      running: this.runningByGuild.get(guildId) ?? 0,
+      pending: remaining.length
+    });
+    return cancelled;
   }
 
   private pump(guildId: string): void {

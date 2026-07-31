@@ -254,6 +254,47 @@ describe("Bot entrypoint transport acceptance", () => {
     expect(argvLog!.limitBytes).toBe(DEFAULT_ARGV_TOTAL_LIMIT);
   });
 
+  it("does not log request success when cancellation wins the completion race", async () => {
+    mockSpawn.mockImplementation(() =>
+      createMockChild({ stdout: "codex answer", exitCode: 0 }),
+    );
+    ensureRepoCheckedOutToMaster.mockResolvedValue({ localPath: "/tmp/repo" });
+    createRequestWorktreeMock.mockResolvedValue({
+      path: "/tmp/worktree-cancelled",
+      branchName: "ask/5-abc",
+    });
+
+    const thread = {
+      isThread: () => true,
+      send: vi.fn().mockResolvedValue(undefined),
+      messages: { fetch: vi.fn().mockResolvedValue(new Map()) },
+    };
+    const { writer, records } = createLogCapture();
+    const logger = pino({ level: "debug" }, writer);
+    const updateRequestStatus = vi.fn();
+    const completeRequestIfActive = vi.fn().mockReturnValue(false);
+    const bot = createBot(logger, {
+      updateRequestStatus,
+      updateRequestWorkspace: vi.fn(),
+      completeRequestIfActive,
+    });
+    (bot as any).client.channels.fetch = vi.fn().mockResolvedValue(thread);
+
+    await (bot as any).runQueuedRequest({
+      requestId: 5,
+      threadId: "thread-5",
+      repoId: 1,
+      repo: { owner: "octocat", repo: "hello-world", fullName: "octocat/hello-world" },
+      prompt: "Do the thing",
+      provider: "codex",
+    });
+
+    expect(completeRequestIfActive).toHaveBeenCalledWith(5);
+    expect(updateRequestStatus).toHaveBeenCalledWith(5, "running");
+    expect(updateRequestStatus).not.toHaveBeenCalledWith(5, "succeeded");
+    expect(records.some((record) => record.msg === "Queued AI request succeeded")).toBe(false);
+  });
+
   it("queued ask with gemini oversized prompt through real bot dispatch uses stdin fallback with -p '' retained", async () => {
     const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
     mockSpawn.mockImplementation(() =>

@@ -47,7 +47,10 @@ export const requestRowRawSchema = z.object({
   worktree_path: z.string().nullable(),
   branch_name: z.string().nullable(),
   revision_of_request_id: dbInteger.nullable(),
+  status_reason: z.string().nullable(),
   created_at: z.string(),
+  status_changed_at: z.string(),
+  updated_at: z.string(),
 });
 
 export const reviewRunRowRawSchema = z.object({

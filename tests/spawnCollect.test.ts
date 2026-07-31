@@ -6,6 +6,24 @@ const node = process.execPath;
 const cwd = process.cwd();
 const timeoutMs = 10_000;
 
+describe("spawnCollect — cancellation", () => {
+  it("terminates the child when its AbortSignal is aborted", async () => {
+    const controller = new AbortController();
+    const running = spawnCollect(
+      node,
+      ["-e", "setInterval(() => {}, 1000)"],
+      { cwd, timeoutMs, maxBuffer: 1024, signal: controller.signal }
+    );
+
+    setTimeout(() => controller.abort(), 25);
+
+    await expect(running).rejects.toMatchObject({
+      code: "ABORT_ERR",
+      killed: true
+    });
+  });
+});
+
 describe("spawnCollect — stderr trimming", () => {
   it("resolves cleanly with small stdout and stderr within limits", async () => {
     const result = await spawnCollect(

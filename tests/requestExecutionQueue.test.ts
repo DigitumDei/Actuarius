@@ -128,4 +128,31 @@ describe("RequestExecutionQueue", () => {
       error
     });
   });
+
+  it("removes pending work for a cancelled resource without disturbing the running task", async () => {
+    const queue = new RequestExecutionQueue(1);
+    let releaseRunning!: () => void;
+    const runningGate = new Promise<void>((resolve) => {
+      releaseRunning = resolve;
+    });
+    const started: string[] = [];
+
+    queue.enqueue("guild-1", async () => {
+      started.push("running");
+      await runningGate;
+    }, "thread-running", "request-running");
+    queue.enqueue("guild-1", async () => {
+      started.push("cancelled");
+    }, "thread-shared", "request-cancelled");
+    queue.enqueue("guild-1", async () => {
+      started.push("preserved");
+    }, "thread-shared", "request-preserved");
+
+    expect(queue.cancelPending("guild-1", "request-cancelled")).toBe(1);
+    expect(queue.hasResourceWork("guild-1", "thread-shared")).toBe(true);
+
+    releaseRunning();
+    await delay(20);
+    expect(started).toEqual(["running", "preserved"]);
+  });
 });

@@ -90,7 +90,10 @@ export interface RequestRow {
   worktree_path: string | null;
   branch_name: string | null;
   revision_of_request_id: number | null;
+  status_reason: string | null;
   created_at: string;
+  status_changed_at: string;
+  updated_at: string;
 }
 
 export interface ReviewRunRow {
