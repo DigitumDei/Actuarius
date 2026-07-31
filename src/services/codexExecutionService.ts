@@ -1,15 +1,7 @@
 import type { Logger } from "pino";
-import { runProviderRequest } from "../utils/runProviderRequest.js";
+import { runProviderRequest, type ProviderErrorDetails, type ProviderRequestInput, type ProviderTimeoutKind } from "../utils/runProviderRequest.js";
 
-export interface CodexExecutionInput {
-  prompt: string;
-  cwd: string;
-  timeoutMs: number;
-  model?: string;
-  env?: NodeJS.ProcessEnv;
-  signal?: AbortSignal;
-  onActivity?: () => void;
-}
+export interface CodexExecutionInput extends ProviderRequestInput {}
 
 export interface CodexExecutionResult {
   text: string;
@@ -19,6 +11,10 @@ export class CodexExecutionError extends Error {
   public readonly code: "CODEX_UNAVAILABLE" | "CODEX_DISABLED" | "NOT_AUTHENTICATED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT";
   public partialStdout?: string;
   public partialStderr?: string;
+  public timeoutKind?: ProviderTimeoutKind;
+  public timeoutMs?: number;
+  public providerSessionId?: string;
+  public lastActivity?: string;
 
   public constructor(code: "CODEX_UNAVAILABLE" | "CODEX_DISABLED" | "NOT_AUTHENTICATED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT", message: string) {
     super(message);
@@ -43,8 +39,7 @@ export async function runCodexRequest(input: CodexExecutionInput, logger: Logger
       makeError: (code, message, details) => {
         const err = new CodexExecutionError(code as CodexExecutionError["code"], message);
         if (details) {
-          if (details.partialStdout) err.partialStdout = details.partialStdout;
-          if (details.partialStderr) err.partialStderr = details.partialStderr;
+          Object.assign(err, details satisfies ProviderErrorDetails);
         }
         return err;
       },

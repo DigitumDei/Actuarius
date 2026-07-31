@@ -17,6 +17,8 @@ const defaultInput: IterativeTaskLoopInput = {
   originalPrompt: "Do the thing",
   repoFullName: "octocat/hello-world",
   worktreePath: "/tmp/worktree",
+  requestId: 42,
+  workflow: "revise",
   threadChannel: { send: mockSend },
   plannerProvider: "claude",
   plannerModel: undefined,

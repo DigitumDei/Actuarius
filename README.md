@@ -79,6 +79,7 @@ All timeout defaults live together in [`TIMEOUT_DEFAULTS_MS`](src/config.ts) and
 - `PROVIDER_IDLE_TIMEOUT_MS` — no-output timeout for a provider (default `900000`)
 - `REQUEST_STUCK_TIMEOUT_MS` — maximum time without running-request activity before automatic cancellation (default `1200000`; keep overrides above `PROVIDER_IDLE_TIMEOUT_MS`)
 - `REQUEST_STUCK_SCAN_INTERVAL_MS` — interval between stale-request scans (default `60000`)
+- `PLAN_OC_SEGMENT_TIMEOUT_MS` — per-process `/plan-oc` segment cap; completed managed tasks are checkpointed before the same OpenCode session resumes (default `1800000`)
 - `REVIEWER_TIMEOUT_MS` — fixed cap for each primary reviewer per round (default `1200000`)
 - `ITERATIVE_VERIFICATION_TIMEOUT_MS` — iterative planner-verification cap (default `600000`)
 - `INSTALL_STEP_TIMEOUT_MS` — tool-install step cap (default `3600000`)
@@ -95,6 +96,13 @@ steps to the managed implementation subagent, and can inspect each result before
 issuing targeted follow-up work in that same session. The established `/plan`
 workflow and its model settings are unchanged.
 
+The session runs in bounded process segments rather than one opaque invocation.
+When a segment times out after completing at least one managed implementation task,
+Actuarius records the completed task IDs as a checkpoint and resumes the same
+OpenCode session with `--session`. A segment that makes no new task-level progress
+is not retried, and resumed segments share the original
+`ASK_EXECUTION_TIMEOUT_MS` total budget.
+
 Use `/model-select-oc role:<planner|implementer> model:<provider/model>` to set an
 agent's explicit OpenCode model, or pass `clear:true` instead of `model` to remove the
 override and let OpenCode resolve its normal default or inheritance. This command
@@ -105,6 +113,12 @@ uses a snapshot of those files, so a model change affects subsequent requests ra
 than a workflow already in progress. The implementation subagent has shell access in
 the request worktree; its no-commit/no-push rules are behavioral guardrails rather
 than an OS sandbox, so the private-server trust boundary described below still applies.
+
+Regular `/plan` and `/revise` OpenCode implementation calls—including iterative
+task steps—use a supervised build-agent permission profile that denies nested
+Task/subagent calls. `/ask` and thread follow-ups retain OpenCode's regular build
+profile. This keeps provider output and idle-timeout supervision attached to the
+process Actuarius started.
 
 Managed tool installs are validated against the filesystem before Actuarius adds
 their binaries or environment values to provider processes. Use `/uninstall`

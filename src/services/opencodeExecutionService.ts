@@ -1,11 +1,17 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { stripVTControlCharacters } from "node:util";
 import type { Logger } from "pino";
-import { runProviderRequest } from "../utils/runProviderRequest.js";
-import { spawnCollect } from "../utils/spawnCollect.js";
+import {
+  runProviderRequest,
+  type ProviderErrorDetails,
+  type ProviderRequestInput,
+  type ProviderTimeoutKind
+} from "../utils/runProviderRequest.js";
+import { DEFAULT_TERMINATION_GRACE_MS, spawnCollect } from "../utils/spawnCollect.js";
 import { OPENCODE_TEMPFILE_DIRECTIVE } from "./llmPromptBuilders.js";
 
 export { OPENCODE_TEMPFILE_DIRECTIVE };
@@ -14,6 +20,8 @@ export const ALLOWED_OPENCODE_PROVIDERS = ["deepseek", "openai", "anthropic", "g
 export const OPENCODE_AUTH_PATH = join(homedir(), ".local", "share", "opencode", "auth.json");
 const OPENAI_OPENCODE_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 const OPENAI_OPENCODE_AUTH_MAX_BUFFER = 4 * 1024 * 1024;
+const OPENCODE_DIRECT_IMPLEMENTATION_GUIDANCE =
+  "Work directly in this process. Do not delegate to another agent or invoke a Task/subagent tool.";
 
 // opencode's `-f/--file` flag "attaches file(s) to the message" rather than
 // replacing the message — so an oversized prompt delivered purely via --file
@@ -21,37 +29,36 @@ const OPENAI_OPENCODE_AUTH_MAX_BUFFER = 4 * 1024 * 1024;
 // message). We keep a short, explicit directive message that points at the
 // attached file, which holds the full prompt. Robust regardless of whether
 // opencode treats the file as the prompt or as attached context.
-export interface OpencodeExecutionInput {
-  prompt: string;
-  cwd: string;
-  timeoutMs: number;
-  model?: string;
-  env?: NodeJS.ProcessEnv;
-  signal?: AbortSignal;
-  onActivity?: () => void;
+export interface OpencodeExecutionInput extends ProviderRequestInput {
   role?: OpencodeExecutionRole;
 }
 
-export interface OpencodeAgentExecutionInput {
-  prompt: string;
-  cwd: string;
-  timeoutMs: number;
-  env?: NodeJS.ProcessEnv;
+export interface OpencodeAgentExecutionInput extends ProviderRequestInput {
   agent: string;
   requiredSubagent?: string;
-  signal?: AbortSignal;
-  onActivity?: () => void;
+  sessionId?: string;
 }
 
 export type OpencodeExecutionRole = "implementation" | "planner" | "verification";
 
 export interface OpencodeExecutionResult {
   text: string;
+  completedSubagents?: string[];
+  completedTasks?: CompletedOpencodeTask[];
+  sessionId?: string | null;
+}
+
+export interface CompletedOpencodeTask {
+  id: string;
+  subagent: string;
+  description?: string;
 }
 
 export interface ParsedOpencodeJsonEvents {
   text: string;
   completedSubagents: string[];
+  completedTasks: CompletedOpencodeTask[];
+  sessionId: string | null;
   diagnostics: string[];
 }
 
@@ -59,6 +66,10 @@ export class OpencodeExecutionError extends Error {
   public readonly code: "OPENCODE_UNAVAILABLE" | "OPENCODE_DISABLED" | "NOT_AUTHENTICATED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT";
   public partialStdout?: string;
   public partialStderr?: string;
+  public timeoutKind?: ProviderTimeoutKind;
+  public timeoutMs?: number;
+  public providerSessionId?: string;
+  public lastActivity?: string;
 
   public constructor(code: "OPENCODE_UNAVAILABLE" | "OPENCODE_DISABLED" | "NOT_AUTHENTICATED" | "TIMEOUT" | "FAILED" | "EMPTY_OUTPUT", message: string) {
     super(message);
@@ -136,6 +147,7 @@ export async function authenticateOpenAIOpencode(input: OpenAIOpencodeAuthInput)
     {
       cwd: input.cwd,
       timeoutMs: input.timeoutMs ?? OPENAI_OPENCODE_AUTH_TIMEOUT_MS,
+      killGraceMs: DEFAULT_TERMINATION_GRACE_MS,
       // Clack redraws its waiting spinner frequently for the entire device
       // flow. Keep enough headroom for the full ten-minute timeout.
       maxBuffer: OPENAI_OPENCODE_AUTH_MAX_BUFFER,
@@ -183,12 +195,22 @@ export async function hasOpencodeAuth(): Promise<boolean> {
 export async function runOpencodeRequest(input: OpencodeExecutionInput, logger: Logger): Promise<OpencodeExecutionResult> {
   await assertOpencodeAuthenticated(input.env);
 
-  const role = input.role ?? "implementation";
-  const agent = role === "implementation" ? "build" : `actuarius-${role}`;
-  const extraArgs = ["--agent", agent, ...(role === "implementation" ? ["--dangerously-skip-permissions"] : [])];
+  const role = input.role;
+  const agent = !role || role === "implementation" ? "build" : `actuarius-${role}`;
+  const extraArgs = [
+    "--agent",
+    agent,
+    ...(!role ? ["--dangerously-skip-permissions"] : [])
+  ];
   const request = role === "implementation"
-    ? input
-    : { ...input, env: buildRestrictedRoleEnvironment(input.env, role) };
+    ? {
+        ...input,
+        prompt: `${input.prompt}\n\n${OPENCODE_DIRECT_IMPLEMENTATION_GUIDANCE}`,
+        env: buildRestrictedImplementationEnvironment(input.env)
+      }
+    : role
+      ? { ...input, env: buildRestrictedRoleEnvironment(input.env, role) }
+      : input;
 
   return { text: await runOpencodeCommand(request, extraArgs, logger) };
 }
@@ -202,10 +224,16 @@ export async function runOpencodeAgentRequest(
     throw new OpencodeExecutionError("FAILED", `Invalid managed OpenCode agent name: ${input.agent}`);
   }
 
-  const { agent, requiredSubagent, ...request } = input;
+  const { agent, requiredSubagent, sessionId, ...request } = input;
   const rawOutput = await runOpencodeCommand(
     request,
-    ["--agent", agent, "--format", "json"],
+    [
+      "--agent",
+      agent,
+      "--format",
+      "json",
+      ...(sessionId ? ["--session", sessionId] : [])
+    ],
     logger
   );
   const parsed = parseOpencodeJsonEvents(rawOutput);
@@ -230,16 +258,23 @@ export async function runOpencodeAgentRequest(
     throw new OpencodeExecutionError("EMPTY_OUTPUT", "OpenCode primary agent returned no final text output.");
   }
 
-  return { text: parsed.text };
+  return {
+    text: parsed.text,
+    completedSubagents: parsed.completedSubagents,
+    completedTasks: parsed.completedTasks,
+    sessionId: parsed.sessionId
+  };
 }
 
 export function parseOpencodeJsonEvents(output: string): ParsedOpencodeJsonEvents {
   const textParts: string[] = [];
   const completedSubagents: string[] = [];
+  const completedTasks: CompletedOpencodeTask[] = [];
   const completedTaskKeys = new Set<string>();
   const diagnostics: string[] = [];
+  let sessionId: string | null = null;
 
-  for (const [lineIndex, line] of output.split(/\r?\n/u).entries()) {
+  for (const line of output.split(/\r?\n/u)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
@@ -253,6 +288,12 @@ export function parseOpencodeJsonEvents(output: string): ParsedOpencodeJsonEvent
     if (!isRecord(event)) continue;
 
     const part = isRecord(event.part) ? event.part : null;
+    const eventSessionId = typeof event.sessionID === "string"
+      ? event.sessionID
+      : part && typeof part.sessionID === "string" ? part.sessionID : null;
+    if (eventSessionId) {
+      sessionId = eventSessionId;
+    }
     if (event.type === "text" && part && typeof part.text === "string" && part.text.trim()) {
       textParts.push(part.text.trim());
       continue;
@@ -262,11 +303,20 @@ export function parseOpencodeJsonEvents(output: string): ParsedOpencodeJsonEvent
     const state = isRecord(part.state) ? part.state : null;
     const taskInput = state && isRecord(state.input) ? state.input : null;
     if (state?.status === "completed" && taskInput && typeof taskInput.subagent_type === "string") {
-      const taskId = typeof part.id === "string" ? part.id : `line-${lineIndex}`;
+      const taskId = typeof part.id === "string"
+        ? part.id
+        : buildFallbackTaskId(taskInput);
       const taskKey = `${taskInput.subagent_type}\u0000${taskId}`;
       if (!completedTaskKeys.has(taskKey)) {
         completedTaskKeys.add(taskKey);
         completedSubagents.push(taskInput.subagent_type);
+        completedTasks.push({
+          id: taskId,
+          subagent: taskInput.subagent_type,
+          ...(typeof taskInput.description === "string" && taskInput.description.trim()
+            ? { description: taskInput.description.trim() }
+            : {})
+        });
       }
     }
   }
@@ -274,8 +324,24 @@ export function parseOpencodeJsonEvents(output: string): ParsedOpencodeJsonEvent
   return {
     text: textParts.join("\n\n").trim(),
     completedSubagents,
+    completedTasks,
+    sessionId,
     diagnostics
   };
+}
+
+function buildFallbackTaskId(taskInput: Record<string, unknown>): string {
+  const normalize = (value: unknown): string => typeof value === "string"
+    ? value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase()
+    : "";
+  const identity = [
+    normalize(taskInput.subagent_type),
+    normalize(taskInput.description),
+    normalize(taskInput.prompt),
+    normalize(taskInput.command)
+  ].join("\u0000");
+  const digest = createHash("sha256").update(identity).digest("hex").slice(0, 16);
+  return `fallback-${digest}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -325,8 +391,7 @@ async function runOpencodeCommand(
       makeError: (code, message, details) => {
         const err = new OpencodeExecutionError(code as OpencodeExecutionError["code"], message);
         if (details) {
-          if (details.partialStdout) err.partialStdout = details.partialStdout;
-          if (details.partialStderr) err.partialStderr = details.partialStderr;
+          Object.assign(err, details satisfies ProviderErrorDetails);
         }
         return err;
       },
@@ -337,6 +402,52 @@ async function runOpencodeCommand(
     },
     logger
   );
+}
+
+function buildRestrictedImplementationEnvironment(
+  inputEnv: NodeJS.ProcessEnv | undefined
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = inputEnv ? { ...inputEnv } : { ...process.env };
+  let inlineConfig: Record<string, unknown> = {};
+  const currentInlineConfig = env.OPENCODE_CONFIG_CONTENT;
+  if (currentInlineConfig) {
+    try {
+      const parsed = JSON.parse(currentInlineConfig) as unknown;
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        inlineConfig = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Replace malformed inline configuration with the supervised build role.
+    }
+  }
+
+  const configuredAgents = typeof inlineConfig.agent === "object" && inlineConfig.agent !== null && !Array.isArray(inlineConfig.agent)
+    ? inlineConfig.agent as Record<string, unknown>
+    : {};
+
+  env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+    ...inlineConfig,
+    agent: {
+      ...configuredAgents,
+      build: {
+        description: "Actuarius implementation agent. Work directly; nested agents and interactive questions are denied.",
+        mode: "primary",
+        permission: {
+          "*": "allow",
+          question: "deny",
+          external_directory: "deny",
+          task: "deny",
+          bash: {
+            "*": "allow",
+            "git push*": "deny",
+            "git reset --hard*": "deny",
+            "gh pr*": "deny"
+          }
+        }
+      }
+    }
+  });
+  return env;
 }
 
 // Role restriction is enforced only for the OpenCode provider; other providers

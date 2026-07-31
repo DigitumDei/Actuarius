@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, writeFile, rm, realpath } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
@@ -305,6 +305,8 @@ export interface SpawnCollectTransportOptions {
   timeoutMs: number;
   /** Kill the process if neither stdout nor stderr has produced data for this long. */
   idleTimeoutMs?: number;
+  /** Force-kill the child process tree after this SIGTERM grace period. */
+  killGraceMs?: number;
   /** Hard limit for stdout in bytes. */
   maxBuffer: number;
   /** Soft limit for stderr in bytes (default 64 KB). */
@@ -351,6 +353,7 @@ function buildOptions(base: {
   cwd: string;
   timeoutMs: number;
   idleTimeoutMs?: number;
+  killGraceMs?: number;
   maxBuffer: number;
   maxStderrBuffer?: number;
   env?: NodeJS.ProcessEnv;
@@ -365,6 +368,7 @@ function buildOptions(base: {
   };
   if (base.maxStderrBuffer !== undefined) opts.maxStderrBuffer = base.maxStderrBuffer;
   if (base.idleTimeoutMs !== undefined) opts.idleTimeoutMs = base.idleTimeoutMs;
+  if (base.killGraceMs !== undefined) opts.killGraceMs = base.killGraceMs;
   if (base.env !== undefined) opts.env = base.env;
   if (base.stdin !== undefined) opts.stdin = base.stdin;
   if (base.signal !== undefined) opts.signal = base.signal;
@@ -395,6 +399,7 @@ export async function spawnCollectWithTransport(
     cwd,
     timeoutMs,
     idleTimeoutMs,
+    killGraceMs,
     maxBuffer,
     maxStderrBuffer,
     env,
@@ -459,6 +464,7 @@ export async function spawnCollectWithTransport(
       return await spawnCollect(file, fileArgs, buildOptions({
         cwd, timeoutMs, maxBuffer,
         ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
+        ...(killGraceMs !== undefined ? { killGraceMs } : {}),
         ...(maxStderrBuffer !== undefined ? { maxStderrBuffer } : {}),
         ...(env !== undefined ? { env } : {}),
         ...(signal !== undefined ? { signal } : {}),
@@ -469,6 +475,7 @@ export async function spawnCollectWithTransport(
     return await spawnCollect(file, decision.args, buildOptions({
       cwd, timeoutMs, maxBuffer,
       ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
+      ...(killGraceMs !== undefined ? { killGraceMs } : {}),
       ...(maxStderrBuffer !== undefined ? { maxStderrBuffer } : {}),
       ...(env !== undefined ? { env } : {}),
       ...(signal !== undefined ? { signal } : {}),
@@ -493,8 +500,36 @@ export interface SpawnOutputSnapshot {
 }
 
 const DEFAULT_STDERR_MAX = 64 * 1024; // 64 KB
+export const DEFAULT_TERMINATION_GRACE_MS = 5_000;
 
 export type SpawnTimeoutReason = "idle" | "absolute";
+export interface SpawnLastOutput {
+  stream: "stdout" | "stderr";
+  text: string;
+}
+
+function signalChildTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (child.pid === undefined) {
+    child.kill(signal);
+    return;
+  }
+
+  if (process.platform === "win32") {
+    const taskkill = spawn(
+      "taskkill",
+      ["/PID", String(child.pid), "/T", ...(signal === "SIGKILL" ? ["/F"] : [])],
+      { stdio: "ignore", windowsHide: true }
+    );
+    taskkill.on("error", () => { child.kill(signal); });
+    return;
+  }
+
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    child.kill(signal);
+  }
+}
 
 /**
  * Spawns a child process, collects stdout/stderr, and resolves/rejects on close.
@@ -517,6 +552,8 @@ export function spawnCollect(
     idleTimeoutMs?: number;
     maxBuffer: number;
     maxStderrBuffer?: number;
+    /** Opt in to force-killing the child process tree if it has not closed after SIGTERM. */
+    killGraceMs?: number;
     env?: NodeJS.ProcessEnv;
     stdin?: string;
     /** Called after stdout or stderr changes, with the output collected so far. */
@@ -530,9 +567,11 @@ export function spawnCollect(
       reject(Object.assign(new Error("Process cancelled before it started"), { code: "ABORT_ERR", killed: false }));
       return;
     }
+    const forceTreeTermination = options.killGraceMs !== undefined;
     const child = spawn(file, args, {
       cwd: options.cwd,
       env: options.env,
+      detached: forceTreeTermination && process.platform !== "win32",
       stdio: [options.stdin !== undefined ? "pipe" : "ignore", "pipe", "pipe"] as const,
     });
 
@@ -549,13 +588,30 @@ export function spawnCollect(
     let stderrTruncated = false;
     let outputCallbackError: Error | undefined;
     let aborted = false;
+    let lastOutput: SpawnLastOutput | undefined;
+    let forceKillTimer: NodeJS.Timeout | undefined;
 
     const effectiveStderrMax = options.maxStderrBuffer ?? DEFAULT_STDERR_MAX;
+    const killGraceMs = options.killGraceMs === undefined
+      ? undefined
+      : Math.max(0, options.killGraceMs);
+
+    const requestTermination = (): void => {
+      if (killGraceMs === undefined) {
+        child.kill("SIGTERM");
+        return;
+      }
+      signalChildTree(child, "SIGTERM");
+      if (forceKillTimer) return;
+      forceKillTimer = setTimeout(() => {
+        signalChildTree(child, "SIGKILL");
+      }, killGraceMs);
+    };
 
     const absoluteTimer = setTimeout(() => {
       if (timeoutReason) return;
       timeoutReason = "absolute";
-      child.kill("SIGTERM");
+      requestTermination();
     }, options.timeoutMs);
 
     let idleTimer: NodeJS.Timeout | undefined;
@@ -565,7 +621,7 @@ export function spawnCollect(
       idleTimer = setTimeout(() => {
         if (timeoutReason) return;
         timeoutReason = "idle";
-        child.kill("SIGTERM");
+        requestTermination();
       }, options.idleTimeoutMs);
     };
     resetIdleTimer();
@@ -574,14 +630,18 @@ export function spawnCollect(
       clearTimeout(absoluteTimer);
       if (idleTimer) clearTimeout(idleTimer);
       options.signal?.removeEventListener("abort", abortChild);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
     };
 
     const abortChild = (): void => {
       if (aborted) return;
       aborted = true;
-      child.kill("SIGTERM");
+      requestTermination();
     };
     options.signal?.addEventListener("abort", abortChild, { once: true });
+    if (options.signal?.aborted) {
+      abortChild();
+    }
 
     const notifyOutput = (): void => {
       if (!options.onOutput || outputCallbackError) return;
@@ -591,26 +651,30 @@ export function spawnCollect(
         outputCallbackError = reason instanceof Error
           ? reason
           : new Error("spawnCollect onOutput callback failed", { cause: reason });
-        child.kill("SIGTERM");
+        requestTermination();
       }
     };
 
     child.stdout!.on("data", (chunk: Buffer) => {
       if (bufferOverflow || timeoutReason || outputCallbackError) return;
       resetIdleTimer();
-      stdout += chunk.toString();
+      const text = chunk.toString();
+      lastOutput = { stream: "stdout", text };
+      stdout += text;
       notifyOutput();
       if (outputCallbackError) return;
       if (stdout.length > options.maxBuffer) {
         bufferOverflow = true;
-        child.kill("SIGTERM");
+        requestTermination();
       }
     });
 
     child.stderr!.on("data", (chunk: Buffer) => {
       if (bufferOverflow || timeoutReason || outputCallbackError) return;
       resetIdleTimer();
-      const combined = stderr + chunk.toString();
+      const text = chunk.toString();
+      lastOutput = { stream: "stderr", text };
+      const combined = stderr + text;
       if (combined.length > effectiveStderrMax) {
         stderrTruncated = true;
         stderr = combined.slice(combined.length - effectiveStderrMax);
@@ -641,7 +705,7 @@ export function spawnCollect(
       }
       if (bufferOverflow) {
         reject(Object.assign(new Error(`Process output exceeded maxBuffer (${options.maxBuffer} bytes)`), {
-          code: "EMSGSIZE", killed: true, signal, stdout, stderr: finalStderr,
+          code: "EMSGSIZE", killed: true, signal, stdout, stderr: finalStderr, lastOutput,
         }));
         return;
       }
@@ -651,18 +715,18 @@ export function spawnCollect(
           : `Process timed out after ${options.timeoutMs}ms`;
         if (code !== null) {
           reject(Object.assign(new Error(`Process exited with code ${String(code)} after timeout: ${timeoutMessage}`), {
-            code: "ETIMEDOUT", timeoutReason, killed: false, signal, stdout, stderr: finalStderr,
+            code: "ETIMEDOUT", timeoutReason, killed: false, signal, stdout, stderr: finalStderr, lastOutput,
           }));
           return;
         }
         reject(Object.assign(new Error(timeoutMessage), {
-          code: "ETIMEDOUT", timeoutReason, killed: true, signal, stdout, stderr: finalStderr,
+          code: "ETIMEDOUT", timeoutReason, killed: true, signal, stdout, stderr: finalStderr, lastOutput,
         }));
         return;
       }
       if (code !== 0) {
         reject(Object.assign(new Error(`Process exited with code ${String(code)}`), {
-          killed: false, signal, stdout, stderr: finalStderr,
+          killed: false, signal, stdout, stderr: finalStderr, lastOutput,
         }));
         return;
       }
