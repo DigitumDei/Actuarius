@@ -1,8 +1,15 @@
 resource "google_compute_disk" "data" {
-  name = "actuarius-data"
-  type = "pd-standard"
+  # Snapshot-restored pd-balanced replacement created during the 2026-07-31
+  # I/O migration. Keep device_name below stable so the guest mount path does
+  # not depend on the provider-side disk resource name.
+  name = "actuarius-data-balanced-20260731"
+  type = "pd-balanced"
   zone = var.gcp_zone
   size = 10 # GB — separate persistent disk so /data survives VM deletion
+
+  # Creation provenance for the imported replacement. Keeping this explicit
+  # prevents Terraform from interpreting the snapshot-backed disk as drift.
+  snapshot = "actuarius-data-pre-balanced-20260731-1530z"
 
   lifecycle {
     # Guard against destroy/recreate (which previously caused full data loss).
