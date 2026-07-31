@@ -216,6 +216,36 @@ describe("buildTimeoutReportInner", () => {
     expect(report).toContain("some error");
   });
 
+  it("labels idle timeouts with the actual idle budget and structured context", async () => {
+    const report = await buildTimeoutReportInner({
+      timeoutKind: "idle",
+      timeoutMs: 900_000,
+      providerSessionId: "ses-123",
+      lastActivity: "tool_use tool=task status=running subagent=general"
+    }, null, null, "OpenCode");
+
+    expect(report).toContain("**Timeout type:** idle");
+    expect(report).toContain("No provider output was received for 900000ms.");
+    expect(report).toContain("`ses-123`");
+    expect(report).toContain("subagent=general");
+    expect(report).not.toContain("5400000");
+  });
+
+  it("uses the provider error message for an early total-budget cutoff", async () => {
+    const message =
+      "OpenCode could not resume within the total plan-oc execution timeout of 1000ms: 250ms remained, which is not greater than the 250ms minimum resume budget.";
+    const report = await buildTimeoutReportInner({
+      message,
+      timeoutKind: "total",
+      timeoutMs: 1000,
+      providerSessionId: "ses-low-budget"
+    }, null, null, "OpenCode");
+
+    expect(report).toContain("**Timeout type:** total");
+    expect(report).toContain(message);
+    expect(report).not.toContain("The provider reached the total execution limit");
+  });
+
   it("includes staged and unstaged diff sections when worktreePath is given", async () => {
     const report = await buildTimeoutReportInner(
       {},

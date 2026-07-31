@@ -139,7 +139,12 @@ const {
 const { spawnCollect } = await import("../src/utils/spawnCollect.js");
 const { listOpenIssues, viewIssueDetail } = await import("../src/services/githubService.js");
 const { runClaudeRequest } = await import("../src/services/claudeExecutionService.js");
-const { authenticateOpenAIOpencode, hasOpencodeAuth, runOpencodeAgentRequest } = await import("../src/services/opencodeExecutionService.js");
+const {
+  authenticateOpenAIOpencode,
+  hasOpencodeAuth,
+  OpencodeExecutionError,
+  runOpencodeAgentRequest
+} = await import("../src/services/opencodeExecutionService.js");
 const {
   createOpencodePlanAgentSnapshot,
   ensureOpencodePlanAgentFiles,
@@ -179,6 +184,8 @@ function createBot(
     threadAutoArchiveMinutes: 1440,
     askConcurrencyPerGuild: 1,
     askExecutionTimeoutMs: 1000,
+    providerIdleTimeoutMs: 250,
+    planOcSegmentTimeoutMs: 500,
     iterativeVerificationTimeoutMs: 300,
     reviewConcurrency: 1,
     installStepTimeoutMs: 1000,
@@ -3760,7 +3767,12 @@ describe("ActuariusBot plan-oc command", () => {
       },
       cleanup
     });
-    vi.mocked(runOpencodeAgentRequest).mockResolvedValue({ text: "Plan, implementation, and validation complete." });
+    vi.mocked(runOpencodeAgentRequest).mockResolvedValue({
+      text: "Plan, implementation, and validation complete.",
+      completedSubagents: [OPENCODE_IMPLEMENT_OC_AGENT],
+      completedTasks: [{ id: "task-1", subagent: OPENCODE_IMPLEMENT_OC_AGENT }],
+      sessionId: "session-1"
+    });
     vi.mocked(ensureRepoCheckedOutToMaster).mockResolvedValue({ localPath: "/tmp/repo" });
     vi.mocked(createRequestWorktree).mockResolvedValue({
       path: "/tmp/worktree-plan-oc",
@@ -3814,9 +3826,10 @@ describe("ActuariusBot plan-oc command", () => {
     expect(runOpencodeAgentRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         agent: OPENCODE_PLAN_OC_AGENT,
-        requiredSubagent: OPENCODE_IMPLEMENT_OC_AGENT,
         cwd: "/tmp/worktree-plan-oc",
         prompt: expect.stringContaining("Do the native OpenCode thing"),
+        timeoutMs: 500,
+        idleTimeoutMs: 250,
         env: expect.objectContaining({
           GH_TOKEN: "test-token",
           OPENCODE_CONFIG_DIR: "/tmp/actuarius-opencode-plan-snapshot"
@@ -3837,6 +3850,324 @@ describe("ActuariusBot plan-oc command", () => {
     expect(deleteRequestBranch).not.toHaveBeenCalled();
     expect(cleanup).toHaveBeenCalledOnce();
     expect(thread.send).toHaveBeenCalledWith(expect.stringContaining("/review"));
+  });
+
+  it("checkpoints completed managed tasks and resumes the same OpenCode session", async () => {
+    const bot = createBot();
+    const threadSend = vi.fn().mockResolvedValue(undefined);
+    const timeout = new OpencodeExecutionError("TIMEOUT", "OpenCode exceeded the total execution timeout of 500ms.");
+    timeout.timeoutKind = "total";
+    timeout.timeoutMs = 500;
+    timeout.providerSessionId = "ses-checkpoint";
+    timeout.partialStdout = [
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: "ses-checkpoint",
+        part: {
+          id: "task-1",
+          tool: "task",
+          state: {
+            status: "completed",
+            input: {
+              subagent_type: OPENCODE_IMPLEMENT_OC_AGENT,
+              description: "Implement timeout typing"
+            }
+          }
+        }
+      })
+    ].join("\n");
+
+    vi.mocked(runOpencodeAgentRequest)
+      .mockRejectedValueOnce(timeout)
+      .mockResolvedValueOnce({
+        text: "All work completed.",
+        completedSubagents: [OPENCODE_IMPLEMENT_OC_AGENT],
+        completedTasks: [{
+          id: "task-2",
+          subagent: OPENCODE_IMPLEMENT_OC_AGENT,
+          description: "Add checkpoint coverage"
+        }],
+        sessionId: "ses-checkpoint"
+      });
+
+    const result = await (bot as any).runCheckpointedPlanOc({
+      requestId: 777,
+      prompt: "Plan and implement",
+      cwd: "/tmp/worktree",
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      threadChannel: { send: threadSend }
+    });
+
+    expect(result).toMatchObject({
+      text: "All work completed.",
+      sessionId: "ses-checkpoint",
+      segments: 2
+    });
+    expect(result.completedTasks.map((task: { id: string }) => task.id)).toEqual(["task-1", "task-2"]);
+    expect(runOpencodeAgentRequest).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runOpencodeAgentRequest).mock.calls[1]![0]).toMatchObject({
+      sessionId: "ses-checkpoint",
+      prompt: expect.stringContaining("task-1")
+    });
+    expect(threadSend).toHaveBeenCalledWith(expect.stringContaining("checkpoint saved"));
+  });
+
+  it("reports total-budget exhaustion instead of starting a too-short resume segment", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(0));
+      const bot = createBot();
+      const threadSend = vi.fn().mockResolvedValue(undefined);
+      const partialStdout = JSON.stringify({
+        type: "tool_use",
+        sessionID: "ses-low-budget",
+        part: {
+          id: "task-before-budget-floor",
+          tool: "task",
+          state: {
+            status: "completed",
+            input: {
+              subagent_type: OPENCODE_IMPLEMENT_OC_AGENT,
+              description: "Complete work near the total budget"
+            }
+          }
+        }
+      });
+      const segmentTimeout = new OpencodeExecutionError(
+        "TIMEOUT",
+        "OpenCode produced no output for 250ms."
+      );
+      segmentTimeout.timeoutKind = "idle";
+      segmentTimeout.timeoutMs = 250;
+      segmentTimeout.providerSessionId = "ses-low-budget";
+      segmentTimeout.partialStdout = partialStdout;
+      segmentTimeout.partialStderr = "startup warning";
+      segmentTimeout.lastActivity = "tool_use tool=task status=completed";
+
+      vi.mocked(runOpencodeAgentRequest).mockImplementationOnce(async () => {
+        vi.setSystemTime(new Date(750));
+        throw segmentTimeout;
+      });
+
+      const failure = await (bot as any).runCheckpointedPlanOc({
+        requestId: 781,
+        prompt: "Plan and implement",
+        cwd: "/tmp/worktree",
+        env: { DEEPSEEK_API_KEY: "test-key" },
+        threadChannel: { send: threadSend }
+      }).catch((error: unknown) => error);
+
+      expect(failure).not.toBe(segmentTimeout);
+      expect(failure).toMatchObject({
+        name: "OpencodeExecutionError",
+        code: "TIMEOUT",
+        timeoutKind: "total",
+        timeoutMs: 1000,
+        providerSessionId: "ses-low-budget",
+        partialStdout,
+        partialStderr: "startup warning",
+        lastActivity: "tool_use tool=task status=completed",
+        message: expect.stringContaining(
+          "250ms remained, which is not greater than the 250ms minimum resume budget"
+        )
+      });
+      expect(runOpencodeAgentRequest).toHaveBeenCalledOnce();
+      expect(threadSend).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps different id-less task checkpoints distinct across resumed plan-oc segments", async () => {
+    const bot = createBot();
+    const threadSend = vi.fn().mockResolvedValue(undefined);
+    const makeTimeout = (description: string): OpencodeExecutionError => {
+      const timeout = new OpencodeExecutionError("TIMEOUT", "OpenCode segment timed out.");
+      timeout.timeoutKind = "total";
+      timeout.timeoutMs = 500;
+      timeout.providerSessionId = "ses-fallback";
+      timeout.partialStdout = JSON.stringify({
+        type: "tool_use",
+        sessionID: "ses-fallback",
+        part: {
+          tool: "task",
+          state: {
+            status: "completed",
+            input: {
+              subagent_type: OPENCODE_IMPLEMENT_OC_AGENT,
+              description
+            }
+          }
+        }
+      });
+      return timeout;
+    };
+
+    vi.mocked(runOpencodeAgentRequest)
+      .mockRejectedValueOnce(makeTimeout("First fallback task"))
+      .mockRejectedValueOnce(makeTimeout("Second fallback task"))
+      .mockResolvedValueOnce({
+        text: "All work completed.",
+        completedSubagents: [OPENCODE_IMPLEMENT_OC_AGENT],
+        completedTasks: [{
+          id: "final-task",
+          subagent: OPENCODE_IMPLEMENT_OC_AGENT
+        }],
+        sessionId: "ses-fallback"
+      });
+
+    const result = await (bot as any).runCheckpointedPlanOc({
+      requestId: 778,
+      prompt: "Plan and implement",
+      cwd: "/tmp/worktree",
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      threadChannel: { send: threadSend }
+    });
+
+    expect(result.segments).toBe(3);
+    const fallbackIds = result.completedTasks
+      .slice(0, 2)
+      .map((task: { id: string }) => task.id);
+    expect(fallbackIds).toHaveLength(2);
+    expect(new Set(fallbackIds).size).toBe(2);
+    expect(fallbackIds).toEqual([
+      expect.stringMatching(/^fallback-[0-9a-f]{16}$/u),
+      expect.stringMatching(/^fallback-[0-9a-f]{16}$/u)
+    ]);
+    expect(result.completedTasks[2]?.id).toBe("final-task");
+    expect(runOpencodeAgentRequest).toHaveBeenCalledTimes(3);
+    expect(threadSend).toHaveBeenCalledTimes(2);
+  });
+
+  it("resumes a checkpointed plan-oc session when the Discord notice fails", async () => {
+    const bot = createBot();
+    const threadSend = vi.fn().mockRejectedValueOnce(new Error("Missing Access"));
+    const timeout = new OpencodeExecutionError("TIMEOUT", "OpenCode segment timed out.");
+    timeout.timeoutKind = "total";
+    timeout.timeoutMs = 500;
+    timeout.providerSessionId = "ses-notice-failure";
+    timeout.partialStdout = JSON.stringify({
+      type: "tool_use",
+      sessionID: "ses-notice-failure",
+      part: {
+        id: "task-before-notice",
+        tool: "task",
+        state: {
+          status: "completed",
+          input: {
+            subagent_type: OPENCODE_IMPLEMENT_OC_AGENT,
+            description: "Complete work before the notice"
+          }
+        }
+      }
+    });
+
+    vi.mocked(runOpencodeAgentRequest)
+      .mockRejectedValueOnce(timeout)
+      .mockResolvedValueOnce({
+        text: "All work completed.",
+        completedSubagents: [OPENCODE_IMPLEMENT_OC_AGENT],
+        completedTasks: [{
+          id: "task-after-notice",
+          subagent: OPENCODE_IMPLEMENT_OC_AGENT
+        }],
+        sessionId: "ses-notice-failure"
+      });
+
+    const result = await (bot as any).runCheckpointedPlanOc({
+      requestId: 779,
+      prompt: "Plan and implement",
+      cwd: "/tmp/worktree",
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      threadChannel: { send: threadSend }
+    });
+
+    expect(result).toMatchObject({
+      text: "All work completed.",
+      sessionId: "ses-notice-failure",
+      segments: 2
+    });
+    expect(result.completedTasks.map((task: { id: string }) => task.id)).toEqual([
+      "task-before-notice",
+      "task-after-notice"
+    ]);
+    expect(runOpencodeAgentRequest).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runOpencodeAgentRequest).mock.calls[1]![0]).toMatchObject({
+      sessionId: "ses-notice-failure",
+      prompt: expect.stringContaining("task-before-notice")
+    });
+    expect(threadSend).toHaveBeenCalledOnce();
+  });
+
+  it("does not treat replayed id-less task history as new checkpoint progress", async () => {
+    const bot = createBot();
+    const threadSend = vi.fn().mockResolvedValue(undefined);
+    const makeTimeout = (): OpencodeExecutionError => {
+      const timeout = new OpencodeExecutionError("TIMEOUT", "OpenCode segment timed out.");
+      timeout.timeoutKind = "total";
+      timeout.timeoutMs = 500;
+      timeout.providerSessionId = "ses-replay";
+      timeout.partialStdout = JSON.stringify({
+        type: "tool_use",
+        sessionID: "ses-replay",
+        part: {
+          tool: "task",
+          state: {
+            status: "completed",
+            input: {
+              subagent_type: OPENCODE_IMPLEMENT_OC_AGENT,
+              description: "Implement replay-safe checkpoints"
+            }
+          }
+        }
+      });
+      return timeout;
+    };
+    const firstTimeout = makeTimeout();
+    const replayTimeout = makeTimeout();
+
+    vi.mocked(runOpencodeAgentRequest)
+      .mockRejectedValueOnce(firstTimeout)
+      .mockRejectedValueOnce(replayTimeout);
+
+    await expect((bot as any).runCheckpointedPlanOc({
+      requestId: 780,
+      prompt: "Plan and implement",
+      cwd: "/tmp/worktree",
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      threadChannel: { send: threadSend }
+    })).rejects.toBe(replayTimeout);
+
+    expect(runOpencodeAgentRequest).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runOpencodeAgentRequest).mock.calls[1]![0]).toMatchObject({
+      sessionId: "ses-replay",
+      prompt: expect.stringContaining("fallback-")
+    });
+    expect(threadSend).toHaveBeenCalledOnce();
+  });
+
+  it("does not resume a timed-out plan-oc segment without a new completed task checkpoint", async () => {
+    const bot = createBot();
+    const timeout = new OpencodeExecutionError("TIMEOUT", "OpenCode produced no output for 250ms.");
+    timeout.timeoutKind = "idle";
+    timeout.timeoutMs = 250;
+    timeout.providerSessionId = "ses-stalled";
+    timeout.partialStdout = JSON.stringify({
+      type: "step_start",
+      sessionID: "ses-stalled",
+      part: { type: "step-start" }
+    });
+    vi.mocked(runOpencodeAgentRequest).mockRejectedValueOnce(timeout);
+
+    await expect((bot as any).runCheckpointedPlanOc({
+      requestId: 778,
+      prompt: "Plan and implement",
+      cwd: "/tmp/worktree",
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      threadChannel: { send: vi.fn() }
+    })).rejects.toBe(timeout);
+
+    expect(runOpencodeAgentRequest).toHaveBeenCalledOnce();
   });
 });
 

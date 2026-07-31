@@ -15,6 +15,7 @@ type AllowedArchiveDuration = (typeof allowedArchiveDurations)[number];
 export const TIMEOUT_DEFAULTS_MS = {
   askExecution: 90 * 60 * 1000,
   providerIdle: 15 * 60 * 1000,
+  planOcSegment: 30 * 60 * 1000,
   reviewer: 20 * 60 * 1000,
   iterativeVerification: 10 * 60 * 1000,
   installStep: 60 * 60 * 1000,
@@ -72,6 +73,11 @@ const envSchema = z.object({
     .default(String(TIMEOUT_DEFAULTS_MS.providerIdle))
     .transform((value) => Number.parseInt(value, 10))
     .refine((value) => Number.isFinite(value) && value > 0, "PROVIDER_IDLE_TIMEOUT_MS must be a positive number"),
+  PLAN_OC_SEGMENT_TIMEOUT_MS: z
+    .string()
+    .default(String(TIMEOUT_DEFAULTS_MS.planOcSegment))
+    .transform((value) => Number.parseInt(value, 10))
+    .refine((value) => Number.isFinite(value) && value > 0, "PLAN_OC_SEGMENT_TIMEOUT_MS must be a positive number"),
   REVIEWER_TIMEOUT_MS: z
     .string()
     .default(String(TIMEOUT_DEFAULTS_MS.reviewer))
@@ -218,6 +224,7 @@ export const appConfig = {
   askConcurrencyPerGuild: rawConfig.ASK_CONCURRENCY_PER_GUILD,
   askExecutionTimeoutMs: rawConfig.ASK_EXECUTION_TIMEOUT_MS,
   providerIdleTimeoutMs: rawConfig.PROVIDER_IDLE_TIMEOUT_MS,
+  planOcSegmentTimeoutMs: rawConfig.PLAN_OC_SEGMENT_TIMEOUT_MS,
   reviewerTimeoutMs: rawConfig.REVIEWER_TIMEOUT_MS,
   iterativeVerificationTimeoutMs: rawConfig.ITERATIVE_VERIFICATION_TIMEOUT_MS,
   reviewConcurrency: rawConfig.REVIEW_CONCURRENCY,

@@ -202,20 +202,39 @@ describe("Transport behavior acceptance", () => {
 
   // ── OpenCode: tempfile transport ──────────────────────────────────────
 
-  it("OpenCode small prompt uses argv transport and passes real logger", async () => {
+  it("OpenCode default small prompt keeps the legacy unrestricted profile", async () => {
     const { writer, records } = createLogCapture();
     const logger = pino({ level: "debug" }, writer);
+    const existingConfig = JSON.stringify({ sentinel: true });
 
     mockSpawn.mockImplementation(() =>
       createMockChild({ stdout: "opencode output", exitCode: 0 }),
     );
 
-    await runOpencodeRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+    await runOpencodeRequest({
+      prompt: "hello",
+      cwd: "/tmp",
+      timeoutMs: 5000,
+      env: {
+        DEEPSEEK_API_KEY: "test-key",
+        OPENCODE_CONFIG_CONTENT: existingConfig,
+      },
+    }, logger);
 
     const [file, args] = mockSpawn.mock.calls[0]!;
     expect(file).toBe("opencode");
-    expect(args).toEqual(["run", "--dir", "/tmp", "hello", "--agent", "build", "--dangerously-skip-permissions"]);
+    expect(args).toEqual([
+      "run",
+      "--dir",
+      "/tmp",
+      "hello",
+      "--agent",
+      "build",
+      "--dangerously-skip-permissions",
+    ]);
     expect(args).not.toContain("--file");
+    const options = mockSpawn.mock.calls[0]![2] as { env?: NodeJS.ProcessEnv };
+    expect(options.env?.OPENCODE_CONFIG_CONTENT).toBe(existingConfig);
 
     const transportLog = records.find(
       (r) => (r as Record<string, unknown>).transport === "argv",
@@ -249,6 +268,10 @@ describe("Transport behavior acceptance", () => {
     const fileFlagIdx = args!.indexOf("--file");
     const tempFilePath = args![fileFlagIdx + 1]!;
     expect(tempFilePath).toMatch(/prompt\.txt$/);
+    const agentFlagIdx = args!.indexOf("--agent");
+    const skipFlagIdx = args!.indexOf("--dangerously-skip-permissions");
+    expect(fileFlagIdx).toBeLessThan(agentFlagIdx);
+    expect(agentFlagIdx).toBeLessThan(skipFlagIdx);
 
     const transportLog = records.find(
       (r) => (r as Record<string, unknown>).transportReason === "oversized_tempfile_fallback",
@@ -264,7 +287,7 @@ describe("Transport behavior acceptance", () => {
     });
   });
 
-  it("OpenCode oversized prompt preserves --dangerously-skip-permissions and --model with --file", async () => {
+  it("OpenCode oversized prompt preserves the supervised agent and --model with --file", async () => {
     const { writer, records } = createLogCapture();
     const logger = pino(writer);
     const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
@@ -278,17 +301,27 @@ describe("Transport behavior acceptance", () => {
       cwd: "/work",
       timeoutMs: 5000,
       model: "o4-mini",
+      role: "implementation",
     }, logger);
 
     const [, args] = mockSpawn.mock.calls[0]!;
-    expect(args).toContain("--dangerously-skip-permissions");
+    expect(args).not.toContain("--dangerously-skip-permissions");
+    expect(args).toContain("--agent");
+    expect(args).toContain("build");
     expect(args).toContain("--model");
     expect(args).toContain("o4-mini");
     expect(args).toContain("--file");
 
-    const skipIdx = args!.indexOf("--dangerously-skip-permissions");
+    const agentIdx = args!.indexOf("--agent");
     const fileIdx = args!.indexOf("--file");
-    expect(fileIdx).toBeLessThan(skipIdx);
+    const modelIdx = args!.indexOf("--model");
+    expect(fileIdx).toBeLessThan(agentIdx);
+    expect(agentIdx).toBeLessThan(modelIdx);
+    const options = mockSpawn.mock.calls[0]![2] as { env?: NodeJS.ProcessEnv };
+    const config = JSON.parse(options.env!.OPENCODE_CONFIG_CONTENT!) as {
+      agent: { build: { permission: { task: string } } };
+    };
+    expect(config.agent.build.permission.task).toBe("deny");
 
     const transportLog = records.find(
       (r) => (r as Record<string, unknown>).transportReason === "oversized_tempfile_fallback",

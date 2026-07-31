@@ -3,6 +3,7 @@ import {
   buildIterativeTaskImplementationPrompt,
   buildIterativeTaskVerificationPrompt
 } from "./llmPromptBuilders.js";
+import type { ProviderExecutionDiagnostics } from "../utils/runProviderRequest.js";
 
 export interface IterativePlanTask {
   title: string;
@@ -25,6 +26,8 @@ export interface IterativeTaskLoopInput {
   originalPrompt: string;
   repoFullName: string;
   worktreePath: string;
+  requestId: number;
+  workflow: "plan" | "revise";
   threadChannel: { send: (content: string) => Promise<unknown> };
   plannerProvider: AiProvider;
   plannerModel: string | undefined;
@@ -38,6 +41,7 @@ export interface IterativeTaskLoopInput {
     model?: string;
     env?: NodeJS.ProcessEnv;
     role?: "implementation" | "planner" | "verification";
+    diagnostics?: ProviderExecutionDiagnostics;
   }) => Promise<string>;
   timeoutMs: number;
   verificationTimeoutMs: number;
@@ -107,6 +111,15 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
         cwd: worktreePath,
         timeoutMs: input.timeoutMs,
         role: "implementation",
+        diagnostics: {
+          requestId: input.requestId,
+          workflow: input.workflow,
+          stage: "iterative-implementation",
+          taskIndex,
+          taskCount,
+          taskTitle,
+          attempt: tweakAttempts + 1
+        },
         ...(input.implementerModel ? { model: input.implementerModel } : {}),
         ...(input.env ? { env: input.env } : {})
       });
@@ -139,6 +152,15 @@ export async function runIterativeTaskLoop(input: IterativeTaskLoopInput): Promi
         cwd: worktreePath,
         timeoutMs: input.verificationTimeoutMs,
         role: "verification",
+        diagnostics: {
+          requestId: input.requestId,
+          workflow: input.workflow,
+          stage: "iterative-verification",
+          taskIndex,
+          taskCount,
+          taskTitle,
+          attempt: tweakAttempts + 1
+        },
         ...(input.plannerModel ? { model: input.plannerModel } : {}),
         ...(input.env ? { env: input.env } : {})
       });
