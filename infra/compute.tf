@@ -1,3 +1,23 @@
+resource "google_compute_disk" "boot" {
+  # Snapshot-restored pd-balanced boot/stateful replacement created during the
+  # 2026-08-01 I/O migration. The original pd-standard disk and the offline
+  # snapshot are retained separately for rollback.
+  name = "actuarius-boot-balanced-20260801"
+  type = "pd-balanced"
+  zone = var.gcp_zone
+  size = 10
+
+  description = "Balanced boot clone from offline snapshot; original actuarius-bot boot retained for rollback"
+
+  snapshot = "actuarius-boot-pre-balanced-20260801-0828z"
+
+  lifecycle {
+    # The stateful COS partition holds Docker state and the swap file. Never
+    # allow a routine Terraform operation to destroy this disk.
+    prevent_destroy = true
+  }
+}
+
 resource "google_compute_disk" "data" {
   # Snapshot-restored pd-balanced replacement created during the 2026-07-31
   # I/O migration. Keep device_name below stable so the guest mount path does
@@ -25,12 +45,8 @@ resource "google_compute_instance" "actuarius" {
   zone         = var.gcp_zone
 
   boot_disk {
-    initialize_params {
-      # Container-Optimized OS: Docker pre-installed, minimal, auto-updates
-      image = "projects/cos-cloud/global/images/family/cos-stable"
-      size  = 10 # GB — stays within 10 GB remaining free tier quota
-      type  = "pd-standard"
-    }
+    source      = google_compute_disk.boot.self_link
+    auto_delete = false
   }
 
   attached_disk {
