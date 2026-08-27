@@ -9,7 +9,7 @@
     "check": "tsc --noEmit -p tsconfig.json",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "test": "vitest run"
+    "test": "vitest run --exclude \"**/.worktrees/**\""
   },
   "engines": {
     "node": ">=22"

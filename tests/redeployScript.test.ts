@@ -12,6 +12,11 @@ type RunResult = {
   stdout: string;
   stderr: string;
   dockerLog: string;
+  systemctlLog: string;
+};
+
+type RunOptions = {
+  unitsInstalled?: boolean;
 };
 
 const repoRoot = process.cwd();
@@ -121,7 +126,20 @@ exit 0
 `;
 }
 
-function runRedeploy(metadata: Metadata, secrets: Secrets = baseSecrets): RunResult {
+function createSystemctlMock(logPath: string, unitsInstalled: boolean): string {
+  return `#!/usr/bin/env bash
+for arg in "$@"; do
+  printf '%s ' "$arg" >> ${shellSingleQuote(logPath)}
+done
+printf '\\n' >> ${shellSingleQuote(logPath)}
+if [ "\${1:-}" = cat ] && [ ${unitsInstalled ? "true" : "false"} = false ]; then
+  return 1
+fi
+exit 0
+`;
+}
+
+function runRedeploy(metadata: Metadata, secrets: Secrets = baseSecrets, options: RunOptions = {}): RunResult {
   const tempDir = mkdtempSync(join(tmpdir(), "redeploy-test-"));
   tempDirs.push(tempDir);
 
@@ -130,12 +148,14 @@ function runRedeploy(metadata: Metadata, secrets: Secrets = baseSecrets): RunRes
   const dockerLogPath = join(tempDir, "docker.log");
   const mkdirLogPath = join(tempDir, "mkdir.log");
   const chownLogPath = join(tempDir, "chown.log");
+  const systemctlLogPath = join(tempDir, "systemctl.log");
   const bashEnvPath = join(tempDir, "bash-env.sh");
   writeFileSync(bashEnvPath, [
     asBashFunction("curl", createCurlMock(metadata, secrets)),
     asBashFunction("docker", createDockerMock(toBashPath(dockerLogPath))),
     asBashFunction("mkdir", createNoopMock(toBashPath(mkdirLogPath), "mkdir")),
-    asBashFunction("chown", createNoopMock(toBashPath(chownLogPath), "chown"))
+    asBashFunction("chown", createNoopMock(toBashPath(chownLogPath), "chown")),
+    asBashFunction("systemctl", createSystemctlMock(toBashPath(systemctlLogPath), options.unitsInstalled ?? true))
   ].join("\n"));
 
   const bashExecutable = process.platform === "win32"
@@ -155,10 +175,39 @@ function runRedeploy(metadata: Metadata, secrets: Secrets = baseSecrets): RunRes
     stdout: result.stdout,
     stderr: result.stderr,
     dockerLog: readFileSync(dockerLogPath, { encoding: "utf8", flag: "a+" }),
+    systemctlLog: readFileSync(systemctlLogPath, { encoding: "utf8", flag: "a+" }),
   };
 }
 
 describe("scripts/redeploy.sh auth validation", () => {
+  it("creates the container without a restart policy and starts it through systemd", () => {
+    const result = runRedeploy(baseMetadata, {
+      ...baseSecrets,
+      "actuarius-gh-token": "gh-token",
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    // Container lifecycle belongs to actuarius-bot.service, which is ordered
+    // after the metadata-isolation firewall unit — a docker restart policy
+    // would race the firewall at boot.
+    expect(result.dockerLog).toMatch(/\ncreate\n/);
+    expect(result.dockerLog).not.toContain("--restart");
+    expect(result.dockerLog).not.toMatch(/\nrun\n/);
+    expect(result.systemctlLog).toContain("restart actuarius-bot.service");
+  });
+
+  it("fails before replacing the legacy container when the systemd units are not installed", () => {
+    const result = runRedeploy(baseMetadata, {
+      ...baseSecrets,
+      "actuarius-gh-token": "gh-token",
+    }, { unitsInstalled: false });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("complete the metadata-isolation cutover and reboot");
+    expect(result.systemctlLog).toContain("cat actuarius-firewall.service actuarius-bot.service");
+    expect(result.dockerLog).toBe("");
+  });
+
   it("applies safe default container resource limits", () => {
     const result = runRedeploy(baseMetadata, {
       ...baseSecrets,

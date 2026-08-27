@@ -5,7 +5,7 @@ This document describes the deployment lifecycle for the Actuarius Discord bot o
 ## Overview
 
 ```
-terraform apply ──► updates metadata ──► reboot or curl ──► redeploy.sh ──► docker run
+publish reviewed scripts ──► guarded cutover (once) ──► reboot + verify ──► terraform apply/redeploy
 ```
 
 The bot runs as a Docker container on a single GCE VM. Infrastructure is managed with Terraform; the application is deployed via a helper script fetched from instance metadata.
@@ -14,14 +14,75 @@ The bot runs as a Docker container on a single GCE VM. Infrastructure is managed
 
 The `infra/` directory defines the VM, disk, networking, and service account. Sensible values go in `terraform.tfvars` (gitignored — never commit secrets here).
 
-Apply with:
+Terraform writes all **non-secret** configuration into [instance metadata](https://cloud.google.com/compute/docs/metadata) — environment variables and the redeploy script itself (`env-redeploy-script`) — and creates empty [Secret Manager](https://cloud.google.com/secret-manager) containers for the secret values (see below).
+
+Before applying, inspect the plan. On an existing VM, a plan that changes a
+stop-required instance property may restart the VM because the instance allows
+stopping updates. If the legacy container still uses restart policy
+`unless-stopped`, complete the one-time cutover below **before** any full apply.
+After that cutover and its required reboot have been verified, apply normally:
 
 ```bash
 cd infra
+terraform plan
 terraform apply
 ```
 
-This writes all **non-secret** configuration into [instance metadata](https://cloud.google.com/compute/docs/metadata) — environment variables and the redeploy script itself (`env-redeploy-script`) — and creates empty [Secret Manager](https://cloud.google.com/secret-manager) containers for the secret values (see below). **It does not restart the VM or the container.**
+### Mandatory one-time metadata-isolation cutover
+
+When upgrading a VM whose existing `actuarius` container still has Docker
+restart policy `unless-stopped`, do **not** run a full `terraform apply`, reboot,
+or redeploy yet. A stopping Terraform update could reboot the VM and let Docker
+auto-start that legacy container before the metadata firewall exists.
+
+From the repository root of the exact reviewed checkout, first publish only the
+two hash-bound script payloads. `gcloud compute instances add-metadata` updates
+metadata in place and does not stop the VM:
+
+```bash
+gcloud compute instances add-metadata actuarius-bot \
+  --project <YOUR_PROJECT_ID> --zone <ZONE> \
+  --metadata-from-file=env-startup-script=infra/startup.sh,env-redeploy-script=scripts/redeploy.sh
+```
+
+Then copy and run the cutover:
+
+```bash
+gcloud compute scp scripts/cutover-metadata-isolation.sh \
+  actuarius-bot:/tmp/cutover-metadata-isolation.sh \
+  --project <YOUR_PROJECT_ID> --zone <ZONE> --tunnel-through-iap
+
+gcloud compute ssh actuarius-bot \
+  --project <YOUR_PROJECT_ID> --zone <ZONE> --tunnel-through-iap \
+  --command 'sudo bash /tmp/cutover-metadata-isolation.sh'
+```
+
+The script refuses to mutate the container unless both published metadata
+payload hashes match its reviewed release. Success means the restart policy is
+`no` and the legacy container is stopped. **Reboot immediately; do not run the
+new redeploy payload in this gap**, because `startup.sh` has not installed the
+systemd units yet:
+
+```bash
+gcloud compute ssh actuarius-bot \
+  --project <YOUR_PROJECT_ID> --zone <ZONE> --tunnel-through-iap \
+  --command 'sudo reboot'
+```
+
+After the VM returns, verify the units and container before the full Terraform
+apply or any manual redeploy:
+
+```bash
+gcloud compute ssh actuarius-bot \
+  --project <YOUR_PROJECT_ID> --zone <ZONE> --tunnel-through-iap \
+  --command 'sudo systemctl --no-pager --full status actuarius-firewall.service actuarius-bot.service && sudo docker inspect -f "restart={{.HostConfig.RestartPolicy.Name}} running={{.State.Running}}" actuarius'
+```
+
+Both units must be active, and the container must report restart policy `no`
+and running state `true`. The full `terraform plan` / `terraform apply` may now proceed;
+any stop-required update is safe because Docker no longer owns container
+restart. New VMs and already-migrated stopped containers are handled
+idempotently; a brand-new VM may be created with the normal Terraform flow.
 
 ## Secrets
 
@@ -60,18 +121,17 @@ curl -sf -H "Metadata-Flavor: Google" "$META/env-redeploy-script" | sudo tee /va
 sudo bash /var/redeploy.sh
 ```
 
-Or reboot the VM so `startup.sh` handles it:
-
-```bash
-sudo reboot
-```
+The first reboot after the mandatory cutover is part of that procedure. Do not
+manually redeploy until it has installed and started the two systemd units.
 
 ## What redeploy.sh does
 
 1. Reads non-secret config from metadata (`env-discord-client-id`, `env-enable-codex-execution`, etc.) and secret values from Secret Manager (`actuarius-discord-token`, etc.) using the VM service account's access token
 2. Pulls the Docker image (`ghcr.io/digitumdei/actuarius:latest` or a specific SHA tag)
 3. Stops and removes the old container
-4. Starts a new container with the correct env vars mapped from metadata
+4. Creates a new `restart=no` container with the correct env vars
+5. Starts it through `actuarius-bot.service`, whose pre-start gate revalidates
+   metadata isolation every time the container starts
 
 Production deploys constrain the container to 700 MB RAM, 2 GB memory+swap,
 0.8 CPU, and 1024 tasks by default. These cgroup limits keep provider builds

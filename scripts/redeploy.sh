@@ -217,14 +217,26 @@ if [ -n "$GEMINI_API_KEY" ]; then
   EXTRA_ARGS+=(-e "GEMINI_API_KEY=$GEMINI_API_KEY")
 fi
 
+# A first-rollout cutover deliberately stops the legacy container before the
+# reboot that installs these units. Refuse to remove that container if an
+# operator accidentally invokes the freshly published redeploy payload in the
+# gap: systemctl cannot start a unit that startup.sh has not installed yet.
+systemctl cat actuarius-firewall.service actuarius-bot.service >/dev/null 2>&1 || {
+  echo "FATAL: Actuarius systemd units are not installed; complete the metadata-isolation cutover and reboot before redeploying" >&2
+  exit 1
+}
+
 docker pull "$IMAGE"
 docker rm -f actuarius 2>/dev/null || true
 mkdir -p "$DATA_ROOT/home/appuser"
 chown -R 1001:1001 "$DATA_ROOT/home"
 
-docker run -d \
+# The container is CREATED but not started: systemd owns its lifecycle via
+# actuarius-bot.service, which is ordered after actuarius-firewall.service so
+# the bot can never run before metadata isolation is effective. No restart
+# policy — restarts on crash and at boot are systemd's job now.
+docker create \
   --name actuarius \
-  --restart unless-stopped \
   --memory "$CONTAINER_MEMORY" \
   --memory-swap "$CONTAINER_MEMORY_SWAP" \
   --cpus "$CONTAINER_CPUS" \
@@ -240,4 +252,5 @@ docker run -d \
   -e LOG_LEVEL=info \
   "$IMAGE"
 docker image prune -f
+systemctl restart actuarius-bot.service
 echo "Done. Logs: docker logs -f actuarius"

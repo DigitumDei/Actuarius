@@ -10,7 +10,10 @@ services:
     memswap_limit: ${ACTUARIUS_CONTAINER_MEMORY_SWAP:-2g}
     cpus: ${ACTUARIUS_CONTAINER_CPUS:-0.8}
     pids_limit: ${ACTUARIUS_CONTAINER_PIDS_LIMIT:-1024}
-    restart: unless-stopped
+    # No restart policy: on the production VM, systemd (actuarius-bot.service,
+    # ordered after the metadata-isolation firewall unit) owns container
+    # lifecycle. Local compose usage starts containers explicitly.
+    restart: "no"
 
 volumes:
   actuarius_data:
