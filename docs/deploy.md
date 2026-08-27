@@ -186,6 +186,41 @@ Optional variables map directly to the redeploy metadata keys and can stay blank
 
 After `terraform apply`, reboot or re-fetch `/var/redeploy.sh` from metadata so the new metadata keys reach the container.
 
+### MemPalace binary upgrades and rollback
+
+Treat a MemPalace binary upgrade as a data migration. Coordination schema
+migrations are lazy: the new schema may not be written until the first
+coordination request. Once that happens, rolling back only the container image
+is unsafe because an older binary may not be able to write to the migrated
+SQLite tables.
+
+Before deploying an image with a newer MemPalace version:
+
+1. Record the currently deployed Actuarius image SHA.
+2. Stop `actuarius-bot.service` so the local and remote palaces have no writers.
+3. Run `sync`, then snapshot the persistent data disk. The snapshot is the
+   rollback boundary and must contain each palace's `storage.sqlite3` and
+   `lancedb/` directory from the same point in time.
+4. Start the bot again if the new image is not being deployed immediately.
+
+After deploying, verify the loopback federation server through the IAP tunnel:
+
+```bash
+curl -H "Authorization: Bearer <TOKEN>" http://127.0.0.1:8765/v1/info
+```
+
+Confirm the expected `server_version` and capabilities. For releases that add
+federated coordination, the capability list must contain `coordination`; an
+unknown `mempalace_task_get` should return `found: false`, not a capability
+error.
+
+Rollback is a paired operation: deploy the recorded old image **and** restore
+the matching pre-upgrade data-disk snapshot. Never run the old binary against a
+palace after the new binary has opened its coordination store. Existing token
+files without a `scopes` field remain unrestricted; if scopes are added, note
+that an empty array deliberately grants nothing and unknown or misspelled token
+fields fail closed.
+
 ## Adding a new env var
 
 **Non-secret config** — three places:
