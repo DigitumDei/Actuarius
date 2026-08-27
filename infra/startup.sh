@@ -311,6 +311,7 @@ cat > "$FIREWALL_UNIT" <<EOF
 Description=Actuarius metadata-server isolation (requires Docker chains)
 Requires=docker.service
 After=docker.service
+PartOf=docker.service
 Before=actuarius-bot.service
 
 [Service]
@@ -327,6 +328,7 @@ cat > "$BOT_UNIT" <<EOF
 Description=Actuarius bot container lifecycle (owned by systemd)
 Requires=docker.service actuarius-firewall.service
 After=docker.service actuarius-firewall.service
+PartOf=docker.service
 
 [Service]
 Type=simple

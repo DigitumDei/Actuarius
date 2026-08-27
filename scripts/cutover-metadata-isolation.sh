@@ -2,10 +2,12 @@
 # One-time cutover to the systemd-owned container lifecycle with metadata
 # isolation (security review 2026-08-24, finding C-1).
 #
-# Run ON THE VM (IAP SSH) AFTER `terraform apply` has published the new
-# env-startup-script metadata and BEFORE the first reboot. Until this runs,
-# the legacy container still carries `unless-stopped` and would auto-start
-# unprotected at boot — rebooting before this cutover completes is unsafe.
+# Run ON THE VM (IAP SSH) after the two reviewed script payloads have been
+# published with the non-stopping `gcloud compute instances add-metadata`
+# command documented in docs/deploy.md, and BEFORE any full Terraform apply
+# or reboot. Until this runs, the legacy container still carries
+# `unless-stopped` and would auto-start unprotected at boot — rebooting before
+# this cutover completes is unsafe.
 #
 # Ordered fail-closed preconditions:
 #   1. Docker daemon must answer (`docker info`). An unreachable daemon is
@@ -32,8 +34,8 @@ MDS="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
 # Release identity — SHA-256 of infra/startup.sh and scripts/redeploy.sh at
 # the reviewed commit this script ships with. Update both together with any
 # change to those files.
-EXPECTED_STARTUP_SHA256="73ca09fec39d3334d81487403785dce96e94b3f9b5c077cdaefe33865e26fdf3"
-EXPECTED_REDEPLOY_SHA256="e7e869b55b3f12e03a624cb7eea9247667f1ae6e27b341a9617684603c480d00"
+EXPECTED_STARTUP_SHA256="ec74a0c4c7e01ea94f37dbd73552bab8751018e7d21cae30cfc1109649fe2a80"
+EXPECTED_REDEPLOY_SHA256="ff039d7aaba92e3e5a05241f465be0995950890d72eab7a1843ddbfceeda85cb"
 
 fail() {
   echo "FATAL: $*" >&2
@@ -51,7 +53,7 @@ trap 'rm -f "$TMP_STARTUP" "$TMP_REDEPLOY"' EXIT
 fetch_and_hash() {
   local url="$1" out="$2" expected="$3" label="$4" actual
   curl -sf -m 10 -H "Metadata-Flavor: Google" "$url" -o "$out" \
-    || fail "could not fetch $label metadata (has 'terraform apply' been run?)"
+    || fail "could not fetch $label metadata (have the reviewed payloads been published?)"
   actual=$(sha256sum "$out" | awk '{print $1}')
   [ -n "$expected" ] || fail "expected hash for $label is not configured"
   [ "$actual" = "$expected" ] \

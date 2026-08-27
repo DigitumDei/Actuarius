@@ -702,6 +702,7 @@ describe("boot-path enforcement wiring", () => {
     const text = scriptText();
 
     expect(text).toContain("Requires=docker.service");
+    expect(text.match(/PartOf=docker\.service/gu)).toHaveLength(2);
     expect(text).toContain("Before=actuarius-bot.service");
     expect(text).toContain('ExecStart=/bin/bash ${BOOTSTRAP}');
     expect(text).not.toContain("ExecStart=/usr/bin/bash");

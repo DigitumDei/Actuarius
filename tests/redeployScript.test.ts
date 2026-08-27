@@ -15,6 +15,10 @@ type RunResult = {
   systemctlLog: string;
 };
 
+type RunOptions = {
+  unitsInstalled?: boolean;
+};
+
 const repoRoot = process.cwd();
 const scriptPath = join(repoRoot, "scripts", "redeploy.sh");
 
@@ -122,17 +126,20 @@ exit 0
 `;
 }
 
-function createSystemctlMock(logPath: string): string {
+function createSystemctlMock(logPath: string, unitsInstalled: boolean): string {
   return `#!/usr/bin/env bash
 for arg in "$@"; do
   printf '%s ' "$arg" >> ${shellSingleQuote(logPath)}
 done
 printf '\\n' >> ${shellSingleQuote(logPath)}
+if [ "\${1:-}" = cat ] && [ ${unitsInstalled ? "true" : "false"} = false ]; then
+  return 1
+fi
 exit 0
 `;
 }
 
-function runRedeploy(metadata: Metadata, secrets: Secrets = baseSecrets): RunResult {
+function runRedeploy(metadata: Metadata, secrets: Secrets = baseSecrets, options: RunOptions = {}): RunResult {
   const tempDir = mkdtempSync(join(tmpdir(), "redeploy-test-"));
   tempDirs.push(tempDir);
 
@@ -148,7 +155,7 @@ function runRedeploy(metadata: Metadata, secrets: Secrets = baseSecrets): RunRes
     asBashFunction("docker", createDockerMock(toBashPath(dockerLogPath))),
     asBashFunction("mkdir", createNoopMock(toBashPath(mkdirLogPath), "mkdir")),
     asBashFunction("chown", createNoopMock(toBashPath(chownLogPath), "chown")),
-    asBashFunction("systemctl", createSystemctlMock(toBashPath(systemctlLogPath)))
+    asBashFunction("systemctl", createSystemctlMock(toBashPath(systemctlLogPath), options.unitsInstalled ?? true))
   ].join("\n"));
 
   const bashExecutable = process.platform === "win32"
@@ -187,6 +194,18 @@ describe("scripts/redeploy.sh auth validation", () => {
     expect(result.dockerLog).not.toContain("--restart");
     expect(result.dockerLog).not.toMatch(/\nrun\n/);
     expect(result.systemctlLog).toContain("restart actuarius-bot.service");
+  });
+
+  it("fails before replacing the legacy container when the systemd units are not installed", () => {
+    const result = runRedeploy(baseMetadata, {
+      ...baseSecrets,
+      "actuarius-gh-token": "gh-token",
+    }, { unitsInstalled: false });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("complete the metadata-isolation cutover and reboot");
+    expect(result.systemctlLog).toContain("cat actuarius-firewall.service actuarius-bot.service");
+    expect(result.dockerLog).toBe("");
   });
 
   it("applies safe default container resource limits", () => {
