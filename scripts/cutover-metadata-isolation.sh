@@ -32,7 +32,7 @@ MDS="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
 # Release identity — SHA-256 of infra/startup.sh and scripts/redeploy.sh at
 # the reviewed commit this script ships with. Update both together with any
 # change to those files.
-EXPECTED_STARTUP_SHA256="83d8cfe62d74a140e1a936ad942370a3834bba0d3a6185479433bdba19b92122"
+EXPECTED_STARTUP_SHA256="73ca09fec39d3334d81487403785dce96e94b3f9b5c077cdaefe33865e26fdf3"
 EXPECTED_REDEPLOY_SHA256="e7e869b55b3f12e03a624cb7eea9247667f1ae6e27b341a9617684603c480d00"
 
 fail() {

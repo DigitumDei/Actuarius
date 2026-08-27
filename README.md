@@ -247,6 +247,14 @@ Infrastructure is managed via Terraform (`infra/`). VM instance metadata is the 
 
 SSH into the VM and run the helper script. **After `terraform apply`**, the local `/var/redeploy.sh` is stale — reboot or re-fetch it from metadata first:
 
+> **One-time upgrade gate:** if the existing production container still uses
+> Docker restart policy `unless-stopped`, do not reboot or redeploy yet. Run
+> `scripts/cutover-metadata-isolation.sh` on the VM first, using the exact
+> reviewed checkout that supplied the Terraform metadata. The script verifies
+> both payload hashes, changes the policy to `no`, stops the legacy container,
+> and only then declares reboot safe. See [docs/deploy.md](docs/deploy.md#mandatory-one-time-metadata-isolation-cutover)
+> for the required `gcloud compute scp` and SSH commands.
+
 ```bash
 # Re-fetch redeploy.sh from fresh metadata after terraform apply
 META="http://metadata.google.internal/computeMetadata/v1/instance/attributes"

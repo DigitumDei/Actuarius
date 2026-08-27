@@ -143,6 +143,31 @@ docker_user_first_target() {
     | grep -E '^[[:space:]]*[0-9]+[[:space:]]' | head -n 1 | awk '{print $2}'
 }
 
+# First referenced managed generation anywhere in DOCKER-USER. A rule above
+# it may itself be drift, but the referenced generation must remain attached
+# until a complete replacement has been installed at rule 1.
+docker_user_first_managed_target() {
+  LC_ALL=C iptables -w -nL DOCKER-USER --line-numbers 2>/dev/null \
+    | awk -v a="$GEN_A" -v b="$GEN_B" \
+      '/^[[:space:]]*[0-9]+[[:space:]]/ && ($2 == a || $2 == b) { print $2; exit }'
+}
+
+managed_target_present() {
+  local target="$1"
+  LC_ALL=C iptables -w -nL DOCKER-USER --line-numbers 2>/dev/null \
+    | awk -v target="$target" \
+      '/^[[:space:]]*[0-9]+[[:space:]]/ && $2 == target { found=1 } END { exit !found }'
+}
+
+# Docker normally installs this as the first FORWARD rule. Accepting a
+# conditional or shadowed occurrence would let some container traffic bypass
+# DOCKER-USER entirely, so require the exact unconditional first rule.
+forward_jump_is_unconditional_first() {
+  local line
+  line=$(iptables -S FORWARD 2>/dev/null | grep -- '-A FORWARD ' | head -n 1 || true)
+  [ "$line" = "-A FORWARD -j DOCKER-USER" ]
+}
+
 # Rule 1 must be EXACTLY an unconditional jump. The -nL target column cannot
 # distinguish `-j GEN` from `-p tcp -j GEN` (both report target GEN), so the
 # fast path would accept conditional jumps that let UDP bypass policy. A
@@ -171,6 +196,24 @@ purge_rule() {
   return 0
 }
 
+# Remove every conditional or unconditional rule that targets a managed
+# generation. The rule is round-tripped from iptables -S so deletion uses its
+# canonical form. Callers keep another complete generation referenced until
+# this returns successfully.
+purge_managed_target() {
+  local target="$1" line spec i=0
+  while [ "$i" -lt 10 ]; do
+    line=$(iptables -S DOCKER-USER 2>/dev/null \
+      | grep -E -- "^-A DOCKER-USER (.* )?-j $target$" | head -n 1 || true)
+    [ -n "$line" ] || break
+    spec="${line#-A DOCKER-USER }"
+    iptables -w -D DOCKER-USER $spec 2>/dev/null || break
+    i=$((i + 1))
+  done
+  managed_target_present "$target" && return 1
+  return 0
+}
+
 legacy_rules_absent() {
   local spec
   for spec in "${LEGACY_SPECS[@]}"; do
@@ -191,10 +234,10 @@ build_generation() {
 }
 
 harden_metadata_access() {
-  local attempts=60 current target source spec
+  local attempts=60 first target source spec
   until systemctl is-active --quiet docker \
     && iptables -w -nL DOCKER-USER >/dev/null 2>&1 \
-    && iptables -S FORWARD 2>/dev/null | grep -q -- '-j DOCKER-USER'; do
+    && forward_jump_is_unconditional_first; do
     attempts=$((attempts - 1))
     if [ "$attempts" -le 0 ]; then
       fatal "docker/DOCKER-USER chain not ready in time"
@@ -203,8 +246,9 @@ harden_metadata_access() {
     sleep 1
   done
 
-  current="$(docker_user_first_target)"
-  case "$current" in
+  first="$(docker_user_first_target)"
+  source="$(docker_user_first_managed_target)"
+  case "$source" in
     "$GEN_A") source="$GEN_A"; target="$GEN_B" ;;
     "$GEN_B") source="$GEN_B"; target="$GEN_A" ;;
     *) source=""; target="$GEN_A" ;;
@@ -214,27 +258,30 @@ harden_metadata_access() {
     && content_ok "$source" \
     && jump_is_unconditional_first "$source" \
     && legacy_rules_absent \
-    && ! iptables -w -C DOCKER-USER -j "$target" 2>/dev/null; then
+    && ! managed_target_present "$target"; then
     return 0
   fi
 
-  # Rebuild into the unreferenced generation, then flip atomically.
+  # Keep the first referenced managed generation attached while rebuilding.
+  # Even when drift precedes it, removing that last policy before a successful
+  # replacement would create a new exposure window and leave it open forever
+  # if population failed.
   if [ -n "$source" ]; then
-    purge_rule DOCKER-USER -j "$target" || { fatal "cannot detach $target"; return 1; }
+    purge_managed_target "$target" || { fatal "cannot detach $target"; return 1; }
   else
-    purge_rule DOCKER-USER -j "$GEN_A" || { fatal "cannot detach $GEN_A"; return 1; }
-    purge_rule DOCKER-USER -j "$GEN_B" || { fatal "cannot detach $GEN_B"; return 1; }
+    purge_managed_target "$GEN_A" || { fatal "cannot detach $GEN_A"; return 1; }
+    purge_managed_target "$GEN_B" || { fatal "cannot detach $GEN_B"; return 1; }
   fi
   build_generation "$target" || { fatal "could not build $target"; return 1; }
 
-  if [ -n "$source" ]; then
+  if [ -n "$source" ] && [ "$first" = "$source" ]; then
     iptables -w -R DOCKER-USER 1 -j "$target" || { fatal "could not switch the jump"; return 1; }
   else
     iptables -w -I DOCKER-USER 1 -j "$target" || { fatal "could not install the jump"; return 1; }
   fi
 
   if [ -n "$source" ]; then
-    purge_rule DOCKER-USER -j "$source" || { fatal "cannot retire $source"; return 1; }
+    purge_managed_target "$source" || { fatal "cannot retire $source"; return 1; }
     iptables -w -F "$source" 2>/dev/null || true
     iptables -w -X "$source" 2>/dev/null || true
   fi
@@ -247,7 +294,7 @@ harden_metadata_access() {
   jump_is_unconditional_first "$target" || { fatal "jump is not an unconditional first rule after repair"; return 1; }
   legacy_rules_absent || { fatal "legacy metadata rules survive in DOCKER-USER"; return 1; }
   if [ -n "$source" ]; then
-    iptables -w -C DOCKER-USER -j "$source" 2>/dev/null && { fatal "$source jump survives after repair"; return 1; }
+    managed_target_present "$source" && { fatal "$source jump survives after repair"; return 1; }
   fi
   return 0
 }
@@ -283,6 +330,7 @@ After=docker.service actuarius-firewall.service
 
 [Service]
 Type=simple
+ExecStartPre=/bin/bash ${BOOTSTRAP}
 ExecStart=/usr/bin/docker start -a actuarius
 ExecStop=/usr/bin/docker stop -t 30 actuarius
 Restart=always

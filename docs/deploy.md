@@ -5,7 +5,7 @@ This document describes the deployment lifecycle for the Actuarius Discord bot o
 ## Overview
 
 ```
-terraform apply ──► updates metadata ──► reboot or curl ──► redeploy.sh ──► docker run
+terraform apply ──► updates metadata ──► guarded cutover (once) ──► reboot/redeploy ──► systemd starts container
 ```
 
 The bot runs as a Docker container on a single GCE VM. Infrastructure is managed with Terraform; the application is deployed via a helper script fetched from instance metadata.
@@ -22,6 +22,29 @@ terraform apply
 ```
 
 This writes all **non-secret** configuration into [instance metadata](https://cloud.google.com/compute/docs/metadata) — environment variables and the redeploy script itself (`env-redeploy-script`) — and creates empty [Secret Manager](https://cloud.google.com/secret-manager) containers for the secret values (see below). **It does not restart the VM or the container.**
+
+### Mandatory one-time metadata-isolation cutover
+
+When upgrading a VM whose existing `actuarius` container still has Docker
+restart policy `unless-stopped`, do **not** reboot or redeploy immediately after
+`terraform apply`. Docker could auto-start that legacy container before the
+metadata firewall exists. From the same reviewed checkout that was applied,
+copy and run the hash-bound cutover first:
+
+```bash
+gcloud compute scp scripts/cutover-metadata-isolation.sh \
+  actuarius-bot:/tmp/cutover-metadata-isolation.sh \
+  --project <YOUR_PROJECT_ID> --zone <ZONE> --tunnel-through-iap
+
+gcloud compute ssh actuarius-bot \
+  --project <YOUR_PROJECT_ID> --zone <ZONE> --tunnel-through-iap \
+  --command 'sudo bash /tmp/cutover-metadata-isolation.sh'
+```
+
+The script refuses to mutate the container unless both published metadata
+payload hashes match its reviewed release. Success means the restart policy is
+`no` and the legacy container is stopped; only then is it safe to reboot. New
+VMs and already-migrated stopped containers are handled idempotently.
 
 ## Secrets
 
@@ -60,7 +83,8 @@ curl -sf -H "Metadata-Flavor: Google" "$META/env-redeploy-script" | sudo tee /va
 sudo bash /var/redeploy.sh
 ```
 
-Or reboot the VM so `startup.sh` handles it:
+After the mandatory cutover above has completed (or on an already-migrated
+VM), reboot so `startup.sh` handles it:
 
 ```bash
 sudo reboot
@@ -71,7 +95,9 @@ sudo reboot
 1. Reads non-secret config from metadata (`env-discord-client-id`, `env-enable-codex-execution`, etc.) and secret values from Secret Manager (`actuarius-discord-token`, etc.) using the VM service account's access token
 2. Pulls the Docker image (`ghcr.io/digitumdei/actuarius:latest` or a specific SHA tag)
 3. Stops and removes the old container
-4. Starts a new container with the correct env vars mapped from metadata
+4. Creates a new `restart=no` container with the correct env vars
+5. Starts it through `actuarius-bot.service`, whose pre-start gate revalidates
+   metadata isolation every time the container starts
 
 Production deploys constrain the container to 700 MB RAM, 2 GB memory+swap,
 0.8 CPU, and 1024 tasks by default. These cgroup limits keep provider builds

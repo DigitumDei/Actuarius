@@ -90,6 +90,7 @@ type MockState = {
   chain: "up" | "down";
   chainReadyAfterProbes?: number;
   forwardJump: "up" | "down";
+  forwardRules?: string[];
   dockerUserRules?: string[];
   genARules?: string[];
   genBRules?: string[];
@@ -109,6 +110,7 @@ function runFirewall(state: MockState): RunResult & {
   const binStatePath = join(tempDir, "state.env");
   const mutationsPath = join(tempDir, "iptables-mutations.log");
   const duPath = join(tempDir, "docker-user.rules");
+  const forwardPath = join(tempDir, "forward.rules");
   const genAPath = join(tempDir, "gen-a.rules");
   const genBPath = join(tempDir, "gen-b.rules");
   const sleepsPath = join(tempDir, "sleeps.log");
@@ -117,7 +119,6 @@ function runFirewall(state: MockState): RunResult & {
   writeFileSync(binStatePath, [
     `CHAIN_STATE=${state.chain === "up" ? 1 : 0}`,
     `CHAIN_READY_AFTER_PROBES=${state.chainReadyAfterProbes ?? 0}`,
-    `FORWARD_JUMP=${state.forwardJump === "up" ? 1 : 0}`,
     `FAIL_FLUSH=${failures.flush ? 1 : 0}`,
     `FAIL_APPEND_TCP=${failures.appendTcp ? 1 : 0}`,
     `FAIL_APPEND_UDP=${failures.appendUdp ? 1 : 0}`,
@@ -133,6 +134,7 @@ function runFirewall(state: MockState): RunResult & {
     `JUMP_A_SPEC='${JUMP_A}'`,
     `JUMP_B_SPEC='${JUMP_B}'`,
     `DU_RULES_FILE=${toBashPath(duPath)}`,
+    `FORWARD_RULES_FILE=${toBashPath(forwardPath)}`,
     `GEN_A_FILE=${toBashPath(genAPath)}`,
     `GEN_B_FILE=${toBashPath(genBPath)}`,
     `MUTATIONS_FILE=${toBashPath(mutationsPath)}`,
@@ -141,6 +143,11 @@ function runFirewall(state: MockState): RunResult & {
   ].join("\n"));
   if (state.dockerUserRules?.length) {
     writeFileSync(duPath, `${state.dockerUserRules.join("\n")}\n`);
+  }
+  const forwardRules = state.forwardRules
+    ?? (state.forwardJump === "up" ? ["-j DOCKER-USER"] : []);
+  if (forwardRules.length) {
+    writeFileSync(forwardPath, `${forwardRules.join("\n")}\n`);
   }
   if (state.genARules?.length) {
     writeFileSync(genAPath, `${state.genARules.join("\n")}\n`);
@@ -210,11 +217,8 @@ function runFirewall(state: MockState): RunResult & {
     "      return 0 ;;",
     "    -S)",
     '      if [ "$chain" = "FORWARD" ]; then',
-    '        if [ "$FORWARD_JUMP" = 1 ]; then',
-    "          printf -- '-A FORWARD -j DOCKER-USER\\n'",
-    "        else",
-    "          printf -- '-P FORWARD ACCEPT\\n'",
-    "        fi",
+    '        [ -f "$FORWARD_RULES_FILE" ] && sed "s/^/-A FORWARD /" "$FORWARD_RULES_FILE"',
+    '        [ -s "$FORWARD_RULES_FILE" ] || printf -- \'-P FORWARD ACCEPT\\n\'',
     "        return 0",
     "      fi",
     '      if [ "$chain" = "DOCKER-USER" ]; then',
@@ -411,18 +415,33 @@ describe("infra/startup.sh metadata isolation engine", () => {
     });
 
     expect(result.status, result.stderr).toBe(0);
-    // First DOCKER-USER target is ACCEPT (not a generation) -> fresh-install
-    // path: both generations detached, A rebuilt, jump inserted at position
-    // 1, ahead of the broad accept. Absent rules purge silently.
+    // A remains attached while B is built. Only after B is inserted at rule
+    // 1 is the old A jump retired, so repair introduces no new exposure gap.
     expect(result.mutations).toEqual([
-      `-D ${JUMP_A}`,
-      `-F ${GEN_A}`,
+      `-F ${GEN_B}`,
       `-A ${TCP_RETURN_RULE}`,
       `-A ${UDP_RETURN_RULE}`,
       `-A ${DROP_RULE}`,
-      `-I ${JUMP_A}`,
+      `-I ${JUMP_B}`,
+      `-D ${JUMP_A}`,
+      `-F ${GEN_A}`,
     ]);
-    expect(result.dockerUser).toEqual([JUMP_A, BROAD_ACCEPT_RULE]);
+    expect(result.dockerUser).toEqual([JUMP_B, BROAD_ACCEPT_RULE]);
+  });
+
+  it("keeps a later managed jump attached when replacement population fails", () => {
+    const harmlessPrefix = "-p icmp -j ACCEPT";
+    const result = runFirewall({
+      chain: "up",
+      forwardJump: "up",
+      dockerUserRules: [harmlessPrefix, JUMP_A],
+      genARules: EXPECTED_CHAIN,
+      failures: { appendDrop: true },
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("could not build");
+    expect(result.dockerUser).toEqual([harmlessPrefix, JUMP_A]);
   });
 
   it("tolerates a broad metadata ACCEPT shadowed below the jump", () => {
@@ -611,6 +630,20 @@ describe("infra/startup.sh metadata isolation engine", () => {
     expect(result.stderr).toContain("not ready in time");
   });
 
+  it.each([
+    ["conditional", ["-p tcp -j DOCKER-USER"]],
+    ["shadowed", ["-j ACCEPT", "-j DOCKER-USER"]],
+  ])("fails closed when the FORWARD jump is %s", (_label, forwardRules) => {
+    const result = runFirewall({
+      chain: "up",
+      forwardJump: "up",
+      forwardRules,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("not ready in time");
+  });
+
   it("retries until the chains appear instead of giving up immediately", () => {
     const result = runFirewall({
       chain: "up",
@@ -644,13 +677,13 @@ describe("boot-path enforcement wiring", () => {
     expect(text).toContain("LC_ALL=C iptables -w -nL");
     expect(text).toContain('iptables -w -C "$gen" $spec');
     expect(text).toContain('iptables -w -C DOCKER-USER $spec');
-    // -S appears ONLY for the FORWARD readiness probe and the unconditional
-    // first-jump check (a conditionless jump serializes identically on every
-    // backend, so exact equality is safe there and only there).
-    const sUses = text.match(/iptables -S [^\n]*/gu) ?? [];
-    expect(sUses).toHaveLength(2);
-    expect(sUses[0]).toContain("-S DOCKER-USER");
-    expect(sUses[1]).toContain("-S FORWARD");
+    // -S appears only for exact first-jump checks and for round-tripping a
+    // canonical managed-jump rule during deletion.
+    const sUses = text.split(/\r?\n/u)
+      .filter((line) => !line.trimStart().startsWith("#") && line.includes("iptables -S "));
+    expect(sUses).toHaveLength(3);
+    expect(sUses.filter((line) => line.includes("-S FORWARD"))).toHaveLength(1);
+    expect(sUses.filter((line) => line.includes("-S DOCKER-USER"))).toHaveLength(2);
     expect(text).toContain("jump_is_unconditional_first");
   });
 
@@ -674,7 +707,11 @@ describe("boot-path enforcement wiring", () => {
     expect(text).not.toContain("ExecStart=/usr/bin/bash");
     expect(text).toContain("Requires=docker.service actuarius-firewall.service");
     expect(text).toContain("After=docker.service actuarius-firewall.service");
+    expect(text).toContain('ExecStartPre=/bin/bash ${BOOTSTRAP}');
     expect(text).toContain("ExecStart=/usr/bin/docker start -a actuarius");
+    expect(text.indexOf("ExecStart=/usr/bin/docker start -a actuarius")).toBeGreaterThan(
+      text.indexOf('ExecStartPre=/bin/bash ${BOOTSTRAP}')
+    );
     expect(text).toContain("Restart=always");
     expect(text).toContain("systemctl enable actuarius-firewall.service actuarius-bot.service");
     expect(text).toContain("systemctl daemon-reload");
