@@ -85,6 +85,14 @@ resource "google_compute_instance" "actuarius" {
 
   service_account {
     email  = google_service_account.actuarius_bot.email
+    # cloud-platform is deliberate: Secret Manager's REST API accepts no
+    # narrower OAuth scope for AccessSecretVersion, and redeploy.sh fetches
+    # secrets host-side with this token at deploy time. Least privilege is
+    # enforced by IAM instead (iam.tf: logWriter + secretAccessor only) and
+    # by infra/startup.sh, which routes container traffic through a dedicated
+    # ACTUARIUS-METADATA iptables chain jumped from the top of DOCKER-USER —
+    # installed before docker starts containers — so a compromised container
+    # can never reach the metadata server to mint a token at all.
     scopes = ["cloud-platform"]
   }
 

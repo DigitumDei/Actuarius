@@ -222,9 +222,12 @@ docker rm -f actuarius 2>/dev/null || true
 mkdir -p "$DATA_ROOT/home/appuser"
 chown -R 1001:1001 "$DATA_ROOT/home"
 
-docker run -d \
+# The container is CREATED but not started: systemd owns its lifecycle via
+# actuarius-bot.service, which is ordered after actuarius-firewall.service so
+# the bot can never run before metadata isolation is effective. No restart
+# policy — restarts on crash and at boot are systemd's job now.
+docker create \
   --name actuarius \
-  --restart unless-stopped \
   --memory "$CONTAINER_MEMORY" \
   --memory-swap "$CONTAINER_MEMORY_SWAP" \
   --cpus "$CONTAINER_CPUS" \
@@ -240,4 +243,5 @@ docker run -d \
   -e LOG_LEVEL=info \
   "$IMAGE"
 docker image prune -f
+systemctl restart actuarius-bot.service
 echo "Done. Logs: docker logs -f actuarius"
