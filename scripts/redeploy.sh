@@ -221,7 +221,12 @@ fi
 # reboot that installs these units. Refuse to remove that container if an
 # operator accidentally invokes the freshly published redeploy payload in the
 # gap: systemctl cannot start a unit that startup.sh has not installed yet.
-systemctl cat actuarius-firewall.service actuarius-bot.service >/dev/null 2>&1 || {
+# --no-pager is load-bearing: under sudo, `systemctl cat` starts a pager, and
+# with stdout on /dev/null the pager exits immediately and systemctl dies of
+# SIGPIPE (exit 141). That made this guard abort every deploy with the units
+# perfectly healthy. It went unnoticed because the guard was added in review
+# and the VM was still running a redeploy.sh from before it existed.
+systemctl cat --no-pager actuarius-firewall.service actuarius-bot.service >/dev/null 2>&1 || {
   echo "FATAL: Actuarius systemd units are not installed; complete the metadata-isolation cutover and reboot before redeploying" >&2
   exit 1
 }

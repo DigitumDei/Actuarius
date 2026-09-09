@@ -128,3 +128,23 @@ Fixing `type` then exposed two more forcing attributes on the same block, both w
 - Fix *all* the drifted attributes at once. These arrived one plan line at a time (`snapshot`, then boot `type`), which invites whack-a-mole. When a ForceNew attribute is stale, diff the whole resource against the live API before writing the fix.
 - Terraform prints `state -> config`. If the live value is on the left and the wrong value on the right, the config is stale, not the cloud.
 - Old disks are not cleaned up automatically. `actuarius-data` (10 GB `pd-standard`, 2026-03-17) is unattached and billed, and holds a stale March copy of production data. `actuarius-bot` (10 GB `pd-standard`, 2026-03-17) is the pre-migration boot disk, deliberately retained for rollback per its own description.
+
+## `systemctl cat` dies of SIGPIPE under sudo
+
+The systemd-unit guard at the top of `scripts/redeploy.sh` aborted a real deploy with `FATAL: Actuarius systemd units are not installed` while both units were installed, enabled, and active.
+
+The cause is not systemd state, it is the pager:
+
+```bash
+systemctl cat a.service b.service >/dev/null 2>&1   # exit 141 under sudo, 0 as the user
+```
+
+`141` is `128 + 13` — SIGPIPE. Under `sudo`, `systemctl cat` starts a pager; with stdout on `/dev/null` the pager exits immediately and systemctl is killed writing to the closed pipe. The guard read that as "units missing" and refused to deploy. `--no-pager` fixes it and preserves the check exactly: a bogus unit still exits `1`, including when only one of two units is bogus.
+
+This went unnoticed for two weeks because the guard was added during review of #205 and the VM was still running a `redeploy.sh` from *before* the guard existed — so its first execution ever was the deploy it blocked.
+
+**Rules:**
+- Any `systemctl` call inside a script needs `--no-pager` (or `SYSTEMD_PAGER=cat`). Redirecting to `/dev/null` is not enough, and the bug only appears under `sudo`, so it will not reproduce in an interactive check.
+- Treat exit `141` from any command as SIGPIPE, not as the command's own failure.
+- A guard that has never executed in production is untested code. When a script change adds one, exercise it on the box before relying on it — the metadata/`/var` staleness described above means "merged" is a long way from "running".
+
