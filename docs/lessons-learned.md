@@ -57,7 +57,7 @@ Do NOT delete `.npm-global` (the provider CLIs), auth files (`.codex/auth.json`,
 
 **`~/.cache/mempalace` is not a disposable cache.** MemPalace stores its downloaded ONNX embedding model there (~86 MB), derived from `XDG_CACHE_HOME` — the binary exposes no path override (only `MEMPALACE_EMBED_ALLOW_DOWNLOADS`, `MEMPALACE_EMBEDDING_PROFILE`, `MEMPALACE_STUB_EMBEDDINGS`). A blanket `rm -rf ~/.cache` in `docker/entrypoint.sh` was deleting it on every container start, costing an ~86 MB refetch and a slow first search each boot while reclaiming only ~8 MB of genuinely disposable cache. The entrypoint now prunes `~/.cache` entry-by-entry (`prune_cache_dir`) with `mempalace` preserved.
 
-**Rule:** When `/data` approaches full, reclaim caches + unused per-repo toolchains first. The durable fix is a larger disk — follow the snapshot-first resize procedure (confirm `prevent_destroy`, snapshot `actuarius-data`, bump `size` in `infra/compute.tf`, `terraform apply`, then `resize2fs`); a botched resize previously caused full data loss.
+**Rule:** When `/data` approaches full, reclaim caches + unused per-repo toolchains first. The durable fix is a larger disk — follow the snapshot-first resize procedure (confirm `prevent_destroy`, snapshot `actuarius-data-balanced-20260731`, bump `size` in `infra/compute.tf`, `terraform apply`, then `resize2fs`); a botched resize previously caused full data loss.
 
 ## Updating `scripts/redeploy.sh` requires a manual refresh on the VM
 
@@ -94,3 +94,22 @@ Cause: `scripts/redeploy.sh` ended with `docker image prune -f`, which only remo
 - `df -h /` on the VM is misleading: `/` is a read-only ~1.9 GB COS vroot. Check `df -h /mnt/stateful_partition` (or `docker info --format '{{.DockerRootDir}}'`) for image storage, and `df -h /mnt/disks/data` for the persistent data disk. `df -h /data` on the *host* legitimately returns nothing — `/data` is the in-container mount point; use `docker exec actuarius df -h /data`.
 - `redeploy.sh` now logs free space before pulling, prunes early when it is under 2560 MB, and prunes again after the new container starts. It always retains the deployed image plus one previous release (the rollback pair in [docs/deploy.md](deploy.md)) and never touches an image backing a container.
 - Pruning is best effort by design: a failure warns and the deploy continues. Reclaiming disk must never be able to fail a deploy.
+
+## The data disk config drifted from the disk that actually exists
+
+The 2026-07-31 `pd-standard` -> `pd-balanced` migration recreated the data disk from a snapshot under a **new name**, but `infra/compute.tf` was never updated. The config kept describing the March disk, so from then on every `terraform plan` wanted to replace the live production disk on three ForceNew attributes at once:
+
+| | `infra/compute.tf` | Live disk in state |
+|---|---|---|
+| `name` | `actuarius-data` | `actuarius-data-balanced-20260731` |
+| `type` | `pd-standard` | `pd-balanced` |
+| `snapshot` | unset (null) | `actuarius-data-pre-balanced-20260731-1530z` |
+
+This surfaced on 2026-09-09 as `- snapshot = "...actuarius-data-pre-balanced-20260731-1530z" -> null # forces replacement`, and the plan **errored** because `prevent_destroy` refused the destroy. That error was the guardrail working, not a bug to route around. Removing `prevent_destroy` would have destroyed the production data disk — and then failed anyway, because the orphaned `actuarius-data` disk still exists unattached and would have collided on the name.
+
+`snapshot` is the subtle one: it is ForceNew but also populated by refresh from the disk's immutable `sourceSnapshot`, so it records provenance the config never asked for and can never satisfy. It is now under `ignore_changes`.
+
+**Rules:**
+- After any migration that recreates a disk (type change, restore-from-snapshot, rename), update `infra/compute.tf` in the same change. State and reality diverging silently is how this stayed latent for six weeks.
+- A plan that wants to replace `google_compute_disk.data` is always a bug in the config, never a thing to apply. Reconcile the config to reality; never relax the lifecycle block to make a plan go through.
+- Old disks are not cleaned up automatically. `actuarius-bot` and `actuarius-data` (both 10 GB `pd-standard`, created 2026-03-17) are still present, unattached, and billed; `actuarius-data` holds a stale March copy of production data.

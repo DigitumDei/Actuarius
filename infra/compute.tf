@@ -1,6 +1,14 @@
 resource "google_compute_disk" "data" {
-  name = "actuarius-data"
-  type = "pd-standard"
+  # This is the disk that actually exists. The 2026-07-31 pd-standard ->
+  # pd-balanced migration recreated the data disk from a snapshot under a new
+  # name, and the config was not updated to match, so every plan wanted to
+  # replace the live disk on three ForceNew attributes (name, type, snapshot)
+  # and errored out against prevent_destroy. The old pd-standard
+  # `actuarius-data` disk still exists, unattached, so that replacement would
+  # also have collided on the name. Do not resolve a plan like that by
+  # relaxing the lifecycle block — reconcile the config to reality instead.
+  name = "actuarius-data-balanced-20260731"
+  type = "pd-balanced"
   zone = var.gcp_zone
   size = 10 # GB — separate persistent disk so /data survives VM deletion
 
@@ -9,6 +17,12 @@ resource "google_compute_disk" "data" {
     # A size increase is an in-place update and is unaffected; this only blocks
     # Terraform from tearing the disk down. See docs/lessons-learned.md.
     prevent_destroy = true
+
+    # `snapshot` records only that this disk was restored from
+    # actuarius-data-pre-balanced-20260731-1530z during that migration. It is
+    # ForceNew and gets populated by refresh, so leaving it unmanaged keeps a
+    # refresh from turning historical provenance into a destroy/recreate.
+    ignore_changes = [snapshot]
   }
 }
 
