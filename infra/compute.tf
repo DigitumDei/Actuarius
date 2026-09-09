@@ -36,7 +36,10 @@ resource "google_compute_instance" "actuarius" {
       # Container-Optimized OS: Docker pre-installed, minimal, auto-updates
       image = "projects/cos-cloud/global/images/family/cos-stable"
       size  = 10 # GB — stays within 10 GB remaining free tier quota
-      type  = "pd-standard"
+      # The live boot disk is actuarius-boot-balanced-20260801, cloned to
+      # pd-balanced from a snapshot on 2026-08-01. This said pd-standard until
+      # 2026-09-09, which made every plan want to replace the whole instance.
+      type = "pd-balanced"
     }
   }
 
@@ -114,4 +117,15 @@ resource "google_compute_instance" "actuarius" {
 
   # Allow Terraform to stop the VM to apply changes (e.g. metadata updates)
   allow_stopping_for_update = true
+
+  lifecycle {
+    # Boot-disk attributes are ForceNew, so config drifting from the live disk
+    # silently becomes "replace the VM". That nearly happened on 2026-09-09:
+    # the 2026-08-01 pd-balanced boot clone left `type` stale here, and unlike
+    # google_compute_disk.data this resource had no guard to catch it.
+    # Replacing the VM would destroy /mnt/stateful_partition (the Docker image
+    # cache) and re-run the boot path that decides whether to format the data
+    # disk. Make that failure loud. See docs/lessons-learned.md.
+    prevent_destroy = true
+  }
 }

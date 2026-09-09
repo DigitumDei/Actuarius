@@ -95,7 +95,7 @@ Cause: `scripts/redeploy.sh` ended with `docker image prune -f`, which only remo
 - `redeploy.sh` now logs free space before pulling, prunes early when it is under 2560 MB, and prunes again after the new container starts. It always retains the deployed image plus one previous release (the rollback pair in [docs/deploy.md](deploy.md)) and never touches an image backing a container.
 - Pruning is best effort by design: a failure warns and the deploy continues. Reclaiming disk must never be able to fail a deploy.
 
-## The data disk config drifted from the disk that actually exists
+## Both disk configs drifted from the disks that actually exist
 
 The 2026-07-31 `pd-standard` -> `pd-balanced` migration recreated the data disk from a snapshot under a **new name**, but `infra/compute.tf` was never updated. The config kept describing the March disk, so from then on every `terraform plan` wanted to replace the live production disk on three ForceNew attributes at once:
 
@@ -109,7 +109,15 @@ This surfaced on 2026-09-09 as `- snapshot = "...actuarius-data-pre-balanced-202
 
 `snapshot` is the subtle one: it is ForceNew but also populated by refresh from the disk's immutable `sourceSnapshot`, so it records provenance the config never asked for and can never satisfy. It is now under `ignore_changes`.
 
+### The same thing had happened to the boot disk
+
+The 2026-08-01 migration cloned the boot disk to `actuarius-boot-balanced-20260801` (`pd-balanced`, from snapshot `actuarius-boot-pre-balanced-20260801-0828z`) and likewise left `infra/compute.tf` saying `pd-standard`. That surfaced immediately after the data disk was fixed, as `~ type = "pd-balanced" -> "pd-standard" # forces replacement`.
+
+This one was **more dangerous**, because `boot_disk.initialize_params.type` is ForceNew on `google_compute_instance` and that resource had **no `prevent_destroy`**. Nothing would have stopped the apply from destroying and recreating the VM, which would have wiped `/mnt/stateful_partition` (the whole Docker image cache) and re-run the boot path that decides whether to `mkfs.ext4` the data disk. `prevent_destroy` has since been added to the instance.
+
 **Rules:**
-- After any migration that recreates a disk (type change, restore-from-snapshot, rename), update `infra/compute.tf` in the same change. State and reality diverging silently is how this stayed latent for six weeks.
-- A plan that wants to replace `google_compute_disk.data` is always a bug in the config, never a thing to apply. Reconcile the config to reality; never relax the lifecycle block to make a plan go through.
-- Old disks are not cleaned up automatically. `actuarius-bot` and `actuarius-data` (both 10 GB `pd-standard`, created 2026-03-17) are still present, unattached, and billed; `actuarius-data` holds a stale March copy of production data.
+- After any migration that recreates a disk (type change, restore-from-snapshot, rename), update `infra/compute.tf` in the same change. State and reality diverging silently is how these stayed latent for six weeks and five weeks respectively.
+- A plan that wants to replace `google_compute_disk.data` or `google_compute_instance.actuarius` is always a bug in the config, never a thing to apply. Reconcile the config to reality; never relax a lifecycle block to make a plan go through.
+- Fix *all* the drifted attributes at once. These arrived one plan line at a time (`snapshot`, then boot `type`), which invites whack-a-mole. When a ForceNew attribute is stale, diff the whole resource against the live API before writing the fix.
+- Terraform prints `state -> config`. If the live value is on the left and the wrong value on the right, the config is stale, not the cloud.
+- Old disks are not cleaned up automatically. `actuarius-data` (10 GB `pd-standard`, 2026-03-17) is unattached and billed, and holds a stale March copy of production data. `actuarius-bot` (10 GB `pd-standard`, 2026-03-17) is the pre-migration boot disk, deliberately retained for rollback per its own description.
