@@ -132,6 +132,51 @@ manually redeploy until it has installed and started the two systemd units.
 4. Creates a new `restart=no` container with the correct env vars
 5. Starts it through `actuarius-bot.service`, whose pre-start gate revalidates
    metadata isolation every time the container starts
+6. Reclaims disk by removing old `ghcr.io/digitumdei/actuarius:*` images
+
+### Image retention and disk space
+
+Each release image is about 1.5 GB and the Docker data-root partition is only
+5.7 GB, so three resident images fill it. `docker image prune -f` alone never
+helped: it only removes *dangling* images, never tagged `:<git-sha>` releases.
+A `docker pull` that runs out of room fails partway through
+(`failed to register layer: ... no space left on device`) after the old
+container has already been removed, which turns a routine deploy into an
+outage.
+
+`redeploy.sh` therefore:
+
+- Logs free space on the Docker data-root partition before pulling.
+- Prunes *before* the pull when free space is under 2560 MB (override with
+  `PRUNE_MIN_FREE_MB`), because that is the case where the pull would fail.
+- Prunes again after the new container has been created and started.
+- Always retains the image just deployed **and** the single most recent
+  previous release image — that pair is the rollback pair described under
+  [MemPalace binary upgrades and rollback](#mempalace-binary-upgrades-and-rollback).
+- Never removes an image that still backs an existing container.
+- Treats every pruning step as best effort: a failure logs a warning and the
+  deploy still succeeds.
+
+To retain more than one rollback image, remove old images manually instead of
+loosening this, and check free space first.
+
+### COS disk layout gotcha
+
+`df -h /` on the VM is misleading — `/` is a read-only ~1.9 GB COS vroot that
+has nothing to do with image storage. The numbers that matter:
+
+```bash
+# Where Docker actually stores images (/dev/sda1, ~5.7 GB total)
+df -h /mnt/stateful_partition
+docker info --format '{{.DockerRootDir}}'
+
+# The persistent data disk: /mnt/disks/data on the host, /data in the container
+df -h /mnt/disks/data
+```
+
+Running `df -h /data` **on the host** legitimately returns nothing; `/data` only
+exists inside the container. Check `/mnt/disks/data` from the host, or run
+`docker exec actuarius df -h /data`.
 
 Production deploys constrain the container to 700 MB RAM, 2 GB memory+swap,
 0.8 CPU, and 1024 tasks by default. These cgroup limits keep provider builds

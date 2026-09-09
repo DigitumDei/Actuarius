@@ -83,3 +83,14 @@ On 2026-07-07 a saved plan file (`terraform plan -out=...`) written into `infra/
 - Never write `terraform plan -out` files, state files, or state backups inside the repo tree; use a temp/scratch directory. `.gitignore` now blocks `tfplan*` as a backstop.
 - Prefer `git add <specific files>` over `git add -A` after infra work.
 - Secret values must not pass through Terraform at all: they live in Secret Manager (`infra/secrets.tf` creates containers; values added via `gcloud secrets versions add`), so tfvars, state, and plan files stay secret-free by construction.
+
+## `docker image prune -f` never reclaims old release images
+
+On 2026-09-08 the MemPalace v0.1.38 deploy died mid-pull with `failed to register layer: write /usr/lib/x86_64-linux-gnu/libclang-19.so.19: no space left on device`. The old container had already been removed, so this turned a routine deploy into an outage. Manual fix was `sudo docker rmi <old-sha-tag> ghcr.io/digitumdei/actuarius:latest`, which freed 1.5 GB.
+
+Cause: `scripts/redeploy.sh` ended with `docker image prune -f`, which only removes **dangling** images. Tagged `ghcr.io/digitumdei/actuarius:<git-sha>` releases were never touched, and each is ~1.5 GB against a 5.7 GB Docker data-root partition — three resident images fill it.
+
+**Rules:**
+- `df -h /` on the VM is misleading: `/` is a read-only ~1.9 GB COS vroot. Check `df -h /mnt/stateful_partition` (or `docker info --format '{{.DockerRootDir}}'`) for image storage, and `df -h /mnt/disks/data` for the persistent data disk. `df -h /data` on the *host* legitimately returns nothing — `/data` is the in-container mount point; use `docker exec actuarius df -h /data`.
+- `redeploy.sh` now logs free space before pulling, prunes early when it is under 2560 MB, and prunes again after the new container starts. It always retains the deployed image plus one previous release (the rollback pair in [docs/deploy.md](deploy.md)) and never touches an image backing a container.
+- Pruning is best effort by design: a failure warns and the deploy continues. Reclaiming disk must never be able to fail a deploy.
