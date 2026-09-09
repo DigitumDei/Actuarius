@@ -273,8 +273,22 @@ describe("scripts/redeploy.sh auth validation", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("complete the metadata-isolation cutover and reboot");
-    expect(result.systemctlLog).toContain("cat actuarius-firewall.service actuarius-bot.service");
+    expect(result.systemctlLog).toContain("cat --no-pager actuarius-firewall.service actuarius-bot.service");
     expect(result.dockerLog).toBe("");
+  });
+
+  it("passes --no-pager to the systemd unit guard", () => {
+    // Under sudo, `systemctl cat` starts a pager; with stdout on /dev/null the
+    // pager exits at once and systemctl dies of SIGPIPE (exit 141). That made
+    // the guard abort real deploys while the units were perfectly healthy.
+    const result = runRedeploy(baseMetadata, {
+      ...baseSecrets,
+      "actuarius-gh-token": "gh-token",
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.systemctlLog).toContain("cat --no-pager");
+    expect(result.systemctlLog).not.toMatch(/cat actuarius-firewall/u);
   });
 
   it("applies safe default container resource limits", () => {
