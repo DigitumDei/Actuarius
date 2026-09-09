@@ -226,6 +226,128 @@ systemctl cat actuarius-firewall.service actuarius-bot.service >/dev/null 2>&1 |
   exit 1
 }
 
+# --- Docker disk-space management ------------------------------------------
+# Container-Optimized OS keeps / on a read-only ~1.9G vroot; Docker's data-root
+# actually lives on /mnt/stateful_partition (~5.7G), so `df -h /` is misleading
+# here. Each release image is ~1.5G, and `docker image prune -f` only drops
+# DANGLING images -- tagged $BASE_IMAGE:<sha> releases accumulated until a pull
+# died mid-layer with "no space left on device", extending an outage because the
+# old container had already been removed.
+PRUNE_MIN_FREE_MB="${PRUNE_MIN_FREE_MB:-2560}"
+DOCKER_DATA_ROOT=""
+DOCKER_ROOT_FREE_MB=""
+
+docker_data_root() {
+  local root=""
+  root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null) || root=""
+  if [ -z "$root" ]; then
+    root="/var/lib/docker"
+  fi
+  printf '%s' "$root"
+}
+
+# COS ships a minimal userland (no awk), so the df row is split with the shell.
+# -P keeps long device names on one line; -m reports 1 MiB blocks.
+free_space_mb() {
+  local dir="$1" line
+  line=$(df -Pm "$dir" 2>/dev/null | sed -n '2p') || return 1
+  [ -n "$line" ] || return 1
+  # shellcheck disable=SC2086
+  set -- $line
+  [ "$#" -ge 4 ] || return 1
+  case "$4" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  printf '%s' "$4"
+}
+
+report_disk_space() {
+  DOCKER_DATA_ROOT=$(docker_data_root)
+  DOCKER_ROOT_FREE_MB=$(free_space_mb "$DOCKER_DATA_ROOT") || DOCKER_ROOT_FREE_MB=""
+  if [ -n "$DOCKER_ROOT_FREE_MB" ]; then
+    echo "Docker data root $DOCKER_DATA_ROOT: ${DOCKER_ROOT_FREE_MB} MB free"
+  else
+    echo "WARN: could not determine free space on the Docker data root ($DOCKER_DATA_ROOT)" >&2
+  fi
+  return 0
+}
+
+image_id_of() {
+  docker image inspect --format '{{.Id}}' "$1" 2>/dev/null || true
+}
+
+# Remove old $BASE_IMAGE:* images. Always retained: the image named by $1 (the
+# one being deployed), the single most recent other release image (the rollback
+# half of the pair documented in docs/deploy.md), and any image still backing an
+# existing container. Best effort only -- reclaiming disk must never fail a
+# deploy, so every step here swallows its own errors.
+prune_old_images() {
+  local keep_ref="$1"
+  local keep_id protected="" retained="" listing id ref resolved container_image
+  local rollback_kept=false removed=0
+
+  keep_id=$(image_id_of "$keep_ref")
+
+  while read -r container_image; do
+    if [ -z "$container_image" ]; then continue; fi
+    resolved=$(image_id_of "$container_image")
+    if [ -n "$resolved" ]; then
+      protected="$protected $resolved"
+    fi
+  done <<< "$(docker ps -a --format '{{.Image}}' 2>/dev/null || true)"
+
+  listing=$(docker images --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}' "$BASE_IMAGE" 2>/dev/null || true)
+  if [ -z "$listing" ]; then return 0; fi
+
+  # `docker images` lists newest first, so the first entry that is not the image
+  # being deployed is the rollback candidate.
+  while read -r id ref; do
+    if [ -z "$id" ] || [ -z "$ref" ]; then continue; fi
+    case "$ref" in *'<none>'*) continue ;; esac
+    # Pre-pull the deployed tag may not exist yet, so fall back to matching the
+    # reference itself before an id is known.
+    if [ -z "$keep_id" ] && [ "$ref" = "$keep_ref" ]; then keep_id="$id"; fi
+    if [ -n "$keep_id" ] && [ "$id" = "$keep_id" ]; then continue; fi
+    # A retained image can carry several tags (`:latest` and `:<sha>`); removing
+    # the second tag would only untag it, so skip every tag of a retained id.
+    case " $retained " in *" $id "*) continue ;; esac
+    if ! $rollback_kept; then
+      rollback_kept=true
+      retained="$retained $id"
+      echo "Retaining $ref for rollback"
+      continue
+    fi
+    # Image ids never contain spaces, so a padded substring match is enough
+    # and keeps this off grep, which COS does not guarantee.
+    case " $protected " in
+      *" $id "*)
+        echo "Keeping $ref: still referenced by a container"
+        continue
+        ;;
+    esac
+    if docker rmi "$ref" >/dev/null 2>&1; then
+      echo "Removed old image $ref"
+      removed=$((removed + 1))
+    else
+      echo "WARN: could not remove old image $ref" >&2
+    fi
+  done <<< "$listing"
+
+  if [ "$removed" -gt 0 ]; then
+    report_disk_space
+  fi
+  return 0
+}
+
+report_disk_space
+if [ -n "$DOCKER_ROOT_FREE_MB" ] && [ "$DOCKER_ROOT_FREE_MB" -lt "$PRUNE_MIN_FREE_MB" ]; then
+  # This is the exact failure mode from the 2026-09-08 outage: the pull needs
+  # room for a full extra image before it can register the new layers.
+  echo "Free space is below ${PRUNE_MIN_FREE_MB} MB; reclaiming space before the pull"
+  docker image prune -f >/dev/null 2>&1 || true
+  prune_old_images "$IMAGE" || true
+fi
+
 docker pull "$IMAGE"
 docker rm -f actuarius 2>/dev/null || true
 mkdir -p "$DATA_ROOT/home/appuser"
@@ -251,6 +373,10 @@ docker create \
   -e ASK_CONCURRENCY_PER_GUILD="$ASK_CONCURRENCY" \
   -e LOG_LEVEL=info \
   "$IMAGE"
-docker image prune -f
 systemctl restart actuarius-bot.service
+
+# Reclaim space only once the new container is created and started, so a
+# failed deploy still has every image it might need to fall back to.
+docker image prune -f >/dev/null 2>&1 || true
+prune_old_images "$IMAGE" || true
 echo "Done. Logs: docker logs -f actuarius"

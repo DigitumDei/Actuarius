@@ -15,8 +15,20 @@ type RunResult = {
   systemctlLog: string;
 };
 
+type DockerState = {
+  /** `<image id> <repo>:<tag>` lines, newest first, the way `docker images` orders them. */
+  images?: string[];
+  /** Image references reported by `docker ps -a --format '{{.Image}}'`. */
+  containerImages?: string[];
+  /** Make every `docker rmi` fail, to prove pruning cannot break a deploy. */
+  failRmi?: boolean;
+};
+
 type RunOptions = {
   unitsInstalled?: boolean;
+  docker?: DockerState;
+  /** MiB reported as available by `df -Pm` on the Docker data root. */
+  freeSpaceMb?: number;
 };
 
 const repoRoot = process.cwd();
@@ -108,15 +120,71 @@ function asBashFunction(name: string, script: string): string {
   return `${name}() {\n${body}\n}\n`;
 }
 
-function createDockerMock(logPath: string): string {
+function printfLines(values: readonly string[]): string {
+  if (values.length === 0) return "true";
+  return `printf '%s\\n' ${values.map(shellSingleQuote).join(" ")}`;
+}
+
+function createDockerMock(logPath: string, state: DockerState = {}): string {
+  const images = state.images ?? [];
+  const containerImages = state.containerImages ?? [];
+  // `docker image inspect --format '{{.Id}}' <ref>` resolves a tag or an id to
+  // an image id; an unknown reference must fail so the script treats it as
+  // absent rather than as something to protect.
+  const inspectCases = images.map((line) => {
+    const [id = "", ref = ""] = line.split(" ");
+    return `      ${shellSingleQuote(ref)} | ${shellSingleQuote(id)}) printf '%s\\n' ${shellSingleQuote(id)} ;;`;
+  });
+
   return `#!/usr/bin/env bash
 printf 'CALL' >> ${shellSingleQuote(logPath)}
 for arg in "$@"; do
   printf '\\n%q' "$arg" >> ${shellSingleQuote(logPath)}
 done
 printf '\\nEND\\n' >> ${shellSingleQuote(logPath)}
+case "\${1:-}" in
+  info) printf '%s\\n' '/mnt/stateful_partition/var/lib/docker' ;;
+  images) ${printfLines(images)} ;;
+  ps) ${printfLines(containerImages)} ;;
+  rmi) ${state.failRmi ? "return 1" : "true"} ;;
+  image)
+    if [ "\${2:-}" = inspect ]; then
+      ref=\${!#}
+      case "$ref" in
+${inspectCases.join("\n")}
+        *) return 1 ;;
+      esac
+    fi ;;
+esac
 exit 0
 `;
+}
+
+function createDfMock(freeSpaceMb: number): string {
+  return `#!/usr/bin/env bash
+printf '%s\\n' 'Filesystem 1M-blocks Used Available Use% Mounted on'
+printf '%s\\n' '/dev/sda1 5714 100 ${freeSpaceMb} 20% /mnt/stateful_partition'
+exit 0
+`;
+}
+
+/** Split the docker mock log into one array of arguments per call. */
+function dockerCalls(log: string): string[][] {
+  return log
+    .split("END\n")
+    .filter((block) => block.trim().startsWith("CALL"))
+    .map((block) =>
+      block
+        .trim()
+        .split("\n")
+        .slice(1)
+        .map((arg) => arg.trim())
+    );
+}
+
+/** Index of the first docker call whose leading arguments match `prefix`. */
+function firstCallIndex(log: string, prefix: readonly string[]): number {
+  return dockerCalls(log).findIndex((args) => prefix.every((value, index) => args[index] === value));
 }
 
 function createNoopMock(logPath: string, name: string): string {
@@ -152,7 +220,8 @@ function runRedeploy(metadata: Metadata, secrets: Secrets = baseSecrets, options
   const bashEnvPath = join(tempDir, "bash-env.sh");
   writeFileSync(bashEnvPath, [
     asBashFunction("curl", createCurlMock(metadata, secrets)),
-    asBashFunction("docker", createDockerMock(toBashPath(dockerLogPath))),
+    asBashFunction("docker", createDockerMock(toBashPath(dockerLogPath), options.docker ?? {})),
+    asBashFunction("df", createDfMock(options.freeSpaceMb ?? 4096)),
     asBashFunction("mkdir", createNoopMock(toBashPath(mkdirLogPath), "mkdir")),
     asBashFunction("chown", createNoopMock(toBashPath(chownLogPath), "chown")),
     asBashFunction("systemctl", createSystemctlMock(toBashPath(systemctlLogPath), options.unitsInstalled ?? true))
@@ -395,5 +464,118 @@ describe("scripts/redeploy.sh auth validation", () => {
 
     expect(result.status, result.stderr).toBe(0);
     expect(result.dockerLog).not.toContain("MEMPALACE_EMBEDDING_PROFILE=");
+  });
+});
+
+describe("scripts/redeploy.sh disk reclamation", () => {
+  const repo = "ghcr.io/digitumdei/actuarius";
+  const secrets: Secrets = { ...baseSecrets, "actuarius-gh-token": "gh-token" };
+
+  // Newest first, matching the order `docker images` prints.
+  const deployedFirst = [
+    `sha256:new ${repo}:test-tag`,
+    `sha256:prev ${repo}:latest`,
+    `sha256:old1 ${repo}:aaa111`,
+    `sha256:old2 ${repo}:bbb222`,
+  ];
+
+  function removedImages(log: string): string[] {
+    return dockerCalls(log)
+      .filter((args) => args[0] === "rmi")
+      .map((args) => args[1] ?? "");
+  }
+
+  it("logs Docker data-root free space before pulling", () => {
+    const result = runRedeploy(baseMetadata, secrets, { freeSpaceMb: 4096 });
+
+    expect(result.status, result.stderr).toBe(0);
+    // `df -h /` reports the read-only COS vroot, not the partition that holds
+    // the images, so the script has to ask Docker where its data-root lives.
+    expect(result.stdout).toContain("Docker data root /mnt/stateful_partition/var/lib/docker: 4096 MB free");
+    const infoIndex = firstCallIndex(result.dockerLog, ["info"]);
+    const pullIndex = firstCallIndex(result.dockerLog, ["pull"]);
+    expect(infoIndex).toBeGreaterThanOrEqual(0);
+    expect(pullIndex).toBeGreaterThan(infoIndex);
+  });
+
+  it("keeps the deployed image and one rollback image, removing older releases", () => {
+    const result = runRedeploy(baseMetadata, secrets, {
+      docker: { images: deployedFirst, containerImages: [`${repo}:test-tag`] },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    // `docker image prune -f` only drops dangling layers; these tagged release
+    // images are what actually filled /mnt/stateful_partition.
+    expect(removedImages(result.dockerLog)).toEqual([`${repo}:aaa111`, `${repo}:bbb222`]);
+    expect(result.stdout).toContain(`Retaining ${repo}:latest for rollback`);
+    const pullIndex = firstCallIndex(result.dockerLog, ["pull"]);
+    const rmiIndex = firstCallIndex(result.dockerLog, ["rmi"]);
+    expect(rmiIndex).toBeGreaterThan(pullIndex);
+    expect(result.systemctlLog).toContain("restart actuarius-bot.service");
+  });
+
+  it("never removes an image that still backs a container", () => {
+    const result = runRedeploy(baseMetadata, secrets, {
+      docker: {
+        images: deployedFirst,
+        containerImages: [`${repo}:test-tag`, "sha256:old1"],
+      },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(removedImages(result.dockerLog)).toEqual([`${repo}:bbb222`]);
+    expect(result.stdout).toContain(`Keeping ${repo}:aaa111: still referenced by a container`);
+  });
+
+  it("prunes before the pull when free space is below the threshold", () => {
+    // Pre-pull the new tag does not exist locally yet; the running container's
+    // image must survive so a failed pull can still be rolled back.
+    const result = runRedeploy(baseMetadata, secrets, {
+      freeSpaceMb: 900,
+      docker: {
+        images: [`sha256:prev ${repo}:latest`, `sha256:old1 ${repo}:aaa111`, `sha256:old2 ${repo}:bbb222`],
+        containerImages: [`${repo}:latest`],
+      },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("Free space is below 2560 MB");
+    const pullIndex = firstCallIndex(result.dockerLog, ["pull"]);
+    const rmiIndex = firstCallIndex(result.dockerLog, ["rmi"]);
+    expect(rmiIndex).toBeGreaterThanOrEqual(0);
+    expect(rmiIndex).toBeLessThan(pullIndex);
+    expect(removedImages(result.dockerLog)).not.toContain(`${repo}:latest`);
+  });
+
+  it("does not prune before the pull when free space is comfortable", () => {
+    const result = runRedeploy(baseMetadata, secrets, {
+      freeSpaceMb: 4096,
+      docker: { images: deployedFirst, containerImages: [`${repo}:test-tag`] },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).not.toContain("Free space is below");
+    expect(firstCallIndex(result.dockerLog, ["rmi"])).toBeGreaterThan(
+      firstCallIndex(result.dockerLog, ["pull"])
+    );
+  });
+
+  it("completes the deploy when image removal fails", () => {
+    const result = runRedeploy(baseMetadata, secrets, {
+      docker: { images: deployedFirst, containerImages: [`${repo}:test-tag`], failRmi: true },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain(`WARN: could not remove old image ${repo}:aaa111`);
+    expect(result.stdout).toContain("Done. Logs: docker logs -f actuarius");
+    expect(result.systemctlLog).toContain("restart actuarius-bot.service");
+  });
+
+  it("warns instead of failing when free space cannot be determined", () => {
+    const result = runRedeploy(baseMetadata, secrets, { freeSpaceMb: Number.NaN });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("could not determine free space on the Docker data root");
+    expect(result.dockerLog).toMatch(/\npull\n/);
   });
 });
