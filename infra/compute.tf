@@ -32,6 +32,12 @@ resource "google_compute_instance" "actuarius" {
   zone         = var.gcp_zone
 
   boot_disk {
+    # The live boot disk was cloned out-of-band on 2026-08-01 and attached with
+    # auto-delete off, so it survives VM deletion. Terraform defaults this to
+    # true and the attribute is ForceNew, so leaving it unset asked to replace
+    # the instance.
+    auto_delete = false
+
     initialize_params {
       # Container-Optimized OS: Docker pre-installed, minimal, auto-updates
       image = "projects/cos-cloud/global/images/family/cos-stable"
@@ -127,5 +133,13 @@ resource "google_compute_instance" "actuarius" {
     # cache) and re-run the boot path that decides whether to format the data
     # disk. Make that failure loud. See docs/lessons-learned.md.
     prevent_destroy = true
+
+    # The live boot disk was cloned from snapshot
+    # actuarius-boot-pre-balanced-20260801-0828z, so its sourceImage is empty
+    # and `image` reads back as null. Declaring the cos-stable family above is
+    # still the correct record of what this VM is built from, and is what a
+    # genuine rebuild would need — but the attribute is ForceNew and can never
+    # match a snapshot-cloned disk, so it must not drive a replacement.
+    ignore_changes = [boot_disk[0].initialize_params[0].image]
   }
 }
