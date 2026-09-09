@@ -113,7 +113,14 @@ This surfaced on 2026-09-09 as `- snapshot = "...actuarius-data-pre-balanced-202
 
 The 2026-08-01 migration cloned the boot disk to `actuarius-boot-balanced-20260801` (`pd-balanced`, from snapshot `actuarius-boot-pre-balanced-20260801-0828z`) and likewise left `infra/compute.tf` saying `pd-standard`. That surfaced immediately after the data disk was fixed, as `~ type = "pd-balanced" -> "pd-standard" # forces replacement`.
 
-This one was **more dangerous**, because `boot_disk.initialize_params.type` is ForceNew on `google_compute_instance` and that resource had **no `prevent_destroy`**. Nothing would have stopped the apply from destroying and recreating the VM, which would have wiped `/mnt/stateful_partition` (the whole Docker image cache) and re-run the boot path that decides whether to `mkfs.ext4` the data disk. `prevent_destroy` has since been added to the instance.
+This one was **more dangerous**, because `boot_disk.initialize_params.type` is ForceNew on `google_compute_instance` and that resource had **no `prevent_destroy`**.
+
+Fixing `type` then exposed two more forcing attributes on the same block, both worth knowing because neither is a value anyone ever wrote:
+
+- **`auto_delete` was never set in the config.** The cloned boot disk is attached with auto-delete off, but Terraform defaults the attribute to `true` and it is ForceNew — so an *absent* attribute was asking to replace the VM. It is now pinned to `false`, which is also the safer setting: the boot disk survives VM deletion.
+- **`image` can never match a snapshot-cloned disk.** The live boot disk has an empty `sourceImage` because it came from `actuarius-boot-pre-balanced-20260801-0828z`, so `image` reads back as null while the config declares the `cos-stable` family. That is the same shape as the data disk's `snapshot` problem, mirrored, and it is handled the same way — the declaration stays (it documents what the VM is built from, and a genuine rebuild needs it) but it sits under `ignore_changes`.
+
+**Rule:** on a resource whose disks were cloned out-of-band, an attribute you never wrote can still force replacement. Diff the whole block against the live API — an omitted attribute carrying a ForceNew default is invisible until the plan prints it. Nothing would have stopped the apply from destroying and recreating the VM, which would have wiped `/mnt/stateful_partition` (the whole Docker image cache) and re-run the boot path that decides whether to `mkfs.ext4` the data disk. `prevent_destroy` has since been added to the instance.
 
 **Rules:**
 - After any migration that recreates a disk (type change, restore-from-snapshot, rename), update `infra/compute.tf` in the same change. State and reality diverging silently is how these stayed latent for six weeks and five weeks respectively.
