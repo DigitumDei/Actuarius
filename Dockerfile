@@ -39,13 +39,13 @@ WORKDIR /app
 # No auth required — public release assets are unauthenticated. Keep the
 # checksums in sync with the release assets when upgrading this version.
 RUN curl -fsSL \
-      https://github.com/DigitumDei/mempalace-rs/releases/download/v0.1.38-nightly.f6528d0aae12836b3e6afce6aa1db19de64cb491/mempalace-mcp-linux-x86_64 \
+      https://github.com/DigitumDei/mempalace-rs/releases/download/v0.1.39-nightly.b995a6f905ba804219b0e635a5591aa3efd78f16/mempalace-mcp-linux-x86_64 \
       -o /usr/local/bin/mempalace-mcp \
     && curl -fsSL \
-      https://github.com/DigitumDei/mempalace-rs/releases/download/v0.1.38-nightly.f6528d0aae12836b3e6afce6aa1db19de64cb491/mempalace-cli-linux-x86_64 \
+      https://github.com/DigitumDei/mempalace-rs/releases/download/v0.1.39-nightly.b995a6f905ba804219b0e635a5591aa3efd78f16/mempalace-cli-linux-x86_64 \
       -o /usr/local/bin/mempalace-cli \
-    && echo "26702a7a13e3e4e2b187cd636b4c34eadd923b492e675fd3e425dba2fff9cefa  /usr/local/bin/mempalace-mcp" | sha256sum -c - \
-    && echo "0d4e0f7fa5483ce341b8077c692c0113ff8941b3746234fff270377a074de36e  /usr/local/bin/mempalace-cli" | sha256sum -c - \
+    && echo "27665cc52f10b2793aaf54a29d9c5ffb7cd7af30654699b14ee664352924d983  /usr/local/bin/mempalace-mcp" | sha256sum -c - \
+    && echo "1495326ad27b57737e64b143724e2046eced3d59ff3dc4821546354d1faf30f6  /usr/local/bin/mempalace-cli" | sha256sum -c - \
     && chmod 0755 /usr/local/bin/mempalace-mcp /usr/local/bin/mempalace-cli
 
 ENV NODE_ENV=production
