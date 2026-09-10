@@ -170,11 +170,17 @@ Fix, which does not touch the cloud at all:
 terraform state rm google_compute_disk.boot
 ```
 
-Undo, if it ever needs managing again:
+Undo, if it ever needs managing again. This is a sequence, not a single command: `terraform import` writes into state only, and [requires the resource block to already exist in the configuration](https://developer.hashicorp.com/terraform/cli/commands/import). Importing before the config exists just errors.
+
+1. Add a `google_compute_disk "boot"` resource to `infra/compute.tf` describing the live disk — `name = "actuarius-boot-balanced-20260801"`, `type = "pd-balanced"`, `zone`, `size = 10`, `prevent_destroy`, and `snapshot` under `ignore_changes`. `google_compute_disk.data` is the working template.
+2. Change the instance's `boot_disk` to reference it — `source = google_compute_disk.boot.self_link` — instead of `initialize_params`. Declaring both is the contradiction that caused this in the first place.
+3. Import into state:
 
 ```bash
-terraform import google_compute_disk.boot   projects/actuarius-488510/zones/us-central1-a/disks/actuarius-boot-balanced-20260801
+terraform import google_compute_disk.boot projects/actuarius-488510/zones/us-central1-a/disks/actuarius-boot-balanced-20260801
 ```
+
+4. Plan, and do not apply until it reports **no changes** for both the disk and the instance. Step 2 restructures `boot_disk` on a live instance, so budget a round of reconciling ForceNew attributes against the API the way the drift entries above describe. `prevent_destroy` on the instance means a mistake here errors instead of recreating the VM.
 
 **Rules:**
 - A one-shot migration resource must be removed from **both** the config and the state in the same change. Removing it from config alone converts it into a pending destroy of live infrastructure.
