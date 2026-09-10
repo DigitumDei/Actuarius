@@ -113,16 +113,25 @@ export function parseArgs(argv: string[]): ToolArgs {
   return args;
 }
 
-async function resolveToken(tokenFile: string): Promise<string> {
+interface ResolvedToken {
+  token: string;
+  name: string;
+}
+
+async function resolveToken(tokenFile: string): Promise<ResolvedToken> {
   if (existsSync(tokenFile)) {
     const parsed = JSON.parse(await readFile(tokenFile, "utf8")) as unknown;
     const entries = Array.isArray(parsed) ? parsed.filter(isRecord) : [];
     const usable = (candidate: Record<string, unknown> | undefined): candidate is Record<string, unknown> & { token: string } =>
       candidate !== undefined && candidate.enabled !== false && typeof candidate.token === "string";
     // Prefer the unrestricted local token; a scoped peer token would hide wings
-    // and silently under-copy.
+    // and silently under-copy. Its name is the hub identity, needed to avoid
+    // double-prefixing `added_by` on the copied drawers.
     const entry = entries.find((candidate) => candidate.name === "actuarius-local" && usable(candidate)) ?? entries.find(usable);
-    if (entry && typeof entry.token === "string") return entry.token;
+    if (entry && typeof entry.token === "string") {
+      const name = typeof entry.name === "string" && entry.name.length > 0 ? entry.name : "actuarius-local";
+      return { token: entry.token, name };
+    }
     throw new Error("No enabled token found in " + tokenFile + "; refusing to rotate a live token file");
   }
   const token = randomBytes(32).toString("base64url");
@@ -131,7 +140,7 @@ async function resolveToken(tokenFile: string): Promise<string> {
     encoding: "utf8",
     mode: 0o600
   });
-  return token;
+  return { token, name: "migrator" };
 }
 
 function startHub(args: ToolArgs, palace: string, bind: string, homeDir: string, logger: pino.Logger): ChildProcess {
@@ -196,7 +205,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   const sandboxHome = await mkdtemp(join(tmpdir(), "mempalace-migrate-home-"));
   await mkdir(join(sandboxHome, ".mempalace"), { recursive: true });
-  const token = await resolveToken(args.tokenFile);
+  const { token, name: identity } = await resolveToken(args.tokenFile);
   const fromUrl = "http://" + FROM_BIND;
   const toUrl = "http://" + TO_BIND;
 
@@ -213,6 +222,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       fromBaseUrl: fromUrl,
       toBaseUrl: toUrl,
       token,
+      identity,
       logger: logger as unknown as MigrationLogger,
       dryRun: args.dryRun
     });

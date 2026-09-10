@@ -63,6 +63,14 @@ export interface MigratePalaceDataOptions {
   fromBaseUrl: string;
   toBaseUrl: string;
   token: string;
+  /**
+   * Name of the token presented to the target hub. The hub stores
+   * `{identity}:{claimed}` when `claimed` differs from this name, and drawers
+   * written through the source hub already carry that prefix, so it must be
+   * stripped before re-posting (see `normalizeAddedBy`). When omitted the
+   * `added_by` value is forwarded unchanged.
+   */
+  identity?: string;
   fetchImpl?: typeof fetch;
   logger?: Logger | MigrationLogger;
   dryRun?: boolean;
@@ -207,6 +215,53 @@ function kgRowKey(row: MigratedKgRow): string {
   return [row.subject, row.predicate, row.object, row.valid_from ?? "", row.valid_to ?? ""].join("\u0000");
 }
 
+function kgTripleKey(row: MigratedKgRow): string {
+  return [row.subject, row.predicate, row.object].join("\u0000");
+}
+
+/**
+ * Group rows by their canonical triple and order each group oldest first.
+ *
+ * `/v1/kg/facts/invalidate` ends whichever fact for the triple is currently
+ * active, and `/v1/kg/facts` is a no-op while the triple is active. A triple
+ * that was invalidated and later re-added therefore has to be replayed as
+ * add→invalidate→add: copying the current row first and replaying the expired
+ * row's invalidation afterwards would end the fact that is true now.
+ */
+export function groupKgRowsByTriple(rows: MigratedKgRow[]): MigratedKgRow[][] {
+  const groups = new Map<string, MigratedKgRow[]>();
+  for (const row of rows) {
+    const key = kgTripleKey(row);
+    const group = groups.get(key);
+    if (group) group.push(row);
+    else groups.set(key, [row]);
+  }
+  for (const group of groups.values()) {
+    group.sort((a, b) => (a.valid_from ?? "").localeCompare(b.valid_from ?? ""));
+  }
+  return [...groups.values()];
+}
+
+/**
+ * Strip a single leading `<identity>:` from an `added_by` value before posting
+ * it back to a hub authenticated as `identity`.
+ *
+ * The hub derives the stored author as `{identity}:{claimed}` whenever the
+ * claimed value differs from the token identity. A drawer that was written
+ * through the source hub already holds that prefixed value, so forwarding it
+ * verbatim would double the prefix (`identity:identity:author`). Removing one
+ * occurrence restores the original claim; when only the identity is left the
+ * field is omitted so the hub stores the bare identity.
+ */
+export function normalizeAddedBy(addedBy: string | null | undefined, identity: string | undefined): string | undefined {
+  if (addedBy === null || addedBy === undefined || addedBy.length === 0) return undefined;
+  if (!identity) return addedBy;
+  const prefix = identity + ":";
+  const stripped = addedBy.startsWith(prefix) ? addedBy.slice(prefix.length) : addedBy;
+  if (stripped.length === 0 || stripped === identity) return undefined;
+  return stripped;
+}
+
 /**
  * Collect KG facts by walking every entity reachable from the seed entities.
  * `GET /v1/kg/timeline` is capped and cannot page, and there is no entity-list
@@ -259,23 +314,37 @@ async function copyDrawer(
   toBaseUrl: string,
   token: string,
   drawer: MigratedDrawer,
-  dryRun: boolean
+  dryRun: boolean,
+  identity: string | undefined
 ): Promise<"copied" | "present" | "error"> {
   if (dryRun) return "copied";
-  const response = await apiFetch(fetchImpl, "POST", endpoint(toBaseUrl, "/v1/drawers"), token, {
+  const payload: Record<string, unknown> = {
     wing: drawer.wing,
     room: drawer.room,
     content: drawer.content,
     source_file: drawer.source_file ?? null,
-    added_by: drawer.added_by ?? null,
     drawer_id: drawer.id,
     operation_id: "migrate:drawer:" + drawer.id
-  });
-  // The idempotency receipt makes a replay of this exact migration succeed.
-  // A 409 is a near-duplicate under a different id, which means the content
-  // is already present on the target; treat it as converged, not a failure.
+  };
+  const addedBy = normalizeAddedBy(drawer.added_by, identity);
+  if (addedBy !== undefined) payload.added_by = addedBy;
+
+  const response = await apiFetch(fetchImpl, "POST", endpoint(toBaseUrl, "/v1/drawers"), token, payload);
   if (response.status === 200 || response.status === 201) return "copied";
-  if (response.status === 409) return "present";
+  if (response.status === 409) {
+    const body = isRecord(response.body) ? response.body : {};
+    const code = typeof body.code === "string" ? body.code : "";
+    // Both near-duplicates and reused operation ids return 409. Only a
+    // `duplicate` whose matches include this drawer id proves the same drawer
+    // is already present; anything else means the memory did not land and
+    // must be reported, not silently counted as converged.
+    if (code === "duplicate") {
+      const matches = Array.isArray(body.matches) ? body.matches : [];
+      if (matches.some((match) => isRecord(match) && match.id === drawer.id)) return "present";
+      throw new Error("POST /v1/drawers for " + drawer.id + " was rejected as a near-duplicate under a different id");
+    }
+    throw new Error("POST /v1/drawers for " + drawer.id + " failed with 409 " + (code || "conflict"));
+  }
   throw new Error("POST /v1/drawers for " + drawer.id + " failed with HTTP " + response.status);
 }
 
@@ -288,12 +357,16 @@ async function copyKgFact(
 ): Promise<void> {
   if (dryRun) return;
   const factKey = row.subject + "\u0000" + row.predicate + "\u0000" + row.object;
+  // A triple can have several rows (it was invalidated and later re-added).
+  // The hub hashes `valid_from` into the add request and rejects an operation
+  // id reused with a different body, so each row needs its own stable id.
+  const rowKey = factKey + "\u0000" + (row.valid_from ?? "") + "\u0000" + (row.valid_to ?? "");
   const response = await apiFetch(fetchImpl, "POST", endpoint(toBaseUrl, "/v1/kg/facts"), token, {
     subject: row.subject,
     predicate: row.predicate,
     object: row.object,
     valid_from: row.valid_from ?? null,
-    operation_id: "migrate:kg:" + factKey
+    operation_id: "migrate:kg:" + rowKey
   });
   if (response.status !== 200 && response.status !== 201) {
     throw new Error("POST /v1/kg/facts for " + factKey + " failed with HTTP " + response.status);
@@ -339,7 +412,7 @@ export async function migratePalaceData(options: MigratePalaceDataOptions): Prom
         summary.drawersNotFound += 1;
         continue;
       }
-      const result = await copyDrawer(fetchImpl, options.toBaseUrl, options.token, drawer, dryRun);
+      const result = await copyDrawer(fetchImpl, options.toBaseUrl, options.token, drawer, dryRun, options.identity);
       if (result === "copied") summary.drawersCopied += 1;
       else summary.drawersAlreadyPresent += 1;
     } catch (error) {
@@ -354,14 +427,19 @@ export async function migratePalaceData(options: MigratePalaceDataOptions): Prom
 
   const entities = collectKgEntities(events);
   const rows = await collectKgRows(fetchImpl, options.fromBaseUrl, options.token, entities);
-  for (const row of rows) {
-    try {
-      await copyKgFact(fetchImpl, options.toBaseUrl, options.token, row, dryRun);
-      summary.kgFactsCopied += 1;
-      if (row.valid_to) summary.kgFactsInvalidated += 1;
-    } catch (error) {
-      summary.errors += 1;
-      logger.warn({ fact: row.subject + " " + row.predicate + " " + row.object, error: describeError(error) }, "KG fact migration failed");
+  // Replay each triple's history oldest first so an invalidation always lands
+  // before the add that supersedes it.
+  const groups = groupKgRowsByTriple(rows);
+  for (const group of groups) {
+    for (const row of group) {
+      try {
+        await copyKgFact(fetchImpl, options.toBaseUrl, options.token, row, dryRun);
+        summary.kgFactsCopied += 1;
+        if (row.valid_to) summary.kgFactsInvalidated += 1;
+      } catch (error) {
+        summary.errors += 1;
+        logger.warn({ fact: row.subject + " " + row.predicate + " " + row.object, error: describeError(error) }, "KG fact migration failed");
+      }
     }
   }
   logger.info({ facts: summary.kgFactsCopied, invalidated: summary.kgFactsInvalidated }, "KG facts migrated");

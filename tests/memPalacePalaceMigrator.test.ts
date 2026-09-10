@@ -4,7 +4,9 @@ import {
   collectDrawerIds,
   collectKgEntities,
   collectKgRows,
+  groupKgRowsByTriple,
   migratePalaceData,
+  normalizeAddedBy,
   type ChangeEventRecord,
   type MigratedKgRow
 } from "../src/services/memPalacePalaceMigrator.js";
@@ -19,11 +21,16 @@ function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
+interface DrawerPostResult {
+  status: number;
+  body: unknown;
+}
+
 interface FetchPlan {
   changePages?: ChangeEventRecord[][];
   drawers?: Record<string, unknown>;
   kg?: Record<string, MigratedKgRow[]>;
-  drawerPostStatus?: number;
+  drawerPost?: (body: Record<string, unknown>) => DrawerPostResult;
 }
 
 function makeFetch(plan: FetchPlan) {
@@ -53,7 +60,10 @@ function makeFetch(plan: FetchPlan) {
       return json(200, { entity, facts, count: facts.length });
     }
     if (method === "POST" && path === "/v1/drawers") {
-      return json(plan.drawerPostStatus ?? 200, { success: true });
+      const result = plan.drawerPost
+        ? plan.drawerPost((body ?? {}) as Record<string, unknown>)
+        : { status: 200, body: { success: true } };
+      return json(result.status, result.body);
     }
     if (method === "POST" && path === "/v1/kg/facts") {
       return json(200, { success: true });
@@ -162,12 +172,41 @@ describe("memPalacePalaceMigrator", () => {
     });
   });
 
-  it("treats a duplicate (HTTP 409) as already present rather than a failure", async () => {
-    const { fetchImpl } = makeFetch({ ...planWithTwoPages(), drawerPostStatus: 409 });
+  it("counts a near-duplicate that names the same drawer id as already present", async () => {
+    const { fetchImpl } = makeFetch({
+      ...planWithTwoPages(),
+      drawerPost: () => ({
+        status: 409,
+        body: { code: "duplicate", message: "near-duplicate", matches: [{ id: "d1", wing: "wing_x", room: "general" }] }
+      })
+    });
     const summary = await migratePalaceData({ fromBaseUrl: SOURCE, toBaseUrl: TARGET, token: "token", fetchImpl });
     expect(summary.drawersCopied).toBe(0);
     expect(summary.drawersAlreadyPresent).toBe(1);
     expect(summary.errors).toBe(0);
+  });
+
+  it("reports a near-duplicate under a different id as an error, not as present", async () => {
+    const { fetchImpl } = makeFetch({
+      ...planWithTwoPages(),
+      drawerPost: () => ({
+        status: 409,
+        body: { code: "duplicate", message: "near-duplicate", matches: [{ id: "some-other-drawer", wing: "wing_x", room: "general" }] }
+      })
+    });
+    const summary = await migratePalaceData({ fromBaseUrl: SOURCE, toBaseUrl: TARGET, token: "token", fetchImpl });
+    expect(summary.drawersAlreadyPresent).toBe(0);
+    expect(summary.errors).toBe(1);
+  });
+
+  it("reports an operation_id_conflict as an error rather than swallowing it", async () => {
+    const { fetchImpl } = makeFetch({
+      ...planWithTwoPages(),
+      drawerPost: () => ({ status: 409, body: { code: "operation_id_conflict", message: "reused operation id" } })
+    });
+    const summary = await migratePalaceData({ fromBaseUrl: SOURCE, toBaseUrl: TARGET, token: "token", fetchImpl });
+    expect(summary.drawersAlreadyPresent).toBe(0);
+    expect(summary.errors).toBe(1);
   });
 
   it("writes nothing in dry-run mode", async () => {
@@ -190,5 +229,88 @@ describe("memPalacePalaceMigrator", () => {
     expect(summary.errors).toBe(1);
     expect(summary.drawersCopied).toBe(0);
     expect(summary.kgFactsCopied).toBe(2);
+  });
+
+  it("replays an invalidated-then-re-added triple in ascending valid_from order", async () => {
+    const triple = { subject: "A", predicate: "rel", object: "B" };
+    const { fetchImpl, log } = makeFetch({
+      changePages: [
+        [
+          { event_type: "kg_fact_added", occurred_at: "2026-01-01T00:00:00Z", entity_id: "t1", details: triple },
+          { event_type: "kg_fact_added", occurred_at: "2026-01-02T00:00:00Z", entity_id: "t2", details: triple }
+        ]
+      ],
+      // Fed newest-first to prove ordering does not depend on walk order.
+      kg: {
+        A: [
+          { ...triple, valid_from: "2022-01-01", valid_to: null },
+          { ...triple, valid_from: "2020-01-01", valid_to: "2021-01-01" }
+        ],
+        B: []
+      }
+    });
+    const summary = await migratePalaceData({ fromBaseUrl: SOURCE, toBaseUrl: TARGET, token: "token", fetchImpl });
+
+    const targetCalls = log.filter((entry) => entry.method === "POST" && entry.url.startsWith(TARGET) && entry.url.includes("/v1/kg/"));
+    const sequence = targetCalls.map((entry) => {
+      const body = (entry.body ?? {}) as Record<string, unknown>;
+      if (entry.url.endsWith("/invalidate")) return "invalidate:" + String(body.ended);
+      return "add:" + String(body.valid_from);
+    });
+    expect(sequence).toEqual(["add:2020-01-01", "invalidate:2021-01-01", "add:2022-01-01"]);
+
+    const adds = targetCalls.filter((entry) => entry.url.endsWith("/v1/kg/facts"));
+    const operationIds = adds.map((entry) => (entry.body as Record<string, unknown>).operation_id);
+    expect(new Set(operationIds).size).toBe(2);
+    expect(summary.kgFactsCopied).toBe(2);
+    expect(summary.errors).toBe(0);
+  });
+
+  it("strips the migration identity prefix from added_by before re-posting", async () => {
+    const { fetchImpl, log } = makeFetch({
+      changePages: [
+        [
+          { event_type: "drawer_added", occurred_at: "x", entity_id: "d1" },
+          { event_type: "drawer_added", occurred_at: "x", entity_id: "d2" },
+          { event_type: "drawer_added", occurred_at: "x", entity_id: "d3" }
+        ]
+      ],
+      drawers: {
+        d1: { id: "d1", wing: "wing_x", room: "general", content: "one", added_by: "actuarius-local:claude" },
+        d2: { id: "d2", wing: "wing_x", room: "general", content: "two", added_by: "actuarius-local" },
+        d3: { id: "d3", wing: "wing_x", room: "general", content: "three", added_by: "claude" }
+      }
+    });
+    await migratePalaceData({ fromBaseUrl: SOURCE, toBaseUrl: TARGET, token: "token", fetchImpl, identity: "actuarius-local" });
+    const posts = log.filter((entry) => entry.method === "POST" && entry.url === TARGET + "/v1/drawers");
+    const byId = new Map(posts.map((entry) => [(entry.body as Record<string, unknown>).drawer_id, entry.body as Record<string, unknown>]));
+    expect(byId.get("d1")?.added_by).toBe("claude");
+    expect(byId.get("d2")).not.toHaveProperty("added_by");
+    expect(byId.get("d3")?.added_by).toBe("claude");
+  });
+});
+
+describe("normalizeAddedBy", () => {
+  it("strips one identity prefix and drops an identity-only author", () => {
+    expect(normalizeAddedBy("actuarius-local:claude", "actuarius-local")).toBe("claude");
+    expect(normalizeAddedBy("actuarius-local", "actuarius-local")).toBeUndefined();
+    expect(normalizeAddedBy("actuarius-local:actuarius-local", "actuarius-local")).toBeUndefined();
+    expect(normalizeAddedBy("claude", "actuarius-local")).toBe("claude");
+    expect(normalizeAddedBy(null, "actuarius-local")).toBeUndefined();
+    expect(normalizeAddedBy("claude", undefined)).toBe("claude");
+  });
+});
+
+describe("groupKgRowsByTriple", () => {
+  it("groups by triple and sorts each group oldest first", () => {
+    const rows: MigratedKgRow[] = [
+      { subject: "A", predicate: "rel", object: "B", valid_from: "2022-01-01", valid_to: null },
+      { subject: "B", predicate: "other", object: "C", valid_from: "2019-01-01", valid_to: null },
+      { subject: "A", predicate: "rel", object: "B", valid_from: "2020-01-01", valid_to: "2021-01-01" }
+    ];
+    const groups = groupKgRowsByTriple(rows);
+    expect(groups).toHaveLength(2);
+    const ab = groups.find((group) => group[0]?.subject === "A")!;
+    expect(ab.map((row) => row.valid_from)).toEqual(["2020-01-01", "2022-01-01"]);
   });
 });
