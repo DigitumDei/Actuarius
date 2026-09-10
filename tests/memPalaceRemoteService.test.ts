@@ -1,6 +1,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import pino from "pino";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../src/config.js";
@@ -16,8 +18,15 @@ vi.mock("../src/utils/spawnCollect.js", () => ({
   spawnCollect: vi.fn()
 }));
 
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: vi.fn() };
+});
+
 const { spawnCollect } = await import("../src/utils/spawnCollect.js");
 const mockSpawnCollect = vi.mocked(spawnCollect);
+const { spawn } = await import("node:child_process");
+const mockSpawn = vi.mocked(spawn);
 const logger = pino({ level: "silent" });
 
 function makeConfig(root: string): AppConfig {
@@ -58,7 +67,6 @@ function makeConfig(root: string): AppConfig {
     mempalaceBinaryPath: "/usr/local/bin/mempalace-mcp",
     mempalaceCliPath: "/usr/local/bin/mempalace-cli",
     mempalaceRemoteEnabled: true,
-    mempalaceRemotePalacePath: join(root, "remote-palace"),
     mempalaceRemoteBind: "127.0.0.1:9876",
     mempalaceRemoteUrl: "http://127.0.0.1:9876",
     mempalaceRemoteName: "actuarius",
@@ -126,9 +134,8 @@ describe("MemPalaceRemoteService", () => {
     expect(wing).toBe("wing_actuarius");
     const projectConfig = readFileSync(join(checkoutPath, "mempalace.yaml"), "utf8");
     expect(projectConfig).toContain("wing: wing_actuarius");
-    expect(projectConfig).toContain("  mode: combined");
-    expect(projectConfig).toContain("  remote: actuarius");
-    expect(projectConfig).toContain("  write: remote");
+    expect(projectConfig).toContain("  mode: local");
+    expect(projectConfig).not.toContain("write: remote");
 
     const globalConfig = JSON.parse(readFileSync(join(homeDir, ".mempalace", "config.json"), "utf8"));
     expect(globalConfig.palace_path).toBe(config.mempalacePalacePath);
@@ -137,29 +144,20 @@ describe("MemPalaceRemoteService", () => {
       token_file: config.mempalaceRemoteTokenFile
     });
     expect(globalConfig.server.checkouts[wing]).toBe(checkoutPath);
-    // The remote entry carries the literal token: provider CLIs spawn the
-    // mempalace MCP server with only its configured env block, so a token_env
-    // reference to the bot's runtime environment never resolves in agents
-    // (observed as HTTP 401 from the loopback remote in /ask requests).
-    expect(globalConfig.federation.remotes).toContainEqual(
-      expect.objectContaining({
-        name: "actuarius",
-        url: config.mempalaceRemoteUrl,
-        token: "test-token",
-        timeout_ms: 5000
-      })
-    );
-    expect(globalConfig.federation.wings[wing]).toEqual({ mode: "combined", remote: "actuarius", write: "remote" });
-    expect(globalConfig.federation.kg).toEqual({ mode: "combined", remote: "actuarius", write: "remote" });
-    expect(globalConfig.federation.default_mode).toBe("remote");
-    expect(globalConfig.federation.remotes[0]).not.toHaveProperty("token_env");
+    // The serve hub and the local agent share one palace, so this host must not
+    // define a remote pointing at itself: writes route local rather than back
+    // over loopback HTTP. Operators may still author remotes to other hosts.
+    expect(globalConfig.federation.remotes).toEqual([]);
+    expect(globalConfig.federation.wings[wing]).toEqual({ mode: "local" });
+    expect(globalConfig.federation.kg).toEqual({ mode: "local" });
+    expect(globalConfig.federation.default_mode).toBe("local");
 
     const tokenEntries = JSON.parse(readFileSync(config.mempalaceRemoteTokenFile, "utf8"));
     expect(tokenEntries[0]).toMatchObject({ name: "actuarius-local", token: "test-token", enabled: true });
     expect(readFileSync(join(checkoutPath, ".git", "info", "exclude"), "utf8")).toContain("mempalace.yaml");
   });
 
-  it("forces default_mode to remote, overriding a persisted local so all non-diary writes route to the shared palace", async () => {
+  it("forces default_mode to local, overriding a persisted remote so writes land in the shared palace directly", async () => {
     const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-defaultmode-"));
     const homeDir = join(root, "home");
     const config = makeConfig(root);
@@ -167,11 +165,11 @@ describe("MemPalaceRemoteService", () => {
     const checkoutPath = join(config.reposRootPath, repo.owner, repo.repo);
     mkdirSync(join(checkoutPath, ".git", "info"), { recursive: true });
     mkdirSync(join(homeDir, ".mempalace"), { recursive: true });
-    // The bot's old default "local" gets baked onto the persistent /data disk; it
-    // must not survive — the container routes every non-diary write remote.
+    // The previous two-palace design baked "remote" onto the persistent /data
+    // disk; it must not survive — the single shared palace is written directly.
     writeFileSync(
       join(homeDir, ".mempalace", "config.json"),
-      JSON.stringify({ federation: { default_mode: "local" } }),
+      JSON.stringify({ federation: { default_mode: "remote" } }),
       "utf8"
     );
 
@@ -179,7 +177,7 @@ describe("MemPalaceRemoteService", () => {
     await service.registerRepository(repo, checkoutPath);
 
     const globalConfig = JSON.parse(readFileSync(join(homeDir, ".mempalace", "config.json"), "utf8"));
-    expect(globalConfig.federation.default_mode).toBe("remote");
+    expect(globalConfig.federation.default_mode).toBe("local");
   });
 
   it("prunes stale bot-managed wing rules and checkouts, preserving operator-authored rules", async () => {
@@ -218,7 +216,7 @@ describe("MemPalaceRemoteService", () => {
     expect(globalConfig.federation.wings).toEqual({
       wing_custom: { mode: "local" },
       wing_tuned: { mode: "combined", remote: "actuarius", write: "remote", note: "keep me" },
-      [wing]: { mode: "combined", remote: "actuarius", write: "remote" }
+      [wing]: { mode: "local" }
     });
     expect(globalConfig.server.checkouts).toEqual({ [wing]: checkoutPath });
   });
@@ -233,7 +231,12 @@ describe("MemPalaceRemoteService", () => {
     mkdirSync(join(homeDir, ".mempalace"), { recursive: true });
     writeFileSync(
       join(homeDir, ".mempalace", "config.json"),
-      JSON.stringify({ federation: { kg: { mode: "local" } } }),
+      JSON.stringify({
+        federation: {
+          remotes: [{ name: "work", url: "https://palace.example" }],
+          kg: { mode: "combined", remote: "work", write: "local" }
+        }
+      }),
       "utf8"
     );
 
@@ -241,7 +244,10 @@ describe("MemPalaceRemoteService", () => {
     await service.registerRepository(repo, checkoutPath);
 
     const globalConfig = JSON.parse(readFileSync(join(homeDir, ".mempalace", "config.json"), "utf8"));
-    expect(globalConfig.federation.kg).toEqual({ mode: "local" });
+    expect(globalConfig.federation.kg).toEqual({ mode: "combined", remote: "work", write: "local" });
+    // Operator-authored remotes to other hosts survive; only the managed
+    // self-remote is dropped.
+    expect(globalConfig.federation.remotes).toEqual([{ name: "work", url: "https://palace.example" }]);
   });
 
   it("honors an existing repo MemPalace wing instead of overwriting it", async () => {
@@ -260,7 +266,7 @@ describe("MemPalaceRemoteService", () => {
     expect(readFileSync(join(checkoutPath, "mempalace.yaml"), "utf8")).toBe("wing: repo_defined_wing\n");
     const globalConfig = JSON.parse(readFileSync(join(homeDir, ".mempalace", "config.json"), "utf8"));
     expect(globalConfig.server.checkouts.repo_defined_wing).toBe(checkoutPath);
-    expect(globalConfig.federation.wings.repo_defined_wing).toEqual({ mode: "combined", remote: "actuarius", write: "remote" });
+    expect(globalConfig.federation.wings.repo_defined_wing).toEqual({ mode: "local" });
     expect(mockSpawnCollect).not.toHaveBeenCalled();
   });
 
@@ -268,6 +274,9 @@ describe("MemPalaceRemoteService", () => {
     const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-migrate-"));
     const homeDir = join(root, "home");
     const config = makeConfig(root);
+    // Force the generic-template fallback: with a real `mempalace-cli` present
+    // the mocked init would re-read the stale file instead of rewriting it.
+    config.mempalaceCliPath = join(root, "missing-mempalace-cli");
     const repo = makeRepo();
     const checkoutPath = join(config.reposRootPath, repo.owner, repo.repo);
     mkdirSync(join(checkoutPath, ".git", "info"), { recursive: true });
@@ -284,6 +293,41 @@ describe("MemPalaceRemoteService", () => {
     const projectConfig = readFileSync(join(checkoutPath, "mempalace.yaml"), "utf8");
     expect(projectConfig).toContain("wing: wing_actuarius");
     expect(projectConfig).not.toContain("wing_repo_digitumdei");
+  });
+
+  it("migrates a generated config that still routes writes to the old self remote", async () => {
+    const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-migrate-routing-"));
+    const homeDir = join(root, "home");
+    const config = makeConfig(root);
+    // Force the generic-template fallback: with a real `mempalace-cli` present
+    // the mocked init would re-read the stale file instead of rewriting it.
+    config.mempalaceCliPath = join(root, "missing-mempalace-cli");
+    const repo = makeRepo();
+    const checkoutPath = join(config.reposRootPath, repo.owner, repo.repo);
+    mkdirSync(join(checkoutPath, ".git", "info"), { recursive: true });
+    writeFileSync(
+      join(checkoutPath, "mempalace.yaml"),
+      [
+        "# Generated by Actuarius. Do not commit; this file routes repo memory to MemPalace.",
+        "wing: wing_actuarius",
+        "routing:",
+        "  mode: combined",
+        "  remote: actuarius",
+        "  write: remote",
+        "rooms: []",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const service = new MemPalaceRemoteService(config, logger, { homeDir });
+    const wing = await service.registerRepository(repo, checkoutPath);
+
+    expect(wing).toBe("wing_actuarius");
+    const projectConfig = readFileSync(join(checkoutPath, "mempalace.yaml"), "utf8");
+    expect(projectConfig).toContain("  mode: local");
+    expect(projectConfig).not.toContain("write: remote");
+    expect(projectConfig).not.toContain("remote: actuarius");
   });
 
   it("copies the main checkout config into worktrees instead of regenerating", async () => {
@@ -441,8 +485,8 @@ describe("MemPalaceRemoteService", () => {
     const globalConfig = JSON.parse(readFileSync(join(homeDir, ".mempalace", "config.json"), "utf8"));
     expect(globalConfig.server.checkouts[wingA]).toBe(checkoutA);
     expect(globalConfig.server.checkouts[wingB]).toBe(checkoutB);
-    expect(globalConfig.federation.wings[wingA]).toEqual({ mode: "combined", remote: "actuarius", write: "remote" });
-    expect(globalConfig.federation.wings[wingB]).toEqual({ mode: "combined", remote: "actuarius", write: "remote" });
+    expect(globalConfig.federation.wings[wingA]).toEqual({ mode: "local" });
+    expect(globalConfig.federation.wings[wingB]).toEqual({ mode: "local" });
 
     const tokenEntries = JSON.parse(readFileSync(config.mempalaceRemoteTokenFile, "utf8"));
     expect(tokenEntries.filter((entry: { name?: string }) => entry.name === "actuarius-local")).toHaveLength(1);
@@ -506,6 +550,49 @@ describe("MemPalaceRemoteService", () => {
       await service.stop();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("serves the shared local palace instead of a separate remote palace", async () => {
+    const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-serve-palace-"));
+    const homeDir = join(root, "home");
+    const config = makeConfig(root);
+    const cliPath = join(root, "mempalace-cli");
+    writeFileSync(cliPath, "", "utf8");
+    config.mempalaceCliPath = cliPath;
+
+    mockSpawn.mockReset();
+    const child = new EventEmitter() as unknown as Record<string, unknown> & EventEmitter;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdin = new PassThrough();
+    child.killed = false;
+    child.kill = vi.fn();
+    mockSpawn.mockReturnValue(child as never);
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const service = new MemPalaceRemoteService(config, logger, { homeDir });
+      await (service as unknown as { startServerProcess(): Promise<void> }).startServerProcess();
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        cliPath,
+        [
+          "--palace",
+          config.mempalacePalacePath,
+          "serve",
+          "--bind",
+          config.mempalaceRemoteBind,
+          "--token-file",
+          config.mempalaceRemoteTokenFile
+        ],
+        expect.objectContaining({ stdio: ["ignore", "pipe", "pipe"] })
+      );
+    } finally {
+      vi.unstubAllGlobals();
+      mockSpawn.mockReset();
     }
   });
 

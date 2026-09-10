@@ -158,7 +158,6 @@ const envSchema = z.object({
   // declared RSS budget.
   MEMPALACE_EMBEDDING_PROFILE: z.enum(["balanced", "low_cpu"]).default("low_cpu"),
   MEMPALACE_REMOTE_ENABLED: z.string().default("false").transform((value) => value === "true"),
-  MEMPALACE_REMOTE_PALACE_PATH: z.string().default("/data/mempalace/remote-palace"),
   MEMPALACE_REMOTE_BIND: z.string().default("127.0.0.1:8765"),
   MEMPALACE_REMOTE_URL: z.string().url("MEMPALACE_REMOTE_URL must be a valid URL").default("http://127.0.0.1:8765"),
   MEMPALACE_REMOTE_NAME: z.string().default("actuarius"),
@@ -209,7 +208,6 @@ if (rawConfig.MEMPALACE_ENABLED || rawConfig.MEMPALACE_REMOTE_ENABLED) {
   mkdirSync(rawConfig.MEMPALACE_PALACE_PATH, { recursive: true });
 }
 if (rawConfig.MEMPALACE_REMOTE_ENABLED) {
-  mkdirSync(rawConfig.MEMPALACE_REMOTE_PALACE_PATH, { recursive: true });
   mkdirSync(dirname(rawConfig.MEMPALACE_REMOTE_TOKEN_FILE), { recursive: true });
 }
 const githubCliConfigPath = resolve(rawConfig.REPOS_ROOT_PATH, "..", ".gh");
@@ -258,7 +256,6 @@ export const appConfig = {
   mempalaceCliPath: rawConfig.MEMPALACE_CLI_PATH,
   mempalaceEmbeddingProfile: rawConfig.MEMPALACE_EMBEDDING_PROFILE,
   mempalaceRemoteEnabled: rawConfig.MEMPALACE_REMOTE_ENABLED,
-  mempalaceRemotePalacePath: rawConfig.MEMPALACE_REMOTE_PALACE_PATH,
   mempalaceRemoteBind: rawConfig.MEMPALACE_REMOTE_BIND,
   mempalaceRemoteUrl: rawConfig.MEMPALACE_REMOTE_URL,
   mempalaceRemoteName: rawConfig.MEMPALACE_REMOTE_NAME,

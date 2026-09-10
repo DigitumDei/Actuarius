@@ -92,14 +92,15 @@ export function parseProjectConfigWing(configText: string): string | null {
   return null;
 }
 
-function renderGeneratedProjectConfig(wing: string, remoteName: string): string {
+function renderGeneratedProjectConfig(wing: string): string {
+  // Single-palace deployment: the serve hub and the local agent share one
+  // palace directory, so repo memory must route local (direct storage) rather
+  // than back over loopback HTTP to a self-referential remote.
   const lines = [
     GENERATED_HEADER,
     "wing: " + wing,
     "routing:",
-    "  mode: combined",
-    "  remote: " + remoteName,
-    "  write: remote",
+    "  mode: local",
     "rooms:"
   ];
   for (const room of DEFAULT_ROOMS) {
@@ -288,10 +289,18 @@ export class MemPalaceRemoteService {
       const wing = parseProjectConfigWing(contents);
       if (!wing) throw new MemPalaceRemoteConfigError("Existing MemPalace project config has no wing: " + existingPath);
       // Regenerate configs we previously generated under the old hashed wing
-      // naming; configs authored outside Actuarius are honored as-is.
+      // naming or the old self-referential remote routing; configs authored
+      // outside Actuarius are honored as-is.
       const expected = buildRepoMemoryWing(repo);
-      if (wing !== expected && contents.startsWith(GENERATED_HEADER)) {
-        this.logger.info({ repo: repo.fullName, oldWing: wing, wing: expected }, "Migrating generated MemPalace project config to new wing name");
+      const isGenerated = contents.startsWith(GENERATED_HEADER);
+      const staleRouting = contents.includes("write: remote");
+      if (isGenerated && (wing !== expected || staleRouting)) {
+        this.logger.info(
+          { repo: repo.fullName, oldWing: wing, wing: expected },
+          staleRouting
+            ? "Migrating generated MemPalace project config to local routing"
+            : "Migrating generated MemPalace project config to new wing name"
+        );
         return this.writeProjectConfig(repo, checkoutPath, primaryPath, allowInit, { overwrite: true });
       }
       return wing;
@@ -319,7 +328,7 @@ export class MemPalaceRemoteService {
       }
     }
     const wing = buildRepoMemoryWing(repo);
-    await writeFile(primaryPath, renderGeneratedProjectConfig(wing, this.config.mempalaceRemoteName), "utf8");
+    await writeFile(primaryPath, renderGeneratedProjectConfig(wing), "utf8");
     await this.ignoreGeneratedProjectConfig(checkoutPath);
     return wing;
   }
@@ -408,9 +417,14 @@ export class MemPalaceRemoteService {
   }
 
   /**
-   * True when a wing rule has exactly the shape this service writes, and can
-   * therefore be safely dropped once its wing is no longer tracked. Anything
-   * else is treated as operator-authored and preserved.
+   * True when a rule is the pre-consolidation self-remote rule this service
+   * used to write, and can therefore be safely dropped once its wing is no
+   * longer tracked. Anything else is treated as operator-authored and
+   * preserved.
+   *
+   * Only the old `combined`/`write: remote` shape is recognised: local rules
+   * are harmless under the shared-palace design (local is the default mode),
+   * so an operator's single-key `{ mode: "local" }` rule is never deleted.
    */
   private isManagedWingRule(rule: unknown): boolean {
     return (
@@ -423,7 +437,10 @@ export class MemPalaceRemoteService {
   }
 
   private async writeGlobalConfigOnce(): Promise<void> {
-    const remoteToken = await this.ensureToken();
+    // Ensure the token file exists (the serve hub authenticates federated
+    // peers with it); the token itself is no longer embedded in this config
+    // because local agents write directly to the shared palace.
+    await this.ensureToken();
     const configDir = join(this.homeDir, ".mempalace");
     const configPath = join(configDir, "config.json");
     await mkdir(configDir, { recursive: true });
@@ -437,40 +454,33 @@ export class MemPalaceRemoteService {
     for (const [wing, checkoutPath] of this.repoCheckouts.entries()) checkouts[wing] = checkoutPath;
 
     const federation = isRecord(current.federation) ? { ...current.federation } : {};
+    // The serve hub and the local agent share one palace, so this host must
+    // not define a remote pointing at itself. Preserve operator-authored
+    // remotes to other hosts, but drop the managed self remote so writes no
+    // longer bounce over loopback HTTP.
     const existingRemotes = Array.isArray(federation.remotes) ? federation.remotes.filter(isRecord) : [];
     const remotes = existingRemotes.filter((remote) => remote.name !== this.config.mempalaceRemoteName);
-    // The token must be a literal here, not a token_env reference: the
-    // mempalace MCP server is spawned by each provider CLI, and several CLIs
-    // launch MCP subprocesses with only their configured env block — the
-    // bot's runtime-set MEMPALACE_REMOTE_TOKEN never crosses that boundary,
-    // so agents got HTTP 401 from the loopback remote. This file is
-    // bot-managed, rewritten on boot, and chmod 0600 below.
-    remotes.push({
-      name: this.config.mempalaceRemoteName,
-      url: this.config.mempalaceRemoteUrl,
-      token: remoteToken,
-      timeout_ms: this.config.mempalaceRemoteTimeoutMs
-    });
 
     // Keep operator-authored wing rules, but drop bot-managed rules for wings
-    // we no longer track — each stale rule is a live combined-mode route to a
-    // wing that will never receive new content.
+    // we no longer track — each stale rule is a live route that will never
+    // receive new content. Tracked wings route local: the shared palace is the
+    // same store the serve hub exposes to federated peers.
     const existingWings = isRecord(federation.wings) ? federation.wings : {};
     const wings: Record<string, unknown> = {};
     for (const [wing, rule] of Object.entries(existingWings)) {
       if (!this.isManagedWingRule(rule)) wings[wing] = rule;
     }
     for (const wing of this.repoCheckouts.keys()) {
-      wings[wing] = { mode: "combined", remote: this.config.mempalaceRemoteName, write: "remote" };
+      wings[wing] = { mode: "local" };
     }
 
-    // Route the knowledge graph through the remote store so KG facts recorded
-    // by container agents are visible to federated peers. KG routing is a
+    // Route the knowledge graph to the same shared palace. KG routing is a
     // single global rule in mempalace (not per-wing); an operator-authored
-    // rule already present in the config is preserved.
-    const kg = isRecord(federation.kg)
+    // rule is preserved, but a rule this service previously wrote (the old
+    // self-referential remote) migrates to local.
+    const kg = isRecord(federation.kg) && !this.isManagedWingRule(federation.kg)
       ? federation.kg
-      : { mode: "combined", remote: this.config.mempalaceRemoteName, write: "remote" };
+      : { mode: "local" };
 
     const nextConfig = {
       ...current,
@@ -485,16 +495,13 @@ export class MemPalaceRemoteService {
       federation: {
         ...federation,
         remotes,
-        // Route every non-diary write to the shared (remote) palace: the container
-        // is ephemeral, so its knowledge must live on the canonical serve palace,
-        // not the agent's local store. Set unconditionally — deliberately unlike
-        // the preserve-operator pattern used for wings/kg above — because this is a
-        // hard policy ("all non-diary writes go remote"), and $HOME/.mempalace lives
-        // on the persistent /data disk, so a stale persisted "local" (or an operator
-        // "combined") would otherwise survive redeploys and silently defeat it.
-        // Diaries are always-local by the tool contract; repo wings and kg already
-        // write: remote, so only untracked wings change behavior here.
-        default_mode: "remote",
+        // One palace, two access paths: the VM's agents write directly to the
+        // local store while home-PC LLMs reach the same store through the serve
+        // hub. Set unconditionally so a stale persisted "remote"/"combined"
+        // (from the previous two-palace design) cannot survive redeploys and
+        // silently reintroduce the loopback loop. Diaries are always-local by
+        // the tool contract.
+        default_mode: "local",
         wings,
         kg
       }
@@ -587,13 +594,18 @@ export class MemPalaceRemoteService {
     }
   }
 
-  /** Spawn `mempalace-cli serve` and resolve once it reports healthy. Overridable in tests. */
+  /**
+   * Spawn `mempalace-cli serve` against the local palace and resolve once it
+   * reports healthy. The serve hub and the local MCP agent share this one
+   * palace directory, so the hub is the same store the VM writes to directly
+   * and home-PC peers reach over the network. Overridable in tests.
+   */
   protected async startServerProcess(): Promise<void> {
     if (this.server) return;
-    await mkdir(this.config.mempalaceRemotePalacePath, { recursive: true });
+    await mkdir(this.config.mempalacePalacePath, { recursive: true });
     const args = [
       "--palace",
-      this.config.mempalaceRemotePalacePath,
+      this.config.mempalacePalacePath,
       "serve",
       "--bind",
       this.config.mempalaceRemoteBind,
@@ -636,7 +648,7 @@ export class MemPalaceRemoteService {
       throw error;
     }
     this.logger.info(
-      { bind: this.config.mempalaceRemoteBind, url: this.config.mempalaceRemoteUrl, palacePath: this.config.mempalaceRemotePalacePath },
+      { bind: this.config.mempalaceRemoteBind, url: this.config.mempalaceRemoteUrl, palacePath: this.config.mempalacePalacePath },
       "MemPalace federation server ready"
     );
   }

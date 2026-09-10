@@ -220,14 +220,16 @@ volume. `docker logs actuarius` over SSH still works as a fallback.
 
 ## MemPalace Remote
 
-To run the local MemPalace MCP plus Actuarius' loopback remote repo store in production, set both Terraform switches:
+To run the local MemPalace MCP plus Actuarius' federation server in production, set both Terraform switches:
 
 ```hcl
 enable_mempalace        = true
 enable_mempalace_remote = true
 ```
 
-Optional variables map directly to the redeploy metadata keys and can stay blank to use app defaults: `mempalace_remote_url`, `mempalace_remote_bind`, `mempalace_remote_name`, `mempalace_remote_token`, `mempalace_remote_timeout_ms`, `mempalace_remote_mine_on_sync`, `mempalace_remote_mine_timeout_ms`, and `mempalace_remote_mine_batch_size`. If `mempalace_remote_token` is blank, Actuarius generates a token and persists it under `/data/mempalace/server_tokens.json`.
+Actuarius runs a single palace at `MEMPALACE_PALACE_PATH` (default `/data/mempalace/palace`). The VM's agents open it directly, while `mempalace-cli serve` exposes that same store on `MEMPALACE_REMOTE_BIND` for home-PC peers. There is no separate remote palace and no loopback remote, so no `MEMPALACE_REMOTE_PALACE_PATH` exists any more; a data disk from the two-palace era has an orphaned `/data/mempalace/remote-palace` directory that can be migrated and removed.
+
+Optional variables map directly to the redeploy metadata keys and can stay blank to use app defaults: `mempalace_remote_url`, `mempalace_remote_bind`, `mempalace_remote_name`, `mempalace_remote_token`, `mempalace_remote_timeout_ms`, `mempalace_remote_mine_on_sync`, `mempalace_remote_mine_timeout_ms`, and `mempalace_remote_mine_batch_size`. If `mempalace_remote_token` is blank, Actuarius generates a token and persists it under `/data/mempalace/server_tokens.json`. When migrating a two-palace VM, merge `/data/mempalace/remote-palace` into `/data/mempalace/palace` (`mempalace-cli` has no automatic merge) before removing the old directory.
 
 After `terraform apply`, reboot or re-fetch `/var/redeploy.sh` from metadata so the new metadata keys reach the container.
 
@@ -242,7 +244,7 @@ SQLite tables.
 Before deploying an image with a newer MemPalace version:
 
 1. Record the currently deployed Actuarius image SHA.
-2. Stop `actuarius-bot.service` so the local and remote palaces have no writers.
+2. Stop `actuarius-bot.service` so the palace has no writers.
 3. Run `sync`, then snapshot the persistent data disk. The snapshot is the
    rollback boundary and must contain each palace's `storage.sqlite3` and
    `lancedb/` directory from the same point in time.

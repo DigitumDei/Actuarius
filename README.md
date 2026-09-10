@@ -59,7 +59,7 @@ Copy `.env.example` to `.env` and set:
 - `DEEPSEEK_API_KEY` (required for OpenCode execution when not using stored OpenCode credentials)
 - `CLAUDE_CODE_OAUTH_TOKEN` (optional for local/manual runs, required by the production redeploy helper for non-interactive Claude auth)
 - `MEMPALACE_ENABLED` (default `false`, enables the local MemPalace MCP for agents)
-- `MEMPALACE_REMOTE_ENABLED` (default `false`, starts Actuarius' loopback MemPalace federation server and routes repo memory through it)
+- `MEMPALACE_REMOTE_ENABLED` (default `false`, starts Actuarius' MemPalace federation server, which serves the local palace to federated peers)
 - `MEMPALACE_REMOTE_URL` (default `http://127.0.0.1:8765`)
 - `MEMPALACE_REMOTE_TOKEN` (optional; generated and persisted if omitted)
 - `MEMPALACE_REMOTE_MINE_ON_SYNC` (default `true`, queues repo mining after connect/sync/checkouts)
@@ -128,12 +128,14 @@ record but intentionally does not remove the system package.
 
 ### MemPalace federation
 
-When both `MEMPALACE_ENABLED=true` and `MEMPALACE_REMOTE_ENABLED=true` are set, Actuarius runs two MemPalace stores:
+When both `MEMPALACE_ENABLED=true` and `MEMPALACE_REMOTE_ENABLED=true` are set, Actuarius runs a single MemPalace store and exposes it two ways:
 
-- Local agent memory at `/data/mempalace/palace`, exposed to Claude/Codex/Gemini/OpenCode through the local `mempalace-mcp` config.
-- Remote repo memory at `/data/mempalace/remote-palace`, served by `mempalace-cli serve` on `MEMPALACE_REMOTE_BIND` and reached by the local MCP through `MEMPALACE_REMOTE_URL`.
+- The VM's agents (Claude/Codex/Gemini/OpenCode) open `/data/mempalace/palace` directly through the local `mempalace-mcp` config, so their repo memory, knowledge-graph and diary writes route local.
+- `mempalace-cli serve` opens that same `/data/mempalace/palace` store on `MEMPALACE_REMOTE_BIND`, giving home-PC LLMs a network path to the identical data. `MEMPALACE_REMOTE_URL` is only used by the bot to health-check that local server.
 
-For each connected repository, Actuarius assigns a deterministic wing named after the repo (e.g. `wing_actuarius`, matching `mempalace-cli init` naming so wings federate by name with locally initialised palaces), writes federation routing to `/data/home/appuser/.mempalace/config.json`, and queues a background `mempalace-cli mine` of the main checkout after repo connect/sync/checkouts. If a repo checkout already has `mempalace.yaml` or `mempal.yaml`, Actuarius honors its `wing:` value. Otherwise it generates an ignored `mempalace.yaml` in the checkout via `mempalace-cli init` (rooms detected from the repo structure), falling back to a generic template if init fails; request worktrees receive a copy of the main checkout's config so detected or hand-tuned rooms carry over. Repo-scoped records route in combined mode with writes going to the remote store.
+There is no second palace and no self-referential remote: the previous design's loopback (`write: remote` pointing at `MEMPALACE_REMOTE_URL` from the same host) is gone, along with the two-palace duplication it caused. Operators may still declare remotes to *other* hosts.
+
+For each connected repository, Actuarius assigns a deterministic wing named after the repo (e.g. `wing_actuarius`, matching `mempalace-cli init` naming so wings federate by name with locally initialised palaces), writes federation routing to `/data/home/appuser/.mempalace/config.json`, and queues a background `mempalace-cli mine` of the main checkout after repo connect/sync/checkouts. If a repo checkout already has `mempalace.yaml` or `mempal.yaml`, Actuarius honors its `wing:` value. Otherwise it generates an ignored `mempalace.yaml` in the checkout via `mempalace-cli init` (rooms detected from the repo structure), falling back to a generic template if init fails; request worktrees receive a copy of the main checkout's config so detected or hand-tuned rooms carry over. Repo-scoped records route local to the shared palace.
 
 ## Local development
 
