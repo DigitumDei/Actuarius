@@ -32,6 +32,15 @@ resource "google_compute_instance" "actuarius" {
   zone         = var.gcp_zone
 
   boot_disk {
+    # The boot disk (actuarius-boot-balanced-20260801) is deliberately NOT a
+    # separate google_compute_disk resource. One existed in state until
+    # 2026-09-09, left behind by the migration that created it, and because it
+    # was absent from the config Terraform planned to destroy the running VM's
+    # boot disk — with no prevent_destroy possible, since lifecycle blocks live
+    # in the config. It was cleared with `terraform state rm`. If this ever
+    # needs managing again, switch to `source` here rather than declaring both.
+    # See docs/lessons-learned.md.
+    #
     # The live boot disk was cloned out-of-band on 2026-08-01 and attached with
     # auto-delete off, so it survives VM deletion. Terraform defaults this to
     # true and the attribute is ForceNew, so leaving it unset asked to replace

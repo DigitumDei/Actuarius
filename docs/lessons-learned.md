@@ -148,3 +148,41 @@ This went unnoticed for two weeks because the guard was added during review of #
 - Treat exit `141` from any command as SIGPIPE, not as the command's own failure.
 - A guard that has never executed in production is untested code. When a script change adds one, exercise it on the box before relying on it — the metadata/`/var` staleness described above means "merged" is a long way from "running".
 
+## A resource in state but not in config is a destroy instruction
+
+While clearing the disk-config drift above, a plan produced this:
+
+```
+# google_compute_disk.boot will be destroyed
+# (because google_compute_disk.boot is not in configuration)
+- resource "google_compute_disk" "boot" {
+    - name  = "actuarius-boot-balanced-20260801" -> null
+    - users = ["...instances/actuarius-bot"] -> null
+```
+
+That is the **live boot disk of the running VM**. The 2026-08-01 migration had used a `google_compute_disk "boot"` resource to create the balanced clone, then the resource was deleted from the config without ever being removed from state. Terraform correctly reads "in state, absent from config" as "destroy it".
+
+**This one could not be guarded.** `prevent_destroy` lives in a `lifecycle` block *in the configuration*, so a resource that has been de-declared has, by definition, no protection. The data disk and the instance were safe precisely because they were still declared. GCE would most likely have refused the delete anyway (`resourceInUseByAnotherResource`, since the disk is attached), but that is luck, and a half-applied run is its own problem.
+
+Fix, which does not touch the cloud at all:
+
+```bash
+terraform state rm google_compute_disk.boot
+```
+
+Undo, if it ever needs managing again:
+
+```bash
+terraform import google_compute_disk.boot   projects/actuarius-488510/zones/us-central1-a/disks/actuarius-boot-balanced-20260801
+```
+
+**Rules:**
+- A one-shot migration resource must be removed from **both** the config and the state in the same change. Removing it from config alone converts it into a pending destroy of live infrastructure.
+- Read `# (because <addr> is not in configuration)` as `destroy`, and check `users` before believing it is harmless.
+- `terraform state rm` and `terraform import` only edit state; neither creates or deletes anything in the cloud. Back the state file up first regardless — Terraform writes its own `.backup`, but an extra copy is free.
+- Before an apply that follows any out-of-band work, read the plan's resource *addresses*, not just the attribute diffs. Attribute-level drift is noisy and obvious; a whole-resource destroy is one quiet line near the top.
+
+### The boot disk is deliberately unmanaged
+
+After the `state rm`, `actuarius-boot-balanced-20260801` is not a Terraform resource. This is intentional: the instance owns its boot disk through `google_compute_instance.actuarius`'s `boot_disk` block, and having a second resource describe the same disk is what created the problem. Do not re-add a `google_compute_disk "boot"` resource without also switching `boot_disk` to reference it by `source` — declaring both is the contradiction that started this.
+
