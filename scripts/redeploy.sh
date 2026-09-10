@@ -131,7 +131,6 @@ MEMPALACE_REMOTE_URL=$(get_meta "env-mempalace-remote-url" || true)
 MEMPALACE_REMOTE_BIND=$(get_meta "env-mempalace-remote-bind" || true)
 MEMPALACE_REMOTE_NAME=$(get_meta "env-mempalace-remote-name" || true)
 MEMPALACE_REMOTE_TOKEN=$(get_secret actuarius-mempalace-remote-token || true)
-MEMPALACE_REMOTE_TIMEOUT_MS=$(get_meta "env-mempalace-remote-timeout-ms" || true)
 MEMPALACE_REMOTE_MINE_ON_SYNC=$(get_meta "env-mempalace-remote-mine-on-sync" || true)
 MEMPALACE_REMOTE_MINE_TIMEOUT_MS=$(get_meta "env-mempalace-remote-mine-timeout-ms" || true)
 MEMPALACE_REMOTE_MINE_BATCH_SIZE=$(get_meta "env-mempalace-remote-mine-batch-size" || true)
@@ -200,9 +199,6 @@ if [ -n "$MEMPALACE_REMOTE_NAME" ]; then
 fi
 if [ -n "$MEMPALACE_REMOTE_TOKEN" ]; then
   EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_TOKEN=$MEMPALACE_REMOTE_TOKEN")
-fi
-if [ -n "$MEMPALACE_REMOTE_TIMEOUT_MS" ]; then
-  EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_TIMEOUT_MS=$MEMPALACE_REMOTE_TIMEOUT_MS")
 fi
 if [ -n "$MEMPALACE_REMOTE_MINE_ON_SYNC" ]; then
   EXTRA_ARGS+=(-e "MEMPALACE_REMOTE_MINE_ON_SYNC=$MEMPALACE_REMOTE_MINE_ON_SYNC")

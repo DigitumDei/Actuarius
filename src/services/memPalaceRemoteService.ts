@@ -320,8 +320,14 @@ export class MemPalaceRemoteService {
     allowInit: boolean,
     options: { overwrite?: boolean }
   ): Promise<string> {
-    if (allowInit) {
-      const initWing = await this.runProjectInit(repo, checkoutPath, options);
+    // `overwrite` means we already decided this is a bot-generated file with
+    // stale routing/naming and must be regenerated. `mempalace-cli init` cannot
+    // do that: Actuarius never passes `--repo-config`, so init only detects
+    // rooms and would re-read the stale file unchanged. Running it here would
+    // leave `staleRouting` true forever, re-spawning init on every /ask. Write
+    // the generated template directly instead.
+    if (allowInit && !options.overwrite) {
+      const initWing = await this.runProjectInit(repo, checkoutPath);
       if (initWing) {
         await this.ignoreGeneratedProjectConfig(checkoutPath);
         return initWing;
@@ -333,14 +339,9 @@ export class MemPalaceRemoteService {
     return wing;
   }
 
-  private async runProjectInit(
-    repo: RepoMemoryIdentity,
-    checkoutPath: string,
-    options: { overwrite?: boolean }
-  ): Promise<string | null> {
+  private async runProjectInit(repo: RepoMemoryIdentity, checkoutPath: string): Promise<string | null> {
     if (!existsSync(this.config.mempalaceCliPath)) return null;
     const args = ["--palace", this.config.mempalacePalacePath, "init", checkoutPath];
-    if (options.overwrite) args.push("--yes");
     try {
       await spawnCollect(this.config.mempalaceCliPath, args, {
         cwd: checkoutPath,
@@ -417,23 +418,39 @@ export class MemPalaceRemoteService {
   }
 
   /**
-   * True when a rule is the pre-consolidation self-remote rule this service
-   * used to write, and can therefore be safely dropped once its wing is no
-   * longer tracked. Anything else is treated as operator-authored and
-   * preserved.
+   * True when a wing rule has exactly a shape this service writes, and can
+   * therefore be safely dropped once its wing is no longer tracked. Anything
+   * else is treated as operator-authored and preserved.
    *
-   * Only the old `combined`/`write: remote` shape is recognised: local rules
-   * are harmless under the shared-palace design (local is the default mode),
-   * so an operator's single-key `{ mode: "local" }` rule is never deleted.
+   * Both the current `{ mode: "local" }` shape and the pre-consolidation
+   * `combined`/`write: remote` shape count as managed: the latter is the old
+   * self-referential route, the former is what replaces it. Recognising the
+   * local shape restores pruning for disconnected repos (a stale local rule
+   * would otherwise accumulate forever). Rules with extra keys are left alone,
+   * so a hand-tuned rule is never silently deleted.
    */
   private isManagedWingRule(rule: unknown): boolean {
+    if (!isRecord(rule)) return false;
+    if (rule.mode === "local" && Object.keys(rule).length === 1) return true;
     return (
-      isRecord(rule) &&
       rule.mode === "combined" &&
       rule.remote === this.config.mempalaceRemoteName &&
       rule.write === "remote" &&
       Object.keys(rule).length === 3
     );
+  }
+
+  /**
+   * True when a routing rule (wing, kg, or coordination) names the remote this
+   * service used to manage. Removing that remote from `federation.remotes`
+   * without rewriting such a rule makes mempalace-rs reject the whole config
+   * (`resolve_rule` errors on an unknown remote), and every entry point that
+   * loads it — `mempalace-mcp`, `serve`, `mine`, `init` — fails to start. Any
+   * surviving rule that points at the removed remote is therefore rewritten to
+   * local rather than preserved verbatim.
+   */
+  private namesRemovedRemote(rule: unknown): boolean {
+    return isRecord(rule) && rule.remote === this.config.mempalaceRemoteName;
   }
 
   private async writeGlobalConfigOnce(): Promise<void> {
@@ -464,11 +481,22 @@ export class MemPalaceRemoteService {
     // Keep operator-authored wing rules, but drop bot-managed rules for wings
     // we no longer track — each stale rule is a live route that will never
     // receive new content. Tracked wings route local: the shared palace is the
-    // same store the serve hub exposes to federated peers.
+    // same store the serve hub exposes to federated peers. A surviving rule
+    // that names the removed remote is rewritten to local, because leaving it
+    // pointing at a remote that no longer exists breaks config loading.
     const existingWings = isRecord(federation.wings) ? federation.wings : {};
     const wings: Record<string, unknown> = {};
     for (const [wing, rule] of Object.entries(existingWings)) {
-      if (!this.isManagedWingRule(rule)) wings[wing] = rule;
+      if (this.isManagedWingRule(rule)) continue;
+      if (this.namesRemovedRemote(rule)) {
+        this.logger.warn(
+          { wing, remote: this.config.mempalaceRemoteName },
+          "Rewriting MemPalace wing rule that names the removed self remote to local routing"
+        );
+        wings[wing] = { mode: "local" };
+        continue;
+      }
+      wings[wing] = rule;
     }
     for (const wing of this.repoCheckouts.keys()) {
       wings[wing] = { mode: "local" };
@@ -477,10 +505,39 @@ export class MemPalaceRemoteService {
     // Route the knowledge graph to the same shared palace. KG routing is a
     // single global rule in mempalace (not per-wing); an operator-authored
     // rule is preserved, but a rule this service previously wrote (the old
-    // self-referential remote) migrates to local.
-    const kg = isRecord(federation.kg) && !this.isManagedWingRule(federation.kg)
-      ? federation.kg
-      : { mode: "local" };
+    // self-referential remote) migrates to local, as does any operator rule
+    // still naming the removed remote.
+    let kg: unknown;
+    if (this.namesRemovedRemote(federation.kg)) {
+      kg = { mode: "local" };
+      if (!this.isManagedWingRule(federation.kg)) {
+        this.logger.warn(
+          { remote: this.config.mempalaceRemoteName },
+          "Rewriting MemPalace kg rule that names the removed self remote to local routing"
+        );
+      }
+    } else if (isRecord(federation.kg)) {
+      kg = federation.kg;
+    } else {
+      kg = { mode: "local" };
+    }
+
+    // Coordination rules share the same unknown-remote failure mode, so a rule
+    // naming the removed remote is rewritten too. Rules are otherwise left to
+    // the operator.
+    const existingCoordination = isRecord(federation.coordination) ? federation.coordination : {};
+    const coordination: Record<string, unknown> = {};
+    for (const [wing, rule] of Object.entries(existingCoordination)) {
+      if (this.namesRemovedRemote(rule)) {
+        this.logger.warn(
+          { wing, remote: this.config.mempalaceRemoteName },
+          "Rewriting MemPalace coordination rule that names the removed self remote to local routing"
+        );
+        coordination[wing] = { mode: "local" };
+        continue;
+      }
+      coordination[wing] = rule;
+    }
 
     const nextConfig = {
       ...current,
@@ -503,12 +560,13 @@ export class MemPalaceRemoteService {
         // the tool contract.
         default_mode: "local",
         wings,
-        kg
+        kg,
+        coordination
       }
     };
     await writeFile(configPath, JSON.stringify(nextConfig, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
     // mode only applies on create; tighten pre-existing files too since the
-    // config now carries the federation token.
+    // config holds the federation token file location and route rules.
     await chmod(configPath, 0o600);
   }
 

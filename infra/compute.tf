@@ -94,7 +94,6 @@ resource "google_compute_instance" "actuarius" {
     env-mempalace-remote-url             = var.mempalace_remote_url
     env-mempalace-remote-bind            = var.mempalace_remote_bind
     env-mempalace-remote-name            = var.mempalace_remote_name
-    env-mempalace-remote-timeout-ms      = var.mempalace_remote_timeout_ms
     env-mempalace-remote-mine-on-sync    = var.mempalace_remote_mine_on_sync
     env-mempalace-remote-mine-timeout-ms = var.mempalace_remote_mine_timeout_ms
     env-mempalace-remote-mine-batch-size = var.mempalace_remote_mine_batch_size

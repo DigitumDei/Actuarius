@@ -72,7 +72,6 @@ function makeConfig(root: string): AppConfig {
     mempalaceRemoteName: "actuarius",
     mempalaceRemoteToken: "test-token",
     mempalaceRemoteTokenFile: join(root, "server_tokens.json"),
-    mempalaceRemoteTimeoutMs: 5000,
     mempalaceRemoteMineOnSync: false,
     mempalaceRemoteMineTimeoutMs: 1000,
     mempalaceRemoteMineBatchSize: 0
@@ -180,7 +179,7 @@ describe("MemPalaceRemoteService", () => {
     expect(globalConfig.federation.default_mode).toBe("local");
   });
 
-  it("prunes stale bot-managed wing rules and checkouts, preserving operator-authored rules", async () => {
+  it("prunes stale bot-managed wing rules, rewrites rules naming the removed remote, and preserves operator rules", async () => {
     const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-prune-"));
     const homeDir = join(root, "home");
     const config = makeConfig(root);
@@ -200,9 +199,14 @@ describe("MemPalaceRemoteService", () => {
           wings: {
             // Stale bot-managed rule from the old hashed naming — must be dropped.
             wing_repo_digitumdei_actuarius_5936a0ce: { mode: "combined", remote: "actuarius", write: "remote" },
-            // Operator-authored rules — must survive (different shape / extra keys).
+            // Stale bot-managed local rule for a wing we no longer track — must
+            // be pruned too, or disconnected repos accumulate rules forever.
             wing_custom: { mode: "local" },
-            wing_tuned: { mode: "combined", remote: "actuarius", write: "remote", note: "keep me" }
+            // Operator rule that still names the removed remote — must be
+            // rewritten to local, or mempalace-rs rejects the whole config.
+            wing_tuned: { mode: "combined", remote: "actuarius", write: "remote", note: "keep me" },
+            // Operator rule to another host — must survive untouched.
+            wing_remote_other: { mode: "combined", remote: "work", write: "local" }
           }
         }
       }),
@@ -214,11 +218,58 @@ describe("MemPalaceRemoteService", () => {
 
     const globalConfig = JSON.parse(readFileSync(join(homeDir, ".mempalace", "config.json"), "utf8"));
     expect(globalConfig.federation.wings).toEqual({
-      wing_custom: { mode: "local" },
-      wing_tuned: { mode: "combined", remote: "actuarius", write: "remote", note: "keep me" },
+      wing_tuned: { mode: "local" },
+      wing_remote_other: { mode: "combined", remote: "work", write: "local" },
       [wing]: { mode: "local" }
     });
     expect(globalConfig.server.checkouts).toEqual({ [wing]: checkoutPath });
+  });
+
+  it("rewrites every kept rule that names the removed remote so config loading can never fail", async () => {
+    const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-removed-remote-"));
+    const homeDir = join(root, "home");
+    const config = makeConfig(root);
+    const repo = makeRepo();
+    const checkoutPath = join(config.reposRootPath, repo.owner, repo.repo);
+    mkdirSync(join(checkoutPath, ".git", "info"), { recursive: true });
+    mkdirSync(join(homeDir, ".mempalace"), { recursive: true });
+    writeFileSync(
+      join(homeDir, ".mempalace", "config.json"),
+      JSON.stringify({
+        federation: {
+          remotes: [{ name: "actuarius", url: "http://127.0.0.1:8765" }],
+          wings: {
+            wing_kg_extra: { mode: "combined", remote: "actuarius", write: "local" }
+          },
+          kg: { mode: "combined", remote: "actuarius", write: "local" },
+          coordination: {
+            wing_actuarius: { mode: "combined", remote: "actuarius", write: "local" }
+          }
+        }
+      }),
+      "utf8"
+    );
+
+    const service = new MemPalaceRemoteService(config, logger, { homeDir });
+    await service.registerRepository(repo, checkoutPath);
+
+    const globalConfig = JSON.parse(readFileSync(join(homeDir, ".mempalace", "config.json"), "utf8"));
+    expect(globalConfig.federation.remotes).toEqual([]);
+    expect(globalConfig.federation.kg).toEqual({ mode: "local" });
+    expect(globalConfig.federation.wings.wing_kg_extra).toEqual({ mode: "local" });
+    expect(globalConfig.federation.coordination.wing_actuarius).toEqual({ mode: "local" });
+
+    // The invariant the failure hinged on: every rule that survives must
+    // reference a remote that still exists in `remotes`.
+    const known = new Set((globalConfig.federation.remotes as Array<{ name: string }>).map((remote) => remote.name));
+    const ruleGroups = [
+      ...Object.values(globalConfig.federation.wings as Record<string, { remote?: string }>),
+      globalConfig.federation.kg as { remote?: string },
+      ...Object.values(globalConfig.federation.coordination as Record<string, { remote?: string }>)
+    ];
+    for (const rule of ruleGroups) {
+      if (rule?.remote !== undefined) expect(known.has(rule.remote)).toBe(true);
+    }
   });
 
   it("preserves an operator-authored kg routing rule", async () => {
@@ -274,9 +325,11 @@ describe("MemPalaceRemoteService", () => {
     const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-migrate-"));
     const homeDir = join(root, "home");
     const config = makeConfig(root);
-    // Force the generic-template fallback: with a real `mempalace-cli` present
-    // the mocked init would re-read the stale file instead of rewriting it.
-    config.mempalaceCliPath = join(root, "missing-mempalace-cli");
+    // A real binary: the overwrite path must regenerate the template without
+    // running init (init cannot rewrite a repo-local file without
+    // `--repo-config`, so it would re-read the stale file and loop forever).
+    config.mempalaceCliPath = join(root, "mempalace-cli");
+    writeFileSync(config.mempalaceCliPath, "", "utf8");
     const repo = makeRepo();
     const checkoutPath = join(config.reposRootPath, repo.owner, repo.repo);
     mkdirSync(join(checkoutPath, ".git", "info"), { recursive: true });
@@ -293,15 +346,17 @@ describe("MemPalaceRemoteService", () => {
     const projectConfig = readFileSync(join(checkoutPath, "mempalace.yaml"), "utf8");
     expect(projectConfig).toContain("wing: wing_actuarius");
     expect(projectConfig).not.toContain("wing_repo_digitumdei");
+    expect(mockSpawnCollect.mock.calls.some((call) => (call[1] as string[]).includes("init"))).toBe(false);
   });
 
   it("migrates a generated config that still routes writes to the old self remote", async () => {
     const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-migrate-routing-"));
     const homeDir = join(root, "home");
     const config = makeConfig(root);
-    // Force the generic-template fallback: with a real `mempalace-cli` present
-    // the mocked init would re-read the stale file instead of rewriting it.
-    config.mempalaceCliPath = join(root, "missing-mempalace-cli");
+    // A real binary: the overwrite path must regenerate the template without
+    // running init (see the old-hashed-wing test).
+    config.mempalaceCliPath = join(root, "mempalace-cli");
+    writeFileSync(config.mempalaceCliPath, "", "utf8");
     const repo = makeRepo();
     const checkoutPath = join(config.reposRootPath, repo.owner, repo.repo);
     mkdirSync(join(checkoutPath, ".git", "info"), { recursive: true });
@@ -328,6 +383,40 @@ describe("MemPalaceRemoteService", () => {
     expect(projectConfig).toContain("  mode: local");
     expect(projectConfig).not.toContain("write: remote");
     expect(projectConfig).not.toContain("remote: actuarius");
+    expect(mockSpawnCollect.mock.calls.some((call) => (call[1] as string[]).includes("init"))).toBe(false);
+  });
+
+  it("does not re-run init on every registration once stale routing has been migrated", async () => {
+    const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-migrate-once-"));
+    const homeDir = join(root, "home");
+    const config = makeConfig(root);
+    config.mempalaceCliPath = join(root, "mempalace-cli");
+    writeFileSync(config.mempalaceCliPath, "", "utf8");
+    const repo = makeRepo();
+    const checkoutPath = join(config.reposRootPath, repo.owner, repo.repo);
+    mkdirSync(join(checkoutPath, ".git", "info"), { recursive: true });
+    writeFileSync(
+      join(checkoutPath, "mempalace.yaml"),
+      [
+        "# Generated by Actuarius. Do not commit; this file routes repo memory to MemPalace.",
+        "wing: wing_actuarius",
+        "routing:",
+        "  mode: combined",
+        "  remote: actuarius",
+        "  write: remote",
+        "rooms: []",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const service = new MemPalaceRemoteService(config, logger, { homeDir });
+    await service.registerRepository(repo, checkoutPath);
+    await service.registerRepository(repo, checkoutPath);
+    await service.ensureWorktreeConfig(repo, join(root, "worktrees", "1"));
+
+    expect(readFileSync(join(checkoutPath, "mempalace.yaml"), "utf8")).toContain("  mode: local");
+    expect(mockSpawnCollect.mock.calls.some((call) => (call[1] as string[]).includes("init"))).toBe(false);
   });
 
   it("copies the main checkout config into worktrees instead of regenerating", async () => {

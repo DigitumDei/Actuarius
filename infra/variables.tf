@@ -119,7 +119,7 @@ variable "enable_mempalace" {
 variable "enable_mempalace_remote" {
   type        = bool
   default     = false
-  description = "Enable Actuarius' loopback MemPalace federation server for repo memory."
+  description = "Enable Actuarius' MemPalace federation server for repo memory. Published on loopback only and reached through IAP."
 }
 
 variable "mempalace_embedding_profile" {
@@ -149,12 +149,6 @@ variable "mempalace_remote_name" {
   type        = string
   default     = ""
   description = "Optional override for MEMPALACE_REMOTE_NAME. Leave empty for the app default."
-}
-
-variable "mempalace_remote_timeout_ms" {
-  type        = string
-  default     = ""
-  description = "Optional override for MEMPALACE_REMOTE_TIMEOUT_MS. Leave empty for the app default."
 }
 
 variable "mempalace_remote_mine_on_sync" {

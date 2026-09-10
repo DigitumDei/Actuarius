@@ -227,11 +227,31 @@ enable_mempalace        = true
 enable_mempalace_remote = true
 ```
 
-Actuarius runs a single palace at `MEMPALACE_PALACE_PATH` (default `/data/mempalace/palace`). The VM's agents open it directly, while `mempalace-cli serve` exposes that same store on `MEMPALACE_REMOTE_BIND` for home-PC peers. There is no separate remote palace and no loopback remote, so no `MEMPALACE_REMOTE_PALACE_PATH` exists any more; a data disk from the two-palace era has an orphaned `/data/mempalace/remote-palace` directory that can be migrated and removed.
+Actuarius runs a single palace at `MEMPALACE_PALACE_PATH` (default `/data/mempalace/palace`). The VM's agents open it directly, while `mempalace-cli serve` exposes that same store on `MEMPALACE_REMOTE_BIND` for home-PC peers. There is no separate remote palace and no loopback remote, so no `MEMPALACE_REMOTE_PALACE_PATH` exists any more.
 
-Optional variables map directly to the redeploy metadata keys and can stay blank to use app defaults: `mempalace_remote_url`, `mempalace_remote_bind`, `mempalace_remote_name`, `mempalace_remote_token`, `mempalace_remote_timeout_ms`, `mempalace_remote_mine_on_sync`, `mempalace_remote_mine_timeout_ms`, and `mempalace_remote_mine_batch_size`. If `mempalace_remote_token` is blank, Actuarius generates a token and persists it under `/data/mempalace/server_tokens.json`. When migrating a two-palace VM, merge `/data/mempalace/remote-palace` into `/data/mempalace/palace` (`mempalace-cli` has no automatic merge) before removing the old directory.
+Optional variables map directly to the redeploy metadata keys and can stay blank to use app defaults: `mempalace_remote_url`, `mempalace_remote_bind`, `mempalace_remote_name`, `mempalace_remote_token`, `mempalace_remote_mine_on_sync`, `mempalace_remote_mine_timeout_ms`, and `mempalace_remote_mine_batch_size`. If `mempalace_remote_token` is blank, Actuarius generates a token and persists it under `/data/mempalace/server_tokens.json`.
 
 After `terraform apply`, reboot or re-fetch `/var/redeploy.sh` from metadata so the new metadata keys reach the container.
+
+### Migrating a two-palace data disk
+
+The two-palace era wrote every tracked wing, the knowledge graph, and (via home PCs) nearly all non-diary data to `/data/mempalace/remote-palace`. Deploying the single-palace image without migrating that directory strands that memory: the new `serve` opens `/data/mempalace/palace`, which only ever held diaries and identity data. `mempalace-cli` has no offline merge, so copy the data across REST before deleting the old directory.
+
+1. Stop `actuarius-bot.service` and **snapshot the persistent data disk**. The snapshot is the rollback boundary; do not skip it.
+2. Run the migration from a one-off container built from the *same image you are deploying*, so the bundled `mempalace-cli` matches the target schema. It starts temporary loopback hubs over both palaces, copies drawers and KG facts (including invalidations), and leaves `/data/mempalace/remote-palace` untouched:
+
+   ```bash
+   IMAGE=ghcr.io/digitumdei/actuarius:<git-sha>
+   docker run --rm --entrypoint node \
+     -v /mnt/disks/data:/data \
+     "$IMAGE" /app/dist/tools/migrateMemPalace.js \
+       --from-palace /data/mempalace/remote-palace \
+       --to-palace /data/mempalace/palace
+   ```
+
+   Add `--dry-run` first to count without writing, and set `LOG_LEVEL=debug` for per-item detail. The copy is idempotent (stable operation ids), so a failed or interrupted run can be repeated; a non-zero exit means some items failed, so re-run before deleting anything.
+3. Verify the copied data from both the VM and a home PC, then remove the orphaned directory: `rm -rf /data/mempalace/remote-palace`.
+4. Start the bot again.
 
 ### MemPalace binary upgrades and rollback
 
@@ -246,7 +266,7 @@ Before deploying an image with a newer MemPalace version:
 1. Record the currently deployed Actuarius image SHA.
 2. Stop `actuarius-bot.service` so the palace has no writers.
 3. Run `sync`, then snapshot the persistent data disk. The snapshot is the
-   rollback boundary and must contain each palace's `storage.sqlite3` and
+   rollback boundary and must contain the palace's `storage.sqlite3` and
    `lancedb/` directory from the same point in time.
 4. Start the bot again if the new image is not being deployed immediately.
 

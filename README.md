@@ -83,7 +83,7 @@ All timeout defaults live together in [`TIMEOUT_DEFAULTS_MS`](src/config.ts) and
 - `REVIEWER_TIMEOUT_MS` — fixed cap for each primary reviewer per round (default `1200000`)
 - `ITERATIVE_VERIFICATION_TIMEOUT_MS` — iterative planner-verification cap (default `600000`)
 - `INSTALL_STEP_TIMEOUT_MS` — tool-install step cap (default `3600000`)
-- `MEMPALACE_REMOTE_TIMEOUT_MS` and `MEMPALACE_REMOTE_MINE_TIMEOUT_MS` — remote request and mine-operation caps (defaults `5000` and `2700000`)
+- `MEMPALACE_REMOTE_MINE_TIMEOUT_MS` — mine-operation cap (default `2700000`)
 
 Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global`, with `docker/entrypoint.sh` seeding them on first boot if missing. That keeps provider authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. For OpenCode, use `/auth-openai-opencode` to connect a ChatGPT Pro/Plus subscription with OpenAI's device flow, `/opencode-auth` to store per-provider API keys in `auth.json`, or set provider API keys such as `DEEPSEEK_API_KEY` in the environment. `/opencode-auth` supports DeepSeek, OpenAI, Anthropic, Google, xAI, Groq, OpenRouter, and Together.
 
