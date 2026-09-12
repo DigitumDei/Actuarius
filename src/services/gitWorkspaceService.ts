@@ -325,7 +325,7 @@ export async function listBranches(repoPath: string): Promise<RepoBranches> {
   }
 }
 
-export async function cleanupDeletedRemoteBranches(repoPath: string): Promise<CleanupDeletedBranchesResult> {
+export async function cleanupDeletedRemoteBranches(repoPath: string, protectedBranches: readonly string[] = []): Promise<CleanupDeletedBranchesResult> {
   try {
     await runGit(["-C", repoPath, "fetch", "origin", "--prune"], { useCredentialHelper: true });
     await runGit(["-C", repoPath, "worktree", "prune"]);
@@ -348,6 +348,7 @@ export async function cleanupDeletedRemoteBranches(repoPath: string): Promise<Cl
     const skippedDirtyWorktrees: Array<{ branchName: string; path: string }> = [];
     for (const line of refs.stdout.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
       const [branchName = "", upstream = "", track = ""] = line.split("\t");
+      if (protectedBranches.includes(branchName)) continue;
       if (!branchName || !upstream.startsWith("origin/") || !track.includes("[gone]")) {
         continue;
       }
@@ -535,11 +536,12 @@ export async function getReviewDiff(
   repoPath: string,
   options: {
     headRef: string;
+    baseRef?: string;
     excludePaths?: string[];
   }
 ): Promise<ReviewDiffResult> {
   try {
-    const defaultBranch = await detectDefaultBranch(repoPath);
+    const defaultBranch = options.baseRef ? { branchName: options.baseRef.replace(/^origin\//, ""), remoteRef: options.baseRef } : await detectDefaultBranch(repoPath);
     const mergeBaseResult = await runGitWithOutput(["merge-base", defaultBranch.remoteRef, options.headRef], { cwd: repoPath });
     const comparisonRef = mergeBaseResult.stdout.trim();
     const diffOptions = options.excludePaths ? { excludePaths: options.excludePaths } : undefined;

@@ -153,6 +153,12 @@ export class MemPalaceClient {
     return this.ready;
   }
 
+  /** Coordination callers validate the returned payload against their wire schemas. */
+  public async coordinationCall(name: string, args: Record<string, unknown>): Promise<unknown> {
+    if (!/^agentpalace_(task_|message_|inbox_|result_)/u.test(name)) throw new Error("Not a coordination tool");
+    return JSON.parse(await this.callTool(name, args)) as unknown;
+  }
+
   private async callTool(name: string, args: Record<string, unknown>): Promise<string> {
     if (!this.ready) {
       throw new Error("MemPalace client is not ready");

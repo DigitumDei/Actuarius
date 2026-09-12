@@ -1,4 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
+import { providerGate } from "../services/providerGate.js";
 import type { Logger } from "pino";
 import {
   spawnCollect,
@@ -172,6 +173,14 @@ function summarizeLastActivity(
  * `DEFAULT_ARGV_TOTAL_LIMIT`.
  */
 export async function runProviderRequest(
+  input: ProviderRequestInput,
+  config: ProviderRunnerConfig,
+  logger: Logger
+): Promise<string> {
+  return providerGate.run(() => runProviderRequestUnlocked(input, config, logger), input.signal);
+}
+
+async function runProviderRequestUnlocked(
   input: ProviderRequestInput,
   config: ProviderRunnerConfig,
   logger: Logger
