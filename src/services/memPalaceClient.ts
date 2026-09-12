@@ -1,7 +1,4 @@
-import { existsSync } from "node:fs";
-import { access, mkdir, writeFile } from "node:fs/promises";
-import { spawn, type ChildProcess } from "node:child_process";
-import { createInterface } from "node:readline";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Logger } from "pino";
@@ -16,7 +13,7 @@ export const BOT_MEMORY_WING = "wing_actuarius_agent";
 
 /**
  * Seeded into the palace when no identity.txt exists, so agents waking up via
- * mempalace_wake_up receive baseline conduct rules. Written once; operator
+ * agentpalace_wake_up receive baseline conduct rules. Written once; operator
  * edits on the persistent disk are never overwritten.
  */
 const IDENTITY_TEMPLATE = `# Identity — Actuarius agents
@@ -44,14 +41,14 @@ isolated git worktrees on a branch created for the request.
   push your branch and let the repository's CI validate the full build.
 
 ## Memory rules
-- Repo knowledge belongs in the repo's wing (see mempalace.yaml in your
+- Repo knowledge belongs in the repo's wing (see agentpalace.yaml in your
   worktree); use the branch name as the room.
 - Verify facts about people, projects, or past events with mempalace search
   or kg queries before asserting them. Never guess.
 `;
 
 /**
- * Seed the palace identity file agents receive from mempalace_wake_up. Runs
+ * Seed the palace identity file agents receive from agentpalace_wake_up. Runs
  * for every MemPalace-enabled deployment (local-only or remote). Only writes
  * when the file is absent so operator edits persist; failure is non-fatal —
  * agents just wake up without an identity, as before.
@@ -60,8 +57,15 @@ export async function ensurePalaceIdentity(logger: Logger, homeDir: string = hom
   const identityPath = join(homeDir, ".mempalace", "identity.txt");
   try {
     await access(identityPath);
+    const current = await readFile(identityPath, "utf8");
+    const migrated = current.replace(/\bmempalace_/g, "agentpalace_");
+    if (migrated !== current) await writeFile(identityPath, migrated, "utf8");
     return;
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger.warn({ error, identityPath }, "Could not read or migrate palace identity; preserving it");
+      return;
+    }
     // absent — seed below
   }
   try {
@@ -71,17 +75,6 @@ export async function ensurePalaceIdentity(logger: Logger, homeDir: string = hom
   } catch (error) {
     logger.warn({ error, identityPath }, "Could not seed MemPalace identity file");
   }
-}
-
-interface PendingRequest {
-  resolve: (result: unknown) => void;
-  reject: (error: Error) => void;
-}
-
-interface McpResponse {
-  id?: number;
-  result?: unknown;
-  error?: { code: number; message: string };
 }
 
 function extractText(result: unknown): string {
@@ -97,88 +90,40 @@ function extractText(result: unknown): string {
 }
 
 export class MemPalaceClient {
-  private child: ChildProcess | null = null;
-  private pending = new Map<number, PendingRequest>();
   private nextId = 1;
   private ready = false;
+  private readonly abort = new AbortController();
 
-  public constructor(
-    private readonly binaryPath: string,
-    private readonly palacePath: string,
-    private readonly logger: Logger,
-    private readonly embeddingProfile: string = "low_cpu"
-  ) {}
+  public constructor(private readonly url: string, private readonly token: string, private readonly logger: Logger) {}
 
   public async start(): Promise<void> {
-    if (!existsSync(this.binaryPath)) {
-      throw new Error(`mempalace-mcp binary not found at ${this.binaryPath}`);
-    }
-
-    this.child = spawn(this.binaryPath, [], {
-      env: {
-        ...process.env,
-        MEMPALACE_PALACE_PATH: this.palacePath,
-        MEMPALACE_EMBEDDING_PROFILE: this.embeddingProfile,
-        MEMPALACE_EMBED_ALLOW_DOWNLOADS: "1",
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
-    const rl = createInterface({ input: this.child.stdout! });
-    rl.on("line", (line) => {
-      if (this.child?.killed) return;
-      this.handleLine(line);
-    });
-
-    this.child.stderr?.on("data", (chunk: Buffer) => {
-      if (this.child?.killed) return;
-      this.logger.debug({ stderr: chunk.toString().trim() }, "mempalace-mcp stderr");
-    });
-
-    this.child.on("error", (err) => {
-      this.logger.error({ error: err }, "mempalace-mcp process error");
-      this.rejectAllPending(err);
-    });
-
-    this.child.on("close", (code) => {
-      if (this.ready) {
-        this.logger.warn({ code }, "mempalace-mcp process exited unexpectedly");
-      }
-      this.rejectAllPending(new Error(`mempalace-mcp exited (code=${String(code)})`));
-      this.ready = false;
-    });
-
-    await this.sendRequest("initialize", {
-      protocolVersion: "2024-11-05",
-      capabilities: {},
-      clientInfo: { name: "actuarius", version: "1.0.0" },
-    });
-    this.sendNotification("notifications/initialized");
+    const result = await this.sendRequest("initialize", {
+      protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "actuarius", version: "1.0.0" }
+    }) as { protocolVersion?: string };
+    if (result?.protocolVersion !== "2025-03-26") throw new Error("Unsupported AgentPalace MCP protocol");
+    await this.post({ jsonrpc: "2.0", method: "notifications/initialized" });
     this.ready = true;
-    this.logger.info({ palacePath: this.palacePath }, "mempalace-mcp ready");
+    this.logger.info({ url: this.url }, "AgentPalace HTTP MCP ready");
   }
 
   public async stop(): Promise<void> {
     this.ready = false;
-    if (this.child) {
-      this.child.kill("SIGTERM");
-      this.child = null;
-    }
+    this.abort.abort();
   }
 
   public async wakeUp(wing?: string): Promise<string> {
-    return this.callTool("mempalace_wake_up", {
+    return this.callTool("agentpalace_wake_up", {
       agent_name: "actuarius",
       ...(wing !== undefined ? { wing } : {}),
     });
   }
 
   public async addDrawer(content: string, wing: string, room: string): Promise<void> {
-    await this.callTool("mempalace_add_drawer", { content, wing, room });
+    await this.callTool("agentpalace_add_drawer", { content, wing, room });
   }
 
   public async search(query: string, options?: { wing?: string; room?: string }): Promise<string> {
-    return this.callTool("mempalace_search", {
+    return this.callTool("agentpalace_search", {
       query,
       ...(options?.wing !== undefined ? { wing: options.wing } : {}),
       ...(options?.room !== undefined ? { room: options.room } : {}),
@@ -186,13 +131,14 @@ export class MemPalaceClient {
   }
 
   public async kgAdd(subject: string, predicate: string, object: string): Promise<void> {
-    await this.callTool("mempalace_kg_add", { subject, predicate, object });
+    await this.callTool("agentpalace_kg_add", { subject, predicate, object });
   }
 
   public async diaryWrite(content: string, topic: string): Promise<void> {
-    await this.callTool("mempalace_diary_write", {
+    await this.callTool("agentpalace_diary_write", {
       agent_name: "actuarius",
-      content,
+      entry: content,
+      summary: content.slice(0, 400),
       topic,
       scope: "project",
       wing: BOT_MEMORY_WING,
@@ -200,7 +146,7 @@ export class MemPalaceClient {
   }
 
   public async status(): Promise<string> {
-    return this.callTool("mempalace_status", {});
+    return this.callTool("agentpalace_status", {});
   }
 
   public isReady(): boolean {
@@ -212,69 +158,27 @@ export class MemPalaceClient {
       throw new Error("MemPalace client is not ready");
     }
     const result = await this.sendRequest("tools/call", { name, arguments: args });
+    if ((result as { isError?: boolean })?.isError) throw new Error(extractText(result));
     return extractText(result);
   }
 
-  private sendRequest(method: string, params: unknown, timeoutMs = 30000): Promise<unknown> {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      if (!this.child || !this.child.stdin || this.child.killed) {
-        reject(new Error("MemPalace client is not connected"));
-        return;
-      }
-
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`MCP request ${method} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-
-      this.pending.set(id, {
-        resolve: (result) => { clearTimeout(timer); resolve(result); },
-        reject: (error) => { clearTimeout(timer); reject(error); },
-      });
-
-      this.sendLine({ jsonrpc: "2.0", id, method, params });
+  private async post(body: unknown): Promise<Response> {
+    const response = await fetch(this.url, {
+      method: "POST", headers: {
+        "Content-Type": "application/json", Accept: "application/json, text/event-stream",
+        Authorization: "Bearer " + this.token, "MCP-Protocol-Version": "2025-03-26"
+      }, body: JSON.stringify(body), signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(30_000)])
     });
+    if (!response.ok) throw new Error("AgentPalace HTTP MCP returned HTTP " + response.status);
+    return response;
   }
 
-  private sendNotification(method: string): void {
-    this.sendLine({ jsonrpc: "2.0", method });
-  }
-
-  private sendLine(obj: unknown): void {
-    this.child?.stdin?.write(JSON.stringify(obj) + "\n");
-  }
-
-  private handleLine(line: string): void {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-
-    let msg: unknown;
-    try {
-      msg = JSON.parse(trimmed);
-    } catch {
-      this.logger.debug({ line: trimmed }, "mempalace-mcp: skipping non-JSON line");
-      return;
-    }
-
-    const response = msg as McpResponse;
-    if (response.id === undefined) return; // notification, not a response
-
-    const pending = this.pending.get(response.id);
-    if (!pending) return;
-    this.pending.delete(response.id);
-
-    if (response.error) {
-      pending.reject(new Error(`MCP error ${response.error.code}: ${response.error.message}`));
-    } else {
-      pending.resolve(response.result);
-    }
-  }
-
-  private rejectAllPending(error: Error): void {
-    for (const pending of this.pending.values()) {
-      pending.reject(error);
-    }
-    this.pending.clear();
+  private async sendRequest(method: string, params: unknown): Promise<unknown> {
+    const id = this.nextId++;
+    const response = await this.post({ jsonrpc: "2.0", id, method, params });
+    const message = await response.json() as { id?: number; result?: unknown; error?: { code: number; message: string } };
+    if (message.id !== id) throw new Error("AgentPalace MCP response ID mismatch");
+    if (message.error) throw new Error("MCP error " + message.error.code + ": " + message.error.message);
+    return message.result;
   }
 }

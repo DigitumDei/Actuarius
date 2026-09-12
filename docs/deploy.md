@@ -220,7 +220,7 @@ volume. `docker logs actuarius` over SSH still works as a fallback.
 
 ## MemPalace Remote
 
-To run the local MemPalace MCP plus Actuarius' loopback remote repo store in production, set both Terraform switches:
+To run the AgentPalace HTTP MCP client plus shared federation server in production, set both Terraform switches:
 
 ```hcl
 enable_mempalace        = true
@@ -230,6 +230,25 @@ enable_mempalace_remote = true
 Optional variables map directly to the redeploy metadata keys and can stay blank to use app defaults: `mempalace_remote_url`, `mempalace_remote_bind`, `mempalace_remote_name`, `mempalace_remote_token`, `mempalace_remote_timeout_ms`, `mempalace_remote_mine_on_sync`, `mempalace_remote_mine_timeout_ms`, and `mempalace_remote_mine_batch_size`. If `mempalace_remote_token` is blank, Actuarius generates a token and persists it under `/data/mempalace/server_tokens.json`.
 
 After `terraform apply`, reboot or re-fetch `/var/redeploy.sh` from metadata so the new metadata keys reach the container.
+
+### AgentPalace 0.1.47 HTTP cutover
+
+When both memory flags are disabled, startup removes managed `mempalace` and `agentpalace` MCP registrations from every provider. Connecting a repository saves its checkout mapping without restarting the shared server or interrupting active tools. AgentPalace 0.1.47 loads these mappings at startup, so source retrieval for a newly connected repository requires the next planned server restart; ordinary memory reads, writes, and mining remain available.
+
+
+This upgrade supersedes the shared-directory approach in PR #215. **Do not run its remote-to-local merge.** Keep the existing `/data/mempalace/remote-palace` (or configured override) as the server authority; this preserves coordination state, drawers, KG, IDs and history in place.
+
+1. Record the deployed image and take the stopped-bot snapshot described below. It must include both palace directories, `$HOME/.mempalace`, tokens, provider configs and model cache.
+2. Deploy the pinned image. It uses one `agentpalace` executable. Existing `MEMPALACE_*` metadata values remain supported, so no Terraform resource changes are needed for this upgrade. Custom CLI paths must point at the new executable.
+3. The entrypoint retains the old model cache under the new cache name when the new directory is absent; both are preserved when both exist. The service uses `AGENTPALACE_CONFIG_DIR=$HOME/.mempalace` so identity and server settings are retained. Old tool prefixes in identity are updated without replacing operator text.
+4. Startup allows up to two minutes for a cold model load (with cancellable shutdown), removes self-federation routes, verifies the authenticated `/mcp` handshake, then writes HTTP registrations for Claude, Codex, Gemini, OpenCode, and OpenCode planning snapshots. A failed server startup aborts boot rather than launching LLMs against stale stdio registrations. All clients share the server's palace and embedding runtime.
+5. Verify `agentpalace --version` reports 0.1.47, `/v1/info` reports the expected version and `low_cpu`, all four providers discover `agentpalace_*` tools, and a drawer written via HTTP MCP is readable from a home PC through federation. Check simultaneous clients and server restart recovery. Home-PC stdio configurations are unchanged.
+
+**Local-only history:** the former `/data/mempalace/palace` is preserved untouched as an archive. Its old local-only diaries are not silently copied into the shared server and will not appear in new wake-ups. Keep that directory and the snapshot; if historical diary retrieval is needed, open a *snapshot copy* with an isolated matching-version server and explicit palace/config paths. New bot/LLM diaries live in the authoritative shared palace. Identity remains available through the retained config directory.
+
+Provider config files contain the local unrestricted bearer token, as required by HTTP MCP. They are mode 0600. Rotate it through the configured token source and restart the bot to converge registrations. Continue using loopback/IAP; this change does not expose a public port.
+
+Provider configuration references: [Claude](https://code.claude.com/docs/en/mcp), [Codex](https://developers.openai.com/codex/mcp), [Gemini](https://geminicli.com/docs/tools/mcp-server/), [OpenCode](https://opencode.ai/docs/mcp-servers/).
 
 ### MemPalace binary upgrades and rollback
 
@@ -256,7 +275,7 @@ curl -H "Authorization: Bearer <TOKEN>" http://127.0.0.1:8765/v1/info
 
 Confirm the expected `server_version` and capabilities. For releases that add
 federated coordination, the capability list must contain `coordination`; an
-unknown `mempalace_task_get` should return `found: false`, not a capability
+unknown `agentpalace_task_get` should return `found: false`, not a capability
 error.
 
 Rollback is a paired operation: deploy the recorded old image **and** restore

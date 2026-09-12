@@ -20,6 +20,7 @@ describe("startMemPalaceRemoteWithRetry", () => {
 
     expect(result).toBe(true);
     expect(service.start).toHaveBeenCalledTimes(1);
+    expect(service.start).toHaveBeenCalledWith([], undefined);
     expect(service.stop).not.toHaveBeenCalled();
   });
 

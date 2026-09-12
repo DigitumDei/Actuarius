@@ -58,8 +58,8 @@ Copy `.env.example` to `.env` and set:
 - `GEMINI_API_KEY` (required for Gemini execution)
 - `DEEPSEEK_API_KEY` (required for OpenCode execution when not using stored OpenCode credentials)
 - `CLAUDE_CODE_OAUTH_TOKEN` (optional for local/manual runs, required by the production redeploy helper for non-interactive Claude auth)
-- `MEMPALACE_ENABLED` (default `false`, enables the local MemPalace MCP for agents)
-- `MEMPALACE_REMOTE_ENABLED` (default `false`, starts Actuarius' loopback MemPalace federation server and routes repo memory through it)
+- `MEMPALACE_ENABLED` (default `false`, enables the bot memory client over shared HTTP MCP)
+- `MEMPALACE_REMOTE_ENABLED` (default `false`, starts the shared AgentPalace HTTP MCP and federation server)
 - `MEMPALACE_REMOTE_URL` (default `http://127.0.0.1:8765`)
 - `MEMPALACE_REMOTE_TOKEN` (optional; generated and persisted if omitted)
 - `MEMPALACE_REMOTE_MINE_ON_SYNC` (default `true`, queues repo mining after connect/sync/checkouts)
@@ -126,14 +126,19 @@ their binaries or environment values to provider processes. Use `/uninstall`
 remove its managed files. For APT installs, the command invalidates Actuarius'
 record but intentionally does not remove the system package.
 
-### MemPalace federation
+### AgentPalace shared HTTP MCP
 
-When both `MEMPALACE_ENABLED=true` and `MEMPALACE_REMOTE_ENABLED=true` are set, Actuarius runs two MemPalace stores:
+Actuarius pins AgentPalace 0.1.47. A single `agentpalace serve` process exposes federation REST and Streamable HTTP MCP at `http://127.0.0.1:8765/mcp`. Claude, Codex, Gemini, OpenCode (including planning snapshots), and the bot's own memory client use authenticated HTTP; they do not launch embedding-model subprocesses.
 
-- Local agent memory at `/data/mempalace/palace`, exposed to Claude/Codex/Gemini/OpenCode through the local `mempalace-mcp` config.
-- Remote repo memory at `/data/mempalace/remote-palace`, served by `mempalace-cli serve` on `MEMPALACE_REMOTE_BIND` and reached by the local MCP through `MEMPALACE_REMOTE_URL`.
+The existing `MEMPALACE_REMOTE_PALACE_PATH` (default `/data/mempalace/remote-palace`) remains authoritative. No database copy or merge is performed. The former local palace remains an archive, and its historical local-only diaries are not automatically included in shared-server searches. New diaries use the shared server's palace.
 
-For each connected repository, Actuarius assigns a deterministic wing named after the repo (e.g. `wing_actuarius`, matching `mempalace-cli init` naming so wings federate by name with locally initialised palaces), writes federation routing to `/data/home/appuser/.mempalace/config.json`, and queues a background `mempalace-cli mine` of the main checkout after repo connect/sync/checkouts. If a repo checkout already has `mempalace.yaml` or `mempal.yaml`, Actuarius honors its `wing:` value. Otherwise it generates an ignored `mempalace.yaml` in the checkout via `mempalace-cli init` (rooms detected from the repo structure), falling back to a generic template if init fails; request worktrees receive a copy of the main checkout's config so detected or hand-tuned rooms carry over. Repo-scoped records route in combined mode with writes going to the remote store.
+Enable `MEMPALACE_ENABLED=true` for the bot's memory client; either it or `MEMPALACE_REMOTE_ENABLED=true` starts the managed server. Existing Terraform/metadata names remain compatible. Equivalent `AGENTPALACE_*` application variables are accepted and take precedence. `MEMPALACE_CLI_PATH` now defaults to `/usr/local/bin/agentpalace`; the old binary-path setting is no longer used to spawn an MCP process.
+
+The service retains `$HOME/.mempalace/config.json`, identity and token files through an explicit `AGENTPALACE_CONFIG_DIR` override. It removes its managed self-remote and rewrites matching wing/KG/coordination routes to local storage. Other hosts' remotes remain intact. Existing project wings and rooms are preserved, including legacy YAML files; self-routes get a native `agentpalace.yaml` override. Background CLI mining continues against the authoritative store.
+
+Provider registrations converge after token resolution on startup, replace the old stdio entries, and are written with owner-only permissions. Startup verifies authenticated MCP readiness before launching the bot. See [the upgrade runbook](docs/deploy.md#agentpalace-047-http-cutover).
+
+When both memory flags are disabled, startup removes managed `mempalace` and `agentpalace` MCP registrations from every provider. Connecting a repository saves its checkout mapping without restarting the shared server or interrupting active tools. AgentPalace 0.1.47 loads these mappings at startup, so source retrieval for a newly connected repository requires the next planned server restart; ordinary memory reads, writes, and mining remain available.
 
 ## Local development
 

@@ -4124,7 +4124,7 @@ export class ActuariusBot {
   private async handleMemory(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!this.memPalace || !this.memPalace.isReady()) {
       await interaction.reply({
-        content: "MemPalace is not enabled. Set `MEMPALACE_ENABLED=true` and ensure the `mempalace-mcp` binary is installed.",
+        content: "MemPalace is not enabled. Set `MEMPALACE_ENABLED=true` and enable `MEMPALACE_REMOTE_ENABLED=true` for the shared AgentPalace HTTP server.",
         ephemeral: true
       });
       return;
