@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 import { CoordinationClient } from "./client.js";
 import { CoordinationStore, type Entry, type Work } from "./store.js";
-import { correctionSchema, encodeSpec, executionSchema, humanQuestionSchema, parseSpec, type ExecutionSpec, type PalaceTask, type Verdict } from "./contract.js";
+import { TaskValidationError, correctionSchema, encodeSpec, executionSchema, humanQuestionSchema, parseSpec, type ExecutionSpec, type PalaceTask, type Verdict } from "./contract.js";
 export interface CoordinationHooks {
     syncRequests?(): void;
     wings(): string[];
@@ -52,6 +52,9 @@ export class CoordinationSupervisor {
             return;
         this.syncing = true;
         try {
+            if (Date.now() - Number(this.store.meta("last-archive") ?? 0) > 86400000) {
+                this.store.archiveClosed(); this.store.setMeta("last-archive",String(Date.now()));
+            }
             this.store.setMeta("source_error", "");
             for (const operation of [() => this.discover(), () => this.reconcile(), () => this.messages()]) {
                 try {
@@ -111,12 +114,22 @@ export class CoordinationSupervisor {
             for (const id of new Set([...page.ids, ...[...retries].slice(0, 100)])) {
                 if (this.store.get(id))
                     { retries.delete(id); continue; }
+                const revision = page.revisions[id];
+                if (revision !== undefined && this.store.meta(`observed:${id}`) === String(revision)) continue;
                 let task: PalaceTask | null;
                 try { task = await this.api.get(id); retries.delete(id); }
                 catch (error) {
                     retries.add(id);
                     this.store.setMeta("source_error", `Task ${id}: ${String(error)}`);
                     continue;
+                }
+                if (task) {
+                    const registering = this.store.list().find(e => e.source === "discord" && e.phase === "registering" && task!.created_by === e.sender && task!.description === this.registrationDescription(e));
+                    if (registering) {
+                        if (this.activeEntryId !== registering.id) { registering.task = task; this.store.save(registering); }
+                        continue;
+                    }
+                    this.store.setMeta(`observed:${id}`, String(task.revision));
                 }
                 if (!task || terminal.has(task.state) || (task.state !== "pending" && task.owner !== this.worker) || !task.description.includes("```actuarius-task"))
                     continue;
@@ -181,6 +194,7 @@ export class CoordinationSupervisor {
             const dep = await this.api.get(id);
             if (!dep || dep.state !== "completed") {
                 e.reason = `Waiting for dependency ${id} (${dep?.state ?? "missing"})`;
+                this.deferDependency(e);
                 this.store.save(e);
                 return false;
             }
@@ -191,13 +205,19 @@ export class CoordinationSupervisor {
             const kind = explicit?.kind ?? (ownWork && depWork && ownWork.repository === depWork.repository && ownWork.work_id !== depWork.work_id ? "merged" : null);
             if (kind && (!local || !await this.hooks.gate(e, local, kind))) {
                 e.reason = `Waiting for ${kind} artifact from ${id}${kind === "merged" && ownWork?.path ? "; integrate the dependency into this retained branch before resuming" : ""}`;
+                this.deferDependency(e);
                 this.store.save(e);
                 return false;
             }
         }
         e.reason = "";
+        this.store.setMeta(`dependency-delay:${e.id}`, "0");
         this.store.save(e);
         return true;
+    }
+    private deferDependency(e: Entry): void {
+        const delay = Math.min(600000, Math.max(60000, Number(this.store.meta(`dependency-delay:${e.id}`) ?? 0) * 2));
+        this.store.setMeta(`dependency-delay:${e.id}`, String(delay)); e.next_at = Date.now() + delay;
     }
     private notice(e: Entry, content: string, suffix: string): void {
         this.store.enqueue({ key: `${e.id}:${suffix}`, kind: "notice", entry: e.id, payload: { content } });
@@ -210,12 +230,20 @@ export class CoordinationSupervisor {
             } });
         this.notice(e, `Task ${e.task!.task_id} needs correction:\n${questions.join("\n")}\nReply to this message to provide input.`, `question:${validation}`);
     }
+    private registrationDescription(e: Entry): string { return `${e.description}\n<!-- actuarius:${this.worker}:${e.id} -->`; }
     private async run(e: Entry): Promise<void> {
         let lease: PalaceTask | null = null;
         let renewTimer: NodeJS.Timeout | null = null;
+        let leaseDeadline: NodeJS.Timeout | null = null;
         let renewing: Promise<void> = Promise.resolve();
         const abort = new AbortController();
         this.controller = abort;
+        const watchLease = (): void => {
+            if(leaseDeadline) clearTimeout(leaseDeadline);
+            const deadline=lease?.lease_expires_at ? Date.parse(lease.lease_expires_at)-15000 : Date.now();
+            leaseDeadline=setTimeout(()=>abort.abort(new Error("Lease could not be confirmed before its safety margin")),Math.max(0,deadline-Date.now()));
+            leaseDeadline.unref();
+        };
         const transition = async (state: string, details: unknown): Promise<void> => {
             if (renewTimer) {
                 clearInterval(renewTimer);
@@ -224,6 +252,7 @@ export class CoordinationSupervisor {
             await renewing;
             abort.signal.throwIfAborted();
             lease = await this.api.mutate("transition", { task_id: lease!.task_id, actor: this.worker, expected_revision: lease!.revision, state, details });
+            if(leaseDeadline) {clearTimeout(leaseDeadline);leaseDeadline=null;}
             e.task = lease;
             this.store.save(e);
         };
@@ -246,7 +275,7 @@ export class CoordinationSupervisor {
                     e.wing = await this.api.creationWing(e.wing, authority);
                     this.store.save(e);
                 }
-                e.task = await this.api.create({ created_by: e.sender, idempotency_key: e.id, wing: e.wing, title: e.spec?.requirements[0]?.slice(0, 200) ?? "Discord task", description: e.description, dependencies: deps });
+                e.task = await this.api.create({ created_by: e.sender, idempotency_key: e.id, wing: e.wing, title: e.spec?.requirements[0]?.slice(0, 200) ?? "Discord task", description: this.registrationDescription(e), dependencies: deps });
                 if (authority) this.store.setMeta(`authority:${e.task.task_id}`, authority);
                 if (this.store.meta(`cancel:${e.id}`)) {
                     e.task = await this.api.mutate("transition", { task_id: e.task.task_id, actor: this.worker, expected_revision: e.task.revision, state: "cancelled" });
@@ -285,11 +314,17 @@ export class CoordinationSupervisor {
                 return;
             }
             lease = await this.api.mutate("claim", { task_id: current.task_id, worker: this.worker, expected_revision: current.revision, lease_seconds: 120 });
+            watchLease();
             e.task = lease;
             this.store.save(e);
             renewTimer = setInterval(() => {
-                renewing = renewing.then(async () => { lease = await this.api.mutate("renew", { task_id: lease!.task_id, worker: this.worker, expected_revision: lease!.revision, lease_seconds: 120 }); })
-                    .catch(error => { abort.abort(error); });
+                renewing = renewing.then(async () => {
+                    try { lease = await this.api.mutate("renew", { task_id: lease!.task_id, worker: this.worker, expected_revision: lease!.revision, lease_seconds: 120 }); watchLease(); }
+                    catch (error) {
+                        this.logger.warn({error, task:e.id}, "Lease renewal failed; retrying within confirmed lease");
+                        if (!lease?.lease_expires_at || Date.now() >= Date.parse(lease.lease_expires_at) - 35000) abort.abort(error);
+                    }
+                });
             }, 30000);
             renewTimer.unref();
             if (e.phase === "interrupted") {
@@ -317,12 +352,15 @@ export class CoordinationSupervisor {
                     if (!e.spec)
                         throw new Error("Supply a version 1 actuarius-task block");
                     e.work_id = e.spec.workspace?.work_id ?? null;
-                    await this.hooks.check(e.spec);
                     if (e.spec.gates?.some(g => !e.task!.dependencies.includes(g.task_id)))
                         throw new Error("Every gate must reference a native dependency");
                 }
                 catch (error) {
                     questions = [error instanceof Error ? error.message : String(error)];
+                }
+                if (!questions.length) {
+                    try { await this.hooks.check(e.spec!); }
+                    catch (error) { if (error instanceof TaskValidationError) questions = [error.message]; else throw error; }
                 }
                 if (questions.length === 0) {
                     const verdict = await this.hooks.validate(e, abort.signal);
@@ -390,7 +428,7 @@ export class CoordinationSupervisor {
             }
         }
         catch (error) {
-            if (e.phase !== "input_transition") e.reason = error instanceof Error ? error.message : String(error);
+            if (e.phase !== "input_transition") e.reason = error instanceof Error ? `${error.message}${"stderr" in error ? `: ${String(error.stderr).slice(-3000)}` : ""}` : String(error);
             if (e.phase === "running") {
                 e.phase = "interrupted";
                 e.reason = `Execution stopped; retained workspace needs inspection: ${e.reason}`;
@@ -398,9 +436,6 @@ export class CoordinationSupervisor {
             e.attempts++;
             e.next_at = Date.now() + Math.min(300000, 5000 * 2 ** Math.min(6, e.attempts));
             this.store.moveToTail(e);
-            if (e.attempts >= 3 && e.phase === "validate") {
-                e.phase = "interrupted";
-            }
             const latest = this.store.get(e.id);
             if (latest?.phase === "cancelled") {
                 e.phase = "cancelled";
@@ -412,6 +447,7 @@ export class CoordinationSupervisor {
             if (renewTimer)
                 clearInterval(renewTimer);
             await renewing;
+            if(leaseDeadline)clearTimeout(leaseDeadline);
             this.controller = null;
             this.hooks.syncRequests?.();
         }
@@ -420,6 +456,14 @@ export class CoordinationSupervisor {
         for (const msg of await this.api.inbox(this.worker)) {
             if (!this.store.seen(msg.message_id)) {
                 const e = this.store.get(msg.task_id);
+                if (["task_correction","human_input_required"].includes(msg.kind)) {
+                    const parsed = msg.kind === "task_correction" ? correctionSchema.safeParse(msg.payload) : humanQuestionSchema.safeParse(msg.payload);
+                    const reason = !e ? "Task is not managed by this worker" : msg.sender !== e.sender ? "Sender is not the task submitter" : e.phase !== "input_required" ? "Task is not awaiting input" : !parsed.success ? parsed.error.message : parsed.data.validation_id !== e.validation_id ? "Stale validation attempt" : msg.kind === "human_input_required" && e.human_answered ? "Human already answered" : null;
+                    if(reason) {
+                        await this.api.call("message_send", {task_id:msg.task_id,sender:this.worker,recipient:msg.sender,kind:"correction_rejected",payload:{version:1,reason},idempotency_key:`reject:${msg.message_id}`});
+                        this.store.acknowledge(msg.message_id); await this.api.call("message_acknowledge",{message_id:msg.message_id,actor:this.worker}); continue;
+                    }
+                }
                 if (e && e.phase === "input_required" && msg.sender === e.sender) {
                     if (msg.kind === "task_correction") {
                         const correction = correctionSchema.safeParse(msg.payload);
@@ -461,12 +505,15 @@ export class CoordinationSupervisor {
             await this.api.call("message_acknowledge", { message_id: msg.message_id, actor: this.worker });
         }
     }
+    public questionEntry(messageId:string): Entry|null {
+        const id=this.store.meta(`question:${messageId}`);
+        return id ? this.store.get(id) : this.store.list().find(e=>e.question_message===messageId) ?? null;
+    }
     public async answer(messageId: string, answer: string, eventId: string): Promise<boolean> {
-        const e = this.store.list().find(v => v.question_message === messageId && v.phase === "input_required");
-        if (!e)
-            return !!this.store.meta(`question:${messageId}`);
-        if (e.human_answered)
-            return true;
+        const e = this.questionEntry(messageId);
+        if (!e) return false;
+        const validation=this.store.meta(`question-validation:${messageId}`);
+        if (e.phase!=="input_required" || e.human_answered || (validation && validation!==e.validation_id)) throw new Error("This question is no longer open. Reply to the current task question.");
         e.checkpoint = null;
         e.action = e.spec?.action ?? "ask";
         e.human_answered = true;
@@ -559,6 +606,7 @@ export class CoordinationSupervisor {
                         latest.question_message = message;
                         this.store.save(latest);
                         this.store.setMeta(`question:${message}`, e.id);
+                        this.store.setMeta(`question-validation:${message}`, e.validation_id!);
                     }
                 }
                 this.store.delivered(out.key);

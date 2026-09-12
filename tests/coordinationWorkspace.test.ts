@@ -6,6 +6,7 @@ import { CoordinationStore } from "../src/services/coordination/store.js";
 import { git, provisionWork, prepareValidationWorkspace } from "../src/services/coordination/workspace.js";
 vi.mock("../src/services/githubAuthService.js", () => ({ configureRepositoryGitAuth: async () => { } }));
 vi.mock("../src/services/gitWorkspaceService.js", () => ({
+    withRepositoryLock: async (_path:string, run:()=>Promise<unknown>) => run(),
     buildRepoCheckoutPath: (root: string, owner: string, repo: string) => join(root, owner, repo),
     ensureRepoCheckedOutToMaster: async () => ({})
 }));

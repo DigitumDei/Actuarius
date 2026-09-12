@@ -1,12 +1,13 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, type ButtonInteraction, type ChatInputCommandInteraction, type Message, type Client, type AnyThreadChannel } from "discord.js";
 import type { Logger } from "pino";
+import { join } from "node:path";
 import type { AppConfig } from "../config.js";
 import type { AppDatabase } from "../db/database.js";
 import type { AiProvider, RepoRow } from "../db/types.js";
 import { CoordinationStore, type Entry, type Work } from "../services/coordination/store.js";
 import { CoordinationClient } from "../services/coordination/client.js";
 import { CoordinationSupervisor } from "../services/coordination/supervisor.js";
-import { executionSchema, fingerprint, verdictSchema, type ExecutionSpec } from "../services/coordination/contract.js";
+import { TaskValidationError, executionSchema, fingerprint, verdictSchema, type ExecutionSpec } from "../services/coordination/contract.js";
 import { git, provisionWork, resolveRef, prepareValidationWorkspace } from "../services/coordination/workspace.js";
 import { isApprovedVerification } from "../services/iterativeTaskLoopService.js";
 import { buildRepoCheckoutPath, detectDefaultBranch, autoCommitAll, getHeadSha, pushBranch } from "../services/gitWorkspaceService.js";
@@ -59,6 +60,8 @@ interface PlanCheckpoint {
     results: string[];
 }
 export class CoordinationBridge {
+    private readonly threadFlights = new Map<string, Promise<AnyThreadChannel>>();
+    private readonly gateFetches = new Map<string, number>();
     public readonly store: CoordinationStore;
     public readonly supervisor: CoordinationSupervisor;
     public constructor(private readonly client: Client, private readonly config: AppConfig, private readonly db: AppDatabase, palace: MemPalaceClient, logger: Logger, private readonly runners: BridgeRunners) {
@@ -125,7 +128,7 @@ export class CoordinationBridge {
                 const sharesRepository = work?.repository === other.repository;
                 const repo = this.repo(other.repository);
                 const base = buildRepoCheckoutPath(config.reposRootPath, repo.owner, repo.repo);
-                await git(base, ["fetch", "origin"]);
+                if(Date.now()-(this.gateFetches.get(base) ?? 0)>=60000) {await git(base,["fetch","origin"]);this.gateFetches.set(base,Date.now());}
                 const target = await resolveRef(base, sharesRepository ? work!.base_ref : other.integration_target);
                 const includesInWorkspace = async (commit: string): Promise<boolean> => {
                     if (!sharesRepository || (!work!.path && !work!.base_sha)) return true;
@@ -160,12 +163,16 @@ export class CoordinationBridge {
     public start(): void { this.supervisor.start(); }
     public async stop(): Promise<void> { await this.supervisor.stop(); this.store.close(); }
     private syncRequests(): void {
+        const allEntries = this.store.list();
+        const grouped = new Map<string|null, Entry[]>();
+        for (const e of allEntries) { const group = grouped.get(e.work_id) ?? []; group.push(e); grouped.set(e.work_id, group); }
         for (const work of this.store.works()) {
-            if (!work.request_id) continue;
-            const entries = this.store.list().filter(e => e.work_id === work.work_id);
+            const entries = grouped.get(work.work_id) ?? [];
             if (!entries.length) continue;
             const active = entries.filter(e => !["completed", "cancelled", "failed", "expired"].includes(e.phase));
-            const latest = entries.slice().sort((a,b) => a.created_at.localeCompare(b.created_at) || a.sequence-b.sequence).at(-1)!;
+            if(!work.path && !work.request_id && !active.length && entries.every(e=>e.source==="discord" && e.spec?.action==="report" && !e.thread_id)) {work.closed=true;this.store.saveWork(work);}
+            if (!work.request_id) continue;
+            const latest = entries.slice().sort((a,b) => a.created_at.localeCompare(b.created_at) || (a.creation_order ?? a.sequence)-(b.creation_order ?? b.sequence)).at(-1)!;
             const status = active.some(e => e.phase === "running" || e.phase === "publishing") ? "running"
                 : active.some(e => ["registering", "validate", "execute"].includes(e.phase)) ? "queued"
                 : active.length ? "failed" : latest.phase === "completed" ? "succeeded" : "failed";
@@ -173,12 +180,12 @@ export class CoordinationBridge {
                 this.db.updateRequestStatus(work.request_id, status);
         }
     }
-    private authorized(interaction: ChatInputCommandInteraction, work: Work | null, task?: Entry | null): boolean {
+    private authorized(interaction: {user:{id:string};memberPermissions?:{has(bit:bigint):boolean}|null|undefined}, work: Work | null, task?: Entry | null): boolean {
         if (interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return true;
         if (task) return task.sender === `discord:${interaction.user.id}`;
         const requester = work?.request_id ? this.db.getRequestById(work.request_id)?.user_id : null;
         if (requester) return requester === interaction.user.id;
-        const first = this.store.list().filter(e => e.work_id === work?.work_id).sort((a,b) => a.created_at.localeCompare(b.created_at) || a.sequence-b.sequence)[0];
+        const first = this.store.list().filter(e => e.work_id === work?.work_id).sort((a,b) => a.created_at.localeCompare(b.created_at) || (a.creation_order ?? a.sequence)-(b.creation_order ?? b.sequence))[0];
         return first?.sender === `discord:${interaction.user.id}`;
     }
     private async denyMutation(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -188,7 +195,7 @@ export class CoordinationBridge {
         const work = this.store.works().find(w => w.thread_id === threadId);
         if (!work || work.closed)
             return;
-        if (this.store.list().some(e => e.work_id === work.work_id && !["completed", "cancelled", "expired"].includes(e.phase))) {
+        if (this.store.list().some(e => e.work_id === work.work_id && !["completed", "cancelled", "failed", "expired"].includes(e.phase))) {
             throw new Error("This workspace still has queued, failed, or unresolved tasks. Complete or cancel them before deletion.");
         }
         // Pin the closed state before awaiting Git so concurrent intake cannot reuse it.
@@ -201,7 +208,14 @@ export class CoordinationBridge {
                 throw new Error("Workspace has local changes; preserve them before deletion");
             await git(work.path, ["fetch", "origin"]);
             const target = await resolveRef(work.path, work.integration_target);
-            await git(work.path, ["merge-base", "--is-ancestor", "HEAD", target]);
+            const sha = await getHeadSha(work.path);
+            try { await git(work.path, ["merge-base", "--is-ancestor", sha, target]); }
+            catch {
+                const result = await spawnCollect("gh", ["pr", "view", work.branch, "--repo", work.repository, "--json", "state,headRefOid,mergeCommit"], {cwd:work.path,env:getGitHubCommandEnvironment(),timeoutMs:30000,maxBuffer:65536});
+                const pr = JSON.parse(result.stdout) as {state:string;headRefOid:string;mergeCommit:{oid:string}|null};
+                if(pr.state!=="MERGED" || pr.headRefOid!==sha || !pr.mergeCommit) throw new Error("No exact merged PR for retained HEAD");
+                await git(work.path,["merge-base","--is-ancestor",pr.mergeCommit.oid,target]);
+            }
         }
         catch (error) {
             work.closed = false;
@@ -242,18 +256,18 @@ export class CoordinationBridge {
     }
     private wing(repo: RepoRow): string { return buildRepoMemoryWing({ owner: repo.owner, repo: repo.repo, fullName: repo.full_name }); }
     private repo(name: string): RepoRow { const repo = this.db.listAllRepos().find(r => r.full_name.toLowerCase() === name.toLowerCase()); if (!repo)
-        throw new Error(`Repository ${name} is not connected through Discord`); return repo; }
+        throw new TaskValidationError(`Repository ${name} is not connected through Discord`); return repo; }
     private async check(spec: ExecutionSpec): Promise<void> {
         if (!spec.workspace)
             return;
         const old = this.store.work(spec.workspace.work_id);
         if (old?.closed)
-            throw new Error("Work is closed; use a new work_id");
+            throw new TaskValidationError("Work is closed; use a new work_id");
         for (const field of ["repository", "base_ref", "integration_target"] as const) {
             if (old && spec.workspace[field] !== undefined && spec.workspace[field] !== old[field])
-                throw new Error(`workspace.${field} conflicts with registered work`);
+                throw new TaskValidationError(`workspace.${field} conflicts with registered work`);
             if (!old && !spec.workspace[field])
-                throw new Error(`Unknown work_id requires workspace.${field}`);
+                throw new TaskValidationError(`Unknown work_id requires workspace.${field}`);
         }
         const setup = old ?? spec.workspace;
         const repo = this.repo(setup.repository!);
@@ -268,6 +282,13 @@ export class CoordinationBridge {
         return verdictSchema.parse(JSON.parse(output.replace(/^```(?:json)?\s*|\s*```$/g, "")));
     }
     private async thread(work: Work, repo: RepoRow): Promise<AnyThreadChannel> {
+        const pending = this.threadFlights.get(work.work_id);
+        if (pending) { const result=await pending; work.thread_id=result.id; return result; }
+        const saved=this.store.work(work.work_id); if(saved?.thread_id) work.thread_id=saved.thread_id;
+        const flight=this.createThread(work,repo); this.threadFlights.set(work.work_id,flight);
+        try { return await flight; } finally { this.threadFlights.delete(work.work_id); }
+    }
+    private async createThread(work: Work, repo: RepoRow): Promise<AnyThreadChannel> {
         if (work.thread_id) {
             const existing = await this.client.channels.fetch(work.thread_id);
             if (existing?.isThread())
@@ -289,7 +310,9 @@ export class CoordinationBridge {
     private async notice(e: Entry, content: string, key: string): Promise<string | null> {
         let target: Awaited<ReturnType<Client["channels"]["fetch"]>> = null;
         const work = e.work_id ? this.store.work(e.work_id) : null;
-        if (work)
+        if (work && e.spec?.action === "report" && !e.thread_id && !work.path)
+            target = await this.client.channels.fetch(this.repo(work.repository).channel_id);
+        else if (work)
             target = await this.thread(work, this.repo(work.repository));
         else if (this.config.coordinationChannelId)
             target = await this.client.channels.fetch(this.config.coordinationChannelId);
@@ -316,6 +339,11 @@ export class CoordinationBridge {
             return { result };
         }
         const repo = this.repo(work.repository);
+        if (spec.action === "report" && !e.thread_id && !work.path) {
+            const prompt = this.store.meta(`issue-summary:${e.id}`) ? buildIssueSummaryPrompt({repoFullName:repo.full_name,issues:await listOpenIssues(repo.full_name)}) : spec.requirements.join("\n");
+            const result = await this.runners.text({cwd:buildRepoCheckoutPath(this.config.reposRootPath,repo.owner,repo.repo),repo,signal,prompt:`Produce the requested report. Do not edit repository files or spawn other LLMs.\n${prompt}`});
+            return {result};
+        }
         await provisionWork(this.store, this.config.reposRootPath, { owner: repo.owner, repo: repo.repo, fullName: repo.full_name }, work);
         const thread = await this.thread(work, repo);
         await this.runners.prepare(repo, work.path!);
@@ -325,13 +353,14 @@ export class CoordinationBridge {
             work.request_id = request.id;
             this.store.saveWork(work);
         }
+        if (!this.store.meta(`task-baseline:${e.id}`)) this.store.setMeta(`task-baseline:${e.id}`, await getHeadSha(work.path!));
         const action = e.checkpoint ? e.action : spec.action;
         this.db.updateRequestStatus(work.request_id!, "running");
         if (action === "verify-result") {
-            const diff = await git(work.path!, ["diff", work.base_sha ?? work.base_ref, "--", ".", ":(exclude)docs/reviews/**"]);
+            const diff = await git(work.path!, ["diff", this.store.meta(`task-baseline:${e.id}`) ?? work.base_sha ?? work.base_ref, "--", ".", ":(exclude)docs/reviews/**"]);
             const feedback = await this.runners.text({ cwd: work.path!, signal, role: "verification", repo, threadId: thread.id,
                 prompt: `Verify the completed task against every acceptance criterion. Inspect the work and run relevant checks. Do not edit files, spawn other LLMs, push, merge, or release. Return exactly APPROVED if satisfied; otherwise explain what needs correction.\nRequirements:\n${spec.requirements.join("\n")}\nAcceptance criteria:\n${spec.acceptance_criteria.join("\n")}\nImplementation report:\n${e.checkpoint}\nDiff:\n${diff}` });
-            if (feedback.trim() !== "APPROVED")
+            if (!isApprovedVerification(feedback))
                 throw new Error(`Acceptance verification requires input: ${feedback}`);
             this.store.setMeta(`output-sha:${e.id}`, await getHeadSha(work.path!));
             return { result: e.checkpoint! };
@@ -387,7 +416,9 @@ export class CoordinationBridge {
         }
         const planning = ["plan", "plan-oc", "revise"].includes(action);
         let attachmentText = "";
-        if (e.attachments.length) {
+        const cachedAttachments = this.store.meta(`attachments:${e.id}`);
+        if (cachedAttachments) attachmentText = `\n${cachedAttachments}`;
+        else if (e.attachments.length) {
             attachmentText = `\nAttachments: ${JSON.stringify(e.attachments)}`;
             // Files are prepared using the same bounded attachment service as legacy requests.
             const processed = await processAttachments(e.attachments as PendingAttachment[], work.request_id!, work.path!, { maxCount: this.config.attachmentMaxCount, maxFileSize: this.config.attachmentMaxFileSize, maxTotalSize: this.config.attachmentMaxTotalSize, maxInlineText: this.config.attachmentMaxInlineText }, e.id);
@@ -398,6 +429,8 @@ export class CoordinationBridge {
         let prompt = `${readOnly ? "Produce a report/plan only; do not modify repository files." : "Implement the requested change on the existing branch. Do not merge, release, push, or open a PR; the supervisor handles delivery."}\nDo not spawn other LLMs or subagents: this host supports one LLM at a time.\nWork ${work.work_id}; branch ${work.branch}; integration target ${work.integration_target}.\nRequirements:\n${spec.requirements.join("\n")}\nAcceptance criteria:\n${spec.acceptance_criteria.join("\n")}\nPrior work:\n${history}\n${e.checkpoint ?? ""}${attachmentText}`;
         if (planning)
             prompt = buildPlanPrompt({ repoFullName: repo.full_name, requestPrompt: prompt, iterative: spec.iterative !== false, maxTasks: 20 });
+        if (spec.action === "ask") prompt = `Answer the user's question. Do not change files unless the user explicitly requests changes. Do not spawn other LLMs, push, merge or release.\n${spec.requirements.join("\n")}\n${history}${attachmentText}`;
+        if (this.store.meta(`issue-summary:${e.id}`)) prompt = buildIssueSummaryPrompt({repoFullName:repo.full_name,issues:await listOpenIssues(repo.full_name)});
         const result = await this.runners.text({ prompt, cwd: work.path!, signal, ...(spec.action === "ask" ? {} : { role: planning ? "planner" as const : "implementation" as const }), repo, threadId: thread.id, opencodePlan: spec.action === "plan-oc" });
         signal.throwIfAborted();
         if (planning && spec.deliverable !== "report") {
@@ -407,7 +440,7 @@ export class CoordinationBridge {
             const checkpoint: PlanCheckpoint = { ...parsed, tasks: parsed.tasks.slice(0, 20), index: 0, attempts: 0, baseline: "", output: "", feedback: "", results: [] };
             return { result, next: "plan-implement", checkpoint: JSON.stringify(checkpoint) };
         }
-        if (spec.deliverable !== "report")
+        if (spec.deliverable !== "report" || spec.action === "ask")
             await autoCommitAll(work.path!, `Task: ${spec.requirements[0]!.slice(0, 100)}`, ["docs/reviews/"]);
         this.store.setMeta(`output-sha:${e.id}`, await getHeadSha(work.path!));
         if (spec.deliverable === "draft_pr")
@@ -436,6 +469,13 @@ export class CoordinationBridge {
         const prior = this.store.event(eventId);
         if (prior)
             return prior;
+        const attachmentKey = `attachments:discord-${eventId}`;
+        if (attachments.length && !this.store.meta(attachmentKey)) {
+            const root=join(this.config.reposRootPath,".coordination-input");
+            const prepared=await processAttachments(attachments,0,root,{maxCount:this.config.attachmentMaxCount,maxFileSize:this.config.attachmentMaxFileSize,maxTotalSize:this.config.attachmentMaxTotalSize,maxInlineText:this.config.attachmentMaxInlineText},`discord-${eventId}`);
+            for(const file of prepared.processed) file.savedPath=join(root,file.savedPath);
+            this.store.setMeta(attachmentKey,JSON.stringify(prepared));
+        }
         const repairId = this.store.meta(`repair-event:${eventId}`);
         if (repairId)
             return this.store.get(repairId)!;
@@ -453,8 +493,8 @@ export class CoordinationBridge {
             const base = await detectDefaultBranch(path);
             workspace = { work_id: `discord-${eventId}`, repository: repo.full_name.toLowerCase(), base_ref: base.branchName, integration_target: base.branchName };
         }
-        const spec = executionSchema.parse({ version: 1, executor: "actuarius", action, workspace, iterative, requirements: [prompt], acceptance_criteria: [action === "ask" ? "Answer the user's request accurately; explain any changes made." : `Complete the requested ${action} operation and report the outcome.`], deliverable: action === "pr" ? "draft_pr" : action === "report" ? "report" : "workspace_changes" });
-        const previous = predecessor ? this.store.get(predecessor) : work ? this.store.list().filter(e => e.work_id === work!.work_id).at(-1) : null;
+        const spec = executionSchema.parse({ version: 1, executor: "actuarius", action, workspace, iterative, requirements: [prompt], acceptance_criteria: [action === "ask" ? "Answer the user's request accurately; explain any changes made." : `Complete the requested ${action} operation and report the outcome.`], deliverable: action === "pr" ? "draft_pr" : (action === "report" || action === "ask") ? "report" : "workspace_changes" });
+        const previous = predecessor ? this.store.get(predecessor) : work ? this.store.list().filter(e => e.work_id === work!.work_id).sort((a,b) => a.created_at.localeCompare(b.created_at) || (a.creation_order ?? a.sequence)-(b.creation_order ?? b.sequence)).at(-1) : null;
         if (previous && previous.work_id !== workspace?.work_id)
             throw new Error("The replied-to task belongs to another workspace");
         const repairing = action === "revise" && previous && ["input_required", "interrupted", "failed"].includes(previous.phase);
@@ -467,9 +507,16 @@ export class CoordinationBridge {
         return this.supervisor.submit({ eventId, sender, wing: previous?.task?.wing ?? previous?.wing ?? this.wing(repo), spec, dependencies: deps, ...(work?.thread_id ? { threadId: work.thread_id } : {}), attachments });
     }
     public async message(message: Message): Promise<boolean> {
+        try { return await this.handleMessage(message); }
+        catch(error) { await message.reply(error instanceof Error ? error.message.slice(0,1800) : "Unable to queue this request."); return true; }
+    }
+    private async handleMessage(message: Message): Promise<boolean> {
         if (message.author.bot || !message.guildId)
             return false;
-        if (message.reference?.messageId && await this.supervisor.answer(message.reference.messageId, message.content, message.id)) {
+        const question = message.reference?.messageId ? this.supervisor.questionEntry(message.reference.messageId) : null;
+        if (question) {
+            if (!this.authorized({user:message.author,memberPermissions:message.member?.permissions},null,question)) { await message.reply("Only the original requester or a user with Manage Server can answer this question."); return true; }
+            await this.supervisor.answer(message.reference!.messageId!, message.content, message.id);
             await message.reply("Answer recorded; validation/correction will continue.");
             return true;
         }
@@ -488,6 +535,8 @@ export class CoordinationBridge {
         }
         const predecessor = message.reference?.messageId ? this.store.meta(`message-task:${message.reference.messageId}`) ?? undefined : undefined;
         const currentWork = this.store.works().find(w => w.thread_id === message.channelId);
+        if (!currentWork) return false;
+        if (!this.authorized({user:message.author,memberPermissions:message.member?.permissions}, currentWork)) { await message.reply("Only the original requester or a user with Manage Server can continue this work."); return true; }
         const unfinished = this.store.list().filter(e => e.work_id === currentWork?.work_id && !['completed', 'failed', 'cancelled', 'expired'].includes(e.phase));
         if (!predecessor && unfinished.length > 1) {
             await message.reply("Several tasks are unfinished in this work thread. Reply to the update for the task you want to continue.");
@@ -505,7 +554,7 @@ export class CoordinationBridge {
             const work = interaction.options.getString("work_id");
             const status = interaction.options.getString("state");
             const page = interaction.options.getInteger("page") ?? 1;
-            this.store.setMeta(`tasks-view:${interaction.id}`, JSON.stringify({ repo, work, state: status, page }));
+            this.store.setMeta(`tasks-view:${interaction.id}`, JSON.stringify({ repo, work, state: status, page, created_at:Date.now() }));
             await interaction.reply({ content: this.taskList(repo, work, status, page), components: [new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId(`coordtasks:${interaction.id}`).setLabel("Refresh").setStyle(ButtonStyle.Secondary))], ephemeral: true });
             return true;
         }
@@ -527,7 +576,8 @@ export class CoordinationBridge {
         if (!repo)
             return false;
         if (["cancel", "status"].includes(interaction.commandName)) {
-            const work = thread ? await this.adopt(thread.id, repo) : null;
+            const work = thread ? this.store.works().find(w => w.thread_id === thread.id) ?? null : null;
+            if (!work || !this.store.list().some(e => e.work_id === work.work_id)) return false;
             const entries = this.store.list().filter(e => e.work_id === work?.work_id && !["completed", "cancelled", "failed", "expired"].includes(e.phase));
             if (interaction.commandName === "status") {
                 await interaction.reply({ content: entries.map(e => `${e.task?.task_id ?? e.id}: ${e.phase} ${e.reason}`).join("\n").slice(0, 1900) || "No active tasks", ephemeral: true });
@@ -558,7 +608,7 @@ export class CoordinationBridge {
         if (issueCreation)
             prompt = buildIssueCreationPrompt({ requestPrompt: prompt, defaultLabel: interaction.commandName === "bug" ? "bug" : "enhancement" });
         if (issueSummary)
-            prompt = buildIssueSummaryPrompt({ repoFullName: repo.full_name, issues: await listOpenIssues(repo.full_name) });
+            prompt = "Summarize the currently open GitHub issues.";
         const attachments: PendingAttachment[] = [];
         if (interaction.commandName === "ask")
             for (let i = 1; i <= 5; i++) {
@@ -572,6 +622,7 @@ export class CoordinationBridge {
             return true;
         }
         const e = await this.intake(interaction.id, `discord:${interaction.user.id}`, repo, thread?.id ?? null, issueCreation || issueSummary ? "report" : interaction.commandName as ExecutionSpec["action"], prompt, attachments, interaction.commandName === "plan" ? interaction.options.getBoolean("iterative") ?? true : true);
+        if (issueSummary) this.store.setMeta(`issue-summary:${e.id}`, "1");
         await interaction.editReply(`Queued ${e.id} at Discord priority. Work: ${e.work_id}. /tasks shows its progress.`);
         return true;
     }

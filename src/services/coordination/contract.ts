@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 const text = z.string().trim().min(1).max(16000);
+export class TaskValidationError extends Error {}
 export const workIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const ref = z.string().min(1).max(256).refine(v => !v.startsWith("-") && !/[\s~^:?*\[\\]|\.\.|@\{|\/\//u.test(v), "Expected a branch name or commit SHA");
 export const workspaceSchema = z.object({

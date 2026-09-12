@@ -10,6 +10,7 @@ import type { Client, Message, ChatInputCommandInteraction } from "discord.js";
 import { CoordinationBridge } from "../src/discord/coordinationBridge.js";
 import { executionSchema } from "../src/services/coordination/contract.js";
 import { PermissionFlagsBits } from "discord.js";
+import {readFile} from "node:fs/promises";
 const cleanup: Array<() => void> = [];
 afterEach(() => cleanup.splice(0).forEach(fn => fn()));
 function fixture() {
@@ -43,7 +44,7 @@ describe("Discord coordination intake", () => {
     });
     it("queues thread followups even when prior work is running, preserving workspace and dependency", async () => {
         const { bridge } = fixture();
-        bridge.store.add({ id: "prior", source: "background", description: "prior", sender: "agent", wing: "wing_coordination", work_id: "shared", phase: "running" });
+        bridge.store.add({ id: "prior", source: "background", description: "prior", sender: "discord:user", wing: "wing_coordination", work_id: "shared", phase: "running" });
         const reply = vi.fn();
         const message = { id: "event", author: { bot: false, id: "user" }, guildId: "guild", channelId: "thread", channel: { isThread: () => true, parentId: "channel" }, content: "Add tests", attachments: new Map(), reply } as unknown as Message;
         expect(await bridge.message(message)).toBe(true);
@@ -66,14 +67,43 @@ describe("Discord coordination intake", () => {
         const msg = { id: "answer", author: { bot: false, id: "user" }, guildId: "guild", channelId: "thread", channel: { isThread: () => true, parentId: "channel" }, reference: { messageId: "question" }, content: "Use Vitest", attachments: new Map(), reply: vi.fn() } as unknown as Message;
         await bridge.message(msg);
         expect(bridge.store.list()).toHaveLength(1);
+
         expect(bridge.store.get("waiting")?.phase).toBe("validate");
         await bridge.message(msg);
         expect(bridge.store.list()).toHaveLength(1);
+        expect(msg.reply).toHaveBeenLastCalledWith(expect.stringContaining("no longer open"));
     });
     it("/tasks uses saved state without an LLM or a coordination request", async () => {
         const { bridge } = fixture();
         const reply = vi.fn();
         await bridge.command({ id: "view", commandName: "tasks", guildId: "guild", options: { getString: () => null, getInteger: () => null }, reply } as unknown as ChatInputCommandInteraction);
         expect(reply.mock.calls[0]?.[0].content).toContain("No matching tasks");
+    });
+    it.each(["status","cancel"])("falls through for legacy /%s without adopting work",async(commandName)=>{
+        const {bridge}=fixture();const before=bridge.store.works();
+        const interaction={commandName,guildId:"guild",channelId:"legacy",channel:{id:"legacy",parentId:"channel",isThread:()=>true},options:{getString:()=>null}} as unknown as ChatInputCommandInteraction;
+        expect(await bridge.command(interaction)).toBe(false);expect(bridge.store.works()).toEqual(before);
+    });
+    it("refuses unauthorized question replies without changing the task",async()=>{
+        const {bridge}=fixture();bridge.store.add({id:"waiting",source:"discord",sender:"discord:owner",wing:"wing_repo",description:"",phase:"input_required",question_message:"question"});
+        const reply=vi.fn();await bridge.message({id:"answer",author:{bot:false,id:"other"},guildId:"guild",reference:{messageId:"question"},reply} as unknown as Message);
+        expect(reply).toHaveBeenCalledWith(expect.stringContaining("original requester"));expect(bridge.store.get("waiting")?.phase).toBe("input_required");
+    });
+    it("downloads attachments before acknowledging intake and reuses the durable cache",async()=>{
+        const {bridge}=fixture();const fetch=vi.fn().mockResolvedValue({ok:true,arrayBuffer:async()=>new TextEncoder().encode("saved content").buffer});vi.stubGlobal("fetch",fetch);
+        const message={id:"attachment-event",author:{bot:false,id:"user"},guildId:"guild",channelId:"thread",channel:{isThread:()=>true,parentId:"channel"},content:"Read this",attachments:new Map([["file",{id:"file",name:"notes.txt",url:"https://cdn.discord.test/expiring",size:13,contentType:"text/plain"}]]),reply:vi.fn()} as unknown as Message;
+        bridge.store.add({id:"owner",source:"discord",sender:"discord:user",wing:"wing_repo",description:"",work_id:"shared",phase:"completed"});
+        try {
+            await bridge.message(message);
+            const cached=JSON.parse(bridge.store.meta("attachments:discord-attachment-event")!) as {processed:Array<{savedPath:string}>};
+            expect(await readFile(cached.processed[0]!.savedPath,"utf8")).toBe("saved content");
+            fetch.mockRejectedValue(new Error("expired"));await bridge.message(message);expect(fetch).toHaveBeenCalledTimes(1);
+        } finally {vi.unstubAllGlobals();}
+    });
+    it("uses creation order for follow-ups even after an older task is requeued",async()=>{
+        const {bridge}=fixture();const older=bridge.store.add({id:"older",source:"discord",sender:"discord:user",wing:"wing_repo",description:"",work_id:"shared",phase:"completed",created_at:"2026-01-01T00:00:00Z"});
+        bridge.store.add({id:"newer",source:"discord",sender:"discord:user",wing:"wing_repo",description:"",work_id:"shared",phase:"completed",created_at:"2026-01-02T00:00:00Z"});bridge.store.moveToTail(older);
+        await bridge.command({id:"next",commandName:"plan",guildId:"guild",channelId:"thread",channel:{id:"thread",parentId:"channel",isThread:()=>true},user:{id:"user"},options:{getString:()=>"Next",getBoolean:()=>false},deferReply:vi.fn(),editReply:vi.fn()} as unknown as ChatInputCommandInteraction);
+        expect(bridge.store.event("next")?.dependencies).toEqual(["newer"]);
     });
 });

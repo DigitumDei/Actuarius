@@ -3,11 +3,11 @@ import { mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fingerprint } from "./contract.js";
 import type { CoordinationStore, Work } from "./store.js";
-import { buildRepoCheckoutPath, ensureRepoCheckedOutToMaster, type RepoIdentity } from "../gitWorkspaceService.js";
+import { buildRepoCheckoutPath, ensureRepoCheckedOutToMaster, withRepositoryLock, type RepoIdentity } from "../gitWorkspaceService.js";
 import { configureRepositoryGitAuth } from "../githubAuthService.js";
 import { spawnCollect } from "../../utils/spawnCollect.js";
 export async function git(cwd: string, args: string[]): Promise<string> {
-    const result = await spawnCollect("git", ["-C", cwd, ...args], { cwd, timeoutMs: 120000, maxBuffer: 4 * 1024 * 1024 });
+    const result = await withRepositoryLock(cwd, () => spawnCollect("git", ["-C", cwd, ...args], { cwd, timeoutMs: 120000, maxBuffer: 4 * 1024 * 1024 }));
     return result.stdout.trim();
 }
 export async function resolveRef(cwd: string, ref: string): Promise<string> {
@@ -22,6 +22,9 @@ export async function prepareValidationWorkspace(root: string): Promise<string> 
     return path;
 }
 export async function provisionWork(store: CoordinationStore, root: string, identity: RepoIdentity, work: Work): Promise<Work> {
+    return withRepositoryLock(buildRepoCheckoutPath(root,identity.owner,identity.repo),()=>provisionWorkUnlocked(store,root,identity,work));
+}
+async function provisionWorkUnlocked(store: CoordinationStore, root: string, identity: RepoIdentity, work: Work): Promise<Work> {
     const base = buildRepoCheckoutPath(root, identity.owner, identity.repo);
     if (work.path && existsSync(work.path)) {
         const branch = await git(work.path, ["symbolic-ref", "--short", "HEAD"]);

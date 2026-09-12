@@ -171,6 +171,13 @@ delivery independently. Cleanup protects registered workspaces; `/delete`
 requires resolved tasks, clean files, and integrated commits.
 
 The VM redeploy script accepts `env-coordination-enabled` and
+`env-coordination-channel-id` metadata, managed by Terraform variables
+`coordination_enabled` and `coordination_channel_id`. Set those variables and
+apply Terraform so later applies preserve activation. After applying, refresh
+`/var/redeploy.sh` from metadata using the deployment instructions below before
+running it; applying metadata alone does not refresh that file or the container.
+
+The redeploy script consumes `env-coordination-enabled` and
 `env-coordination-channel-id` metadata. Enabling the feature and deploying it
 are separate operational steps; adding the code does neither.
 

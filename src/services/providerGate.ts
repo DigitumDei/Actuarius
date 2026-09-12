@@ -28,3 +28,5 @@ class ProviderGate {
         this.pending.shift()?.run(); }
 }
 export const providerGate = new ProviderGate();
+export let providerGateEnabled = false;
+export function setProviderGateEnabled(enabled: boolean): void { providerGateEnabled = enabled; }

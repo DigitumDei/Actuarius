@@ -55,7 +55,7 @@ function harness() {
     const executed: string[] = [];
     let count = 0;
     const fault = vi.fn<(name: string, args: Record<string, unknown>) => void | Promise<void>>();
-    const discovery = { tasks: [] as Array<{task_id:string}>, next_cursor: null as string | null };
+    const discovery = { tasks: [] as Array<{task_id:string;revision?:number}>, next_cursor: null as string | null };
     const inbox: unknown[] = [];
     const api = new CoordinationClient({ coordinationCall: async (name, args) => {
             await fault(name, args);
@@ -107,6 +107,50 @@ function harness() {
     return { s, tasks, messages, executed, hooks, sup, tick, fault, inbox, discovery };
 }
 describe("durable supervisor", () => {
+    it("backs off an unmet dependency instead of fetching it every tick",async()=>{
+        const h=harness();const native={task_id:"blocked",title:"blocked",description:encodeSpec(spec),state:"pending" as const,revision:1,created_by:"sender",wing:"wing_repo",owner:null,lease_expires_at:null,dependencies:["dep"],parent_id:null};
+        h.tasks.set("blocked",native);h.tasks.set("dep",{...native,task_id:"dep",dependencies:[]});h.s.add({id:"blocked",source:"discord",sender:"sender",wing:"wing_repo",description:encodeSpec(spec),spec,task:native,phase:"execute"});
+        await h.tick();expect(h.s.get("blocked")!.next_at).toBeGreaterThan(Date.now()+50000);
+        h.fault.mockClear();await h.tick();expect(h.fault.mock.calls.filter(([name,args])=>name.endsWith("task_get")&&args.task_id==="dep")).toHaveLength(0);
+    });
+    it("does not turn repeated infrastructure failures into validation questions",async()=>{
+        const h=harness();h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});await h.tick();
+        h.hooks.check=async()=>{throw Object.assign(new Error("git failed"),{stderr:"network unavailable"});};
+        for(let n=0;n<4;n++){const e=h.s.get("one")!;e.next_at=0;h.s.save(e);await h.tick();}
+        expect(h.s.get("one")?.phase).toBe("validate");expect(h.s.get("one")?.reason).toContain("network unavailable");expect(h.messages).toHaveLength(0);
+    });
+    it("skips unchanged foreign tasks but rechecks new revisions",async()=>{
+        const h=harness();h.hooks.wings=()=>[""];
+        h.tasks.set("foreign",{task_id:"foreign",title:"Other",description:"other agent",state:"pending",revision:1,created_by:"other",wing:"wing_repo",owner:null,lease_expires_at:null,dependencies:[],parent_id:null});
+        h.discovery.tasks=[{task_id:"foreign",revision:1}];await h.tick();h.fault.mockClear();await h.tick();
+        expect(h.fault.mock.calls.filter(([name])=>name.endsWith("task_get"))).toHaveLength(0);
+        h.discovery.tasks=[{task_id:"foreign",revision:2}];await h.tick();expect(h.fault.mock.calls.some(([name])=>name.endsWith("task_get"))).toBe(true);
+    });
+    it("reconciles a created native task into its registering Discord entry",async()=>{
+        const h=harness();h.hooks.wings=()=>[""];
+        const entry=h.s.add({id:"discord-event",source:"discord",description:encodeSpec(spec),sender:"discord:user",wing:"wing_repo",spec,next_at:Date.now()+60000});
+        h.tasks.set("native",{task_id:"native",title:"Created",description:`${entry.description}\n<!-- actuarius:${h.sup.worker}:${entry.id} -->`,state:"pending",revision:1,created_by:entry.sender,wing:entry.wing,owner:null,lease_expires_at:null,dependencies:[],parent_id:null});
+        h.discovery.tasks=[{task_id:"native",revision:1}];await h.tick();
+        expect(h.s.list()).toHaveLength(1);expect(h.s.get("native")?.id).toBe(entry.id);expect(h.s.get(entry.id)?.source).toBe("discord");
+    });
+    it("accepts either question for the current validation and reports stale replies",async()=>{
+        const h=harness();const e=h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"discord:user",wing:"wing_repo",spec,phase:"input_required",validation_id:"v",question_message:"second"});
+        for(const id of ["first","second"]){h.s.setMeta(`question:${id}`,e.id);h.s.setMeta(`question-validation:${id}`,"v");}
+        expect(await h.sup.answer("first","Use version two","answer")).toBe(true);
+        expect(h.s.get(e.id)?.spec?.requirements.at(-1)).toContain("version two");
+        await expect(h.sup.answer("second","another answer","late")).rejects.toThrow("no longer open");
+    });
+    it("explicitly rejects corrections from an unauthorized sender or a closed input phase",async()=>{
+        const h=harness();const e=h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec,phase:"execute",next_at:Date.now()+60000});
+        h.inbox.push({message_id:"wrong",task_id:e.id,sender:"other",recipient:h.sup.worker,kind:"task_correction",payload:{version:1,validation_id:"v",spec}});
+        h.inbox.push({message_id:"late",task_id:e.id,sender:"sender",recipient:h.sup.worker,kind:"task_correction",payload:{version:1,validation_id:"v",spec}});
+        await h.tick();expect(h.messages).toHaveLength(2);expect(h.messages.every(m=>(m as {kind:string}).kind==="correction_rejected")).toBe(true);
+    });
+    it("archives old closed work without losing lookup or event deduplication",()=>{
+        const s=store();const w=s.register(spec.workspace!);w.closed=true;s.saveWork(w);
+        const e=s.add({id:"old",event_id:"event",work_id:w.work_id,source:"discord",sender:"sender",wing:"wing_repo",description:encodeSpec(spec),phase:"completed",created_at:"2020-01-01T00:00:00Z",result:"done"});
+        s.archiveClosed();expect(s.list()).toHaveLength(0);expect(s.get(e.id)?.result).toBe("done");expect(s.event("event")?.id).toBe("old");
+    });
     it("recovers a failed pending transition without repeating validation", async () => {
         const h = harness(); const validate = vi.fn(async()=>({ready:true,questions:[]})); h.hooks.validate=validate;
         h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});
@@ -177,6 +221,8 @@ describe("durable supervisor", () => {
         try {
             await h.sup.tick();
             await vi.advanceTimersByTimeAsync(30001);
+            expect(aborted).toBe(false);
+            await vi.advanceTimersByTimeAsync(60000);
             expect(aborted).toBe(true);
             expect(h.s.get("one")?.phase).toBe("interrupted");
             expect(h.s.get("one")?.result).toBeNull();

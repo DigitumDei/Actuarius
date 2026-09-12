@@ -16,6 +16,7 @@ vi.mock("../src/services/coordination/workspace.js",()=>({git:vi.fn(),resolveRef
 vi.mock("../src/utils/spawnCollect.js",()=>({spawnCollect:vi.fn()}));
 vi.mock("../src/services/gitWorkspaceService.js",()=>({buildRepoCheckoutPath:()=>"/checkout",detectDefaultBranch:vi.fn(),autoCommitAll:vi.fn(),getHeadSha:async()=>"output",pushBranch:vi.fn()}));
 vi.mock("../src/services/githubAuthService.js",()=>({getGitHubCommandEnvironment:()=>({})}));
+vi.mock("../src/services/githubService.js",()=>({listOpenIssues:async()=>[{number:1,title:"Large issue",body:"x".repeat(20000)}]}));
 
 const close:Array<()=>void>=[];
 beforeEach(()=>{vi.clearAllMocks();vi.mocked(git).mockResolvedValue("");vi.mocked(resolveRef).mockResolvedValue("merged-base");});
@@ -26,7 +27,7 @@ function fixture(){
   const threads=new Map<string,AnyThreadChannel>();
   const create=vi.fn(async({name}:{name:string})=>{const value={...thread,id:`thread-${threads.size}`,name} as AnyThreadChannel;threads.set(value.id,value);return value;});
   const channel={type:ChannelType.GuildText,threads:{fetchActive:async()=>({threads:{find:(fn:(t:AnyThreadChannel)=>boolean)=>[...threads.values()].find(fn)}}),create}};
-  const client={channels:{fetch:async(id:string)=>id==="channel"?channel:thread}} as unknown as Client;
+  const client={channels:{fetch:async(id:string)=>id==="channel"?channel:(threads.get(id) ?? thread)}} as unknown as Client;
   const db={listAllRepos:()=>[repo],getRequestById:()=>({status:"queued"}),updateRequestStatus:vi.fn()} as unknown as AppDatabase;
   const text=vi.fn(async()=>"APPROVED\nAll checks passed.");
   const bridge=new CoordinationBridge(client,{databasePath:":memory:",reposRootPath:"/repos",threadAutoArchiveMinutes:60} as AppConfig,db,{} as MemPalaceClient,pino({level:"silent"}),{text,parsePlan:()=>null,review:async()=>({ready:true,text:"review",sha:"output"}),prepare:async()=>{}});
@@ -112,4 +113,37 @@ it("keeps work IDs sharing a long prefix in separate recoverable Discord threads
   expect(one.id).not.toBe(two.id);expect(one.name.length).toBeLessThanOrEqual(100);
   work1.thread_id=null;expect((await f.internals.thread(work1,f.repo)).id).toBe(one.id);
   expect(f.create).toHaveBeenCalledTimes(2);
+});
+
+it("single-flights concurrent thread creation for separate work snapshots",async()=>{
+  const f=fixture();const w=f.bridge.store.register({work_id:"concurrent",repository:f.repo.full_name,base_ref:"main",integration_target:"main"});
+  const [a,b]=await Promise.all([f.internals.thread({...w},f.repo),f.internals.thread({...w},f.repo)]);
+  expect(a.id).toBe(b.id);expect(f.create).toHaveBeenCalledTimes(1);
+});
+
+it("returns an ask answer without scheduling a verification continuation",async()=>{
+  const f=fixture();f.entry.spec={...f.entry.spec!,action:"ask",deliverable:"report"};
+  f.text.mockResolvedValue("Here is the answer.");const result=await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  expect(result).toEqual({result:"Here is the answer."});expect(f.text.mock.calls[0]?.[0]).toMatchObject({prompt:expect.stringContaining("Answer the user's question")});
+});
+
+it("verifies against this task's baseline and accepts approval explanations",async()=>{
+  const f=fixture();f.entry.action="verify-result";f.entry.checkpoint="done";f.bridge.store.setMeta(`task-baseline:${f.entry.id}`,"task-start");
+  const result=await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  expect(result.result).toBe("done");expect(git).toHaveBeenCalledWith("/consumer",["diff","task-start","--",".",":(exclude)docs/reviews/**"]);
+});
+
+it("handles large issue summary context without provisioning a worktree",async()=>{
+  const f=fixture();f.entry.spec={...f.entry.spec!,action:"report",deliverable:"report"};f.work.path=null;f.work.request_id=null;f.entry.thread_id=null;
+  f.bridge.store.setMeta(`issue-summary:${f.entry.id}`,"1");f.text.mockResolvedValue("summary");
+  const result=await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  expect(result.result).toBe("summary");expect(f.text.mock.calls[0]?.[0]).toMatchObject({cwd:"/checkout",prompt:expect.stringContaining("x".repeat(20000))});expect(f.create).not.toHaveBeenCalled();
+});
+
+it("allows deletion only when an exact squash-merged HEAD is integrated",async()=>{
+  const f=fixture();f.entry.phase="failed";f.bridge.store.save(f.entry);
+  vi.mocked(git).mockImplementation(async(_cwd,args)=>{if(args[0]==="merge-base" && args[2]==="output")throw new Error("not ancestor");return "";});
+  vi.mocked(spawnCollect).mockResolvedValue({stdout:JSON.stringify({state:"MERGED",headRefOid:"output",mergeCommit:{oid:"squashed"}}),stderr:""} as Awaited<ReturnType<typeof spawnCollect>>);
+  await f.bridge.closeForDeletion("thread");expect(f.bridge.store.work(f.work.work_id)?.closed).toBe(true);
+  expect(git).toHaveBeenCalledWith("/consumer",["merge-base","--is-ancestor","squashed","merged-base"]);
 });

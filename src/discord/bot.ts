@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { CoordinationBridge } from "./coordinationBridge.js";
+import { setProviderGateEnabled } from "../services/providerGate.js";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -654,8 +655,9 @@ export class ActuariusBot {
   }
 
   public async start(): Promise<void> {
-    if (this.config.coordinationEnabled) {
-      if (!this.memPalace?.isReady()) throw new Error("Coordination requires a ready AgentPalace client");
+    setProviderGateEnabled(!!this.config.coordinationEnabled && !!this.memPalace?.isReady());
+    if (this.config.coordinationEnabled && !this.memPalace?.isReady()) this.logger.error("Coordination unavailable: AgentPalace is offline; continuing with legacy commands");
+    if (this.config.coordinationEnabled && this.memPalace?.isReady()) {
       this.coordination = new CoordinationBridge(this.client, this.config, this.db, this.memPalace, this.logger, {
         parsePlan: parseIterativePlan,
         text: async input => {
@@ -1068,6 +1070,9 @@ export class ActuariusBot {
   }
 
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!this.coordination && interaction.commandName === "tasks") {
+      await interaction.reply({content: this.config.coordinationEnabled ? "Coordination is unavailable because AgentPalace was offline at startup. Legacy commands remain available; restart after restoring AgentPalace." : "Coordination is disabled.", ephemeral: true}); return;
+    }
     if (this.coordination && await this.coordination.command(interaction)) return;
     if (interaction.commandName === "tasks") { await interaction.reply({ content: "Coordination is not enabled on this instance.", ephemeral: true }); return; }
     switch (interaction.commandName) {

@@ -31,12 +31,14 @@ export class CoordinationClient {
         remoteCursors: Record<string, string>;
         errors: string[];
         authorities: Record<string, string>;
+        revisions: Record<string, number>;
     }> {
-        const page = z.object({ tasks: z.array(z.object({ task_id: z.string() })).optional(), next_cursor: z.string().nullable().optional(), error: z.string().optional() });
-        const data = z.object({ tasks: z.array(z.object({ task_id: z.string() })), next_cursor: z.string().nullable(), remote_tasks: z.record(page).optional() }).parse(await this.call("task_list", { ...(wing ? { wing } : {}), include_local: true, remote_cursors: remoteCursors, limit: 100, ...(cursor ? { cursor } : {}) }));
+        const page = z.object({ tasks: z.array(z.object({ task_id: z.string(), revision: z.number().optional() })).optional(), next_cursor: z.string().nullable().optional(), error: z.string().optional() });
+        const data = z.object({ tasks: z.array(z.object({ task_id: z.string(), revision: z.number().optional() })), next_cursor: z.string().nullable(), remote_tasks: z.record(page).optional() }).parse(await this.call("task_list", { ...(wing ? { wing } : {}), include_local: true, remote_cursors: remoteCursors, limit: 100, ...(cursor ? { cursor } : {}) }));
         const nextRemotes = { ...remoteCursors };
         const ids = data.tasks.map(t => t.task_id);
         const authorities: Record<string, string> = Object.fromEntries(ids.map(id => [id, "local"]));
+        const revisions: Record<string, number> = Object.fromEntries(data.tasks.filter(t => t.revision !== undefined).map(t => [t.task_id,t.revision!]));
         const errors: string[] = [];
         for (const [origin, remote] of Object.entries(data.remote_tasks ?? {})) {
             if (!remote.tasks) {
@@ -44,13 +46,14 @@ export class CoordinationClient {
                 continue;
             }
             ids.push(...remote.tasks.map(t => t.task_id));
+            for (const t of remote.tasks) if(t.revision !== undefined) revisions[t.task_id] ??= t.revision;
             for (const task of remote.tasks) authorities[task.task_id] ??= `remote:${origin}`;
             if (remote.next_cursor)
                 nextRemotes[origin] = remote.next_cursor;
             else
                 delete nextRemotes[origin];
         }
-        return { ids, next: data.next_cursor, remoteCursors: nextRemotes, errors, authorities };
+        return { ids, next: data.next_cursor, remoteCursors: nextRemotes, errors, authorities, revisions };
     }
     public async inbox(recipient: string): Promise<PalaceMessage[]> {
         const data = z.object({ messages: z.array(messageSchema), remote_messages: z.record(z.object({ messages: z.array(messageSchema).optional() }).passthrough()).optional() }).parse(await this.call("inbox_read", { recipient, unacknowledged_only: true, limit: 100 }));

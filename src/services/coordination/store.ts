@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { gzipSync, gunzipSync } from "node:zlib";
 import { randomUUID } from "node:crypto";
 import type { ExecutionSpec, PalaceTask } from "./contract.js";
 export interface Work {
@@ -22,6 +23,7 @@ export interface Entry {
     spec: ExecutionSpec | null;
     work_id: string | null;
     sequence: number;
+    creation_order?: number;
     step: number;
     attempts: number;
     next_at: number;
@@ -57,6 +59,12 @@ export class CoordinationStore {
       CREATE TABLE IF NOT EXISTS coordination_local_meta (id TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS coordination_local_outbox (id TEXT PRIMARY KEY,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS coordination_local_inbox (id TEXT PRIMARY KEY);
+      CREATE INDEX IF NOT EXISTS coordination_native_task ON coordination_local_entries(json_extract(data,'$.task.task_id'));
+      CREATE INDEX IF NOT EXISTS coordination_work ON coordination_local_entries(json_extract(data,'$.work_id'));
+      CREATE INDEX IF NOT EXISTS coordination_phase ON coordination_local_entries(json_extract(data,'$.phase'));
+      CREATE TABLE IF NOT EXISTS coordination_archive(id TEXT PRIMARY KEY, task_id TEXT, event_id TEXT, data BLOB NOT NULL);
+      CREATE INDEX IF NOT EXISTS coordination_archive_task ON coordination_archive(task_id);
+      CREATE INDEX IF NOT EXISTS coordination_archive_event ON coordination_archive(event_id);
     `);
     }
     public close(): void { this.db.close(); }
@@ -70,8 +78,33 @@ export class CoordinationStore {
         data: string;
         sequence: number;
     }[]).map(r => ({ ...JSON.parse(r.data) as Entry, sequence: r.sequence })); }
-    public get(id: string): Entry | null { return this.list().find(e => e.id === id || e.task?.task_id === id) ?? null; }
-    public event(id: string): Entry | null { return this.list().find(e => e.event_id === id) ?? null; }
+    private one(sql: string, ...args: string[]): Entry | null {
+        const row = this.db.prepare(sql).get(...args) as {data:string;sequence:number}|undefined;
+        return row ? {...JSON.parse(row.data) as Entry, sequence:row.sequence} : null;
+    }
+    private archived(field:"id"|"event_id", id:string):Entry|null {
+        const row=this.db.prepare(`SELECT data FROM coordination_archive WHERE ${field}=? ${field==="id"?"OR task_id=?":""} LIMIT 1`).get(...(field==="id"?[id,id]:[id])) as {data:Uint8Array}|undefined;
+        return row ? JSON.parse(gunzipSync(row.data).toString()) as Entry : null;
+    }
+    public get(id: string): Entry | null { return this.one("SELECT data,sequence FROM coordination_local_entries WHERE id=? OR json_extract(data,'$.task.task_id')=? LIMIT 1",id,id) ?? this.archived("id",id); }
+    public event(id: string): Entry | null { return this.one("SELECT data,sequence FROM coordination_local_entries WHERE event_id=?",id) ?? this.archived("event_id",id); }
+    /** Archive only closed work; preserve compressed audit data and exact-ID deduplication. */
+    public archiveClosed(now=Date.now()):void {
+        this.db.prepare("DELETE FROM coordination_local_meta WHERE id LIKE 'tasks-view:%' AND COALESCE(json_extract(value,'$.created_at'),0)<?").run(now-7*86400000);
+        const closed=new Set(this.works().filter(w=>w.closed).map(w=>w.work_id));
+        const pending=new Set(this.outbox().map(o=>o.entry));
+        for(const e of this.list()) {
+            if(!e.work_id || !closed.has(e.work_id) || pending.has(e.id) || !["completed","failed","cancelled","expired"].includes(e.phase) || now-Date.parse(e.created_at)<30*86400000) continue;
+            this.db.exec("BEGIN IMMEDIATE");
+            try {
+                this.db.prepare("INSERT OR IGNORE INTO coordination_archive VALUES(?,?,?,?)").run(e.id,e.task?.task_id ?? null,e.event_id,gzipSync(JSON.stringify(e)));
+                this.db.prepare("DELETE FROM coordination_local_entries WHERE id=?").run(e.id);
+                const sentPrefix=`sent:${e.id}:`;
+                this.db.prepare("DELETE FROM coordination_local_meta WHERE substr(id,1,?)=?").run(sentPrefix.length,sentPrefix);
+                this.db.exec("COMMIT");
+            } catch(error) {this.db.exec("ROLLBACK");throw error;}
+        }
+    }
     public save(entry: Entry): void { this.db.prepare("UPDATE coordination_local_entries SET data=? WHERE id=?").run(JSON.stringify(entry), entry.id); }
     public moveToTail(entry: Entry): void {
         this.db.prepare("UPDATE coordination_local_entries SET sequence=(SELECT COALESCE(MAX(sequence),0)+1 FROM coordination_local_entries) WHERE id=?").run(entry.id);
@@ -83,12 +116,14 @@ export class CoordinationStore {
         const entry: Entry = { task: null, phase: "registering", spec: null, work_id: null, sequence: 0, step: 0, attempts: 0, next_at: 0, reason: "", validation_id: null, question_message: null, human_answered: false, result: null, checkpoint: null, dependencies: [], event_id: null, thread_id: null, attachments: [], action: "ask", created_at: new Date().toISOString(), ...input };
         const result = this.db.prepare("INSERT INTO coordination_local_entries(id,event_id,data) VALUES(?,?,?)").run(entry.id, entry.event_id, JSON.stringify(entry));
         entry.sequence = Number(result.lastInsertRowid);
+        entry.creation_order = entry.sequence;
+        this.save(entry);
         return entry;
     }
     public works(): Work[] { return (this.db.prepare("SELECT data FROM coordination_local_work").all() as {
         data: string;
     }[]).map(r => JSON.parse(r.data) as Work); }
-    public work(id: string): Work | null { return this.works().find(w => w.work_id === id) ?? null; }
+    public work(id: string): Work | null { const row=this.db.prepare("SELECT data FROM coordination_local_work WHERE id=?").get(id) as {data:string}|undefined;return row ? JSON.parse(row.data) as Work : null; }
     public saveWork(work: Work): void { this.db.prepare("INSERT OR REPLACE INTO coordination_local_work VALUES (?,?)").run(work.work_id, JSON.stringify(work)); }
     public register(spec: NonNullable<ExecutionSpec["workspace"]>): Work {
         this.db.exec("BEGIN IMMEDIATE");
