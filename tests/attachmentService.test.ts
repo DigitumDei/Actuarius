@@ -8,6 +8,8 @@ import {
   buildAttachmentSummary,
   formatFileSize,
   processAttachments,
+  stageCachedAttachments,
+  removeCachedAttachments,
   sanitizeFilename,
   validateAttachments,
   type PendingAttachment
@@ -173,6 +175,24 @@ describe("processAttachments", () => {
     globalThis.fetch = vi.fn();
   });
   afterEach(async () => { await rm(testWorktree, { recursive: true, force: true }); });
+  it("stages cached images and clipped text at the prompt paths and removes only the intake cache",async()=>{
+    const data=new TextEncoder().encode("full attachment content");
+    vi.mocked(fetch).mockResolvedValue({ok:true,arrayBuffer:async()=>data.buffer} as Response);
+    const cached=await processAttachments([makeImageAttachment(),makeTextAttachment()],0,testWorktree,{...testConfig,maxInlineText:4},"image-task");
+    for(const file of cached.processed)file.savedPath=join(testWorktree,file.savedPath);
+    const worktree=join(testWorktree,"execution");await mkdir(join(worktree,".git"),{recursive:true});
+    vi.mocked(fetch).mockRejectedValue(new Error("URL expired"));
+    const staged=await stageCachedAttachments(cached,testWorktree,worktree,"image-task");
+    for(const file of staged.processed){
+      expect(staged.promptSection).toContain(file.savedPath);
+      expect(await readFile(join(worktree,file.savedPath))).toEqual(Buffer.from(data));
+    }
+    expect(await readFile(join(worktree,".git","info","exclude"),"utf8")).toContain(".actuarius/");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await removeCachedAttachments(testWorktree,"image-task");
+    await expect(stat(cached.processed[0]!.savedPath)).rejects.toThrow();
+    expect(await readFile(join(worktree,staged.processed[0]!.savedPath))).toEqual(Buffer.from(data));
+  });
   it("isolates attachments and download cleanup between tasks sharing a request ID", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-attachments-"));
     try {

@@ -12,7 +12,7 @@ import { git, provisionWork, resolveRef, prepareValidationWorkspace } from "../s
 import { isApprovedVerification } from "../services/iterativeTaskLoopService.js";
 import { buildRepoCheckoutPath, detectDefaultBranch, autoCommitAll, getHeadSha, pushBranch } from "../services/gitWorkspaceService.js";
 import { createDraftPullRequest } from "../services/pullRequestService.js";
-import { processAttachments, validateAttachments, type PendingAttachment } from "../services/attachmentService.js";
+import { processAttachments, validateAttachments, stageCachedAttachments, removeCachedAttachments, type PendingAttachment } from "../services/attachmentService.js";
 import type { MemPalaceClient } from "../services/memPalaceClient.js";
 import { buildRepoMemoryWing } from "../services/memPalaceRemoteService.js";
 import { spawnCollect } from "../utils/spawnCollect.js";
@@ -69,6 +69,7 @@ export class CoordinationBridge {
         this.supervisor = new CoordinationSupervisor(this.store, new CoordinationClient(palace), {
             wings: () => [""],
             syncRequests: () => this.syncRequests(),
+            cleanupAttachments: id => removeCachedAttachments(join(this.config.reposRootPath,".coordination-input"),id),
             check: spec => this.check(spec), validate: (e, signal) => this.validate(e, signal),
             execute: (e, work, signal) => this.execute(e, work, signal), notice: (e, content, key) => this.notice(e, content, key),
             gate: async (e, dep, kind) => {
@@ -273,8 +274,10 @@ export class CoordinationBridge {
         const repo = this.repo(setup.repository!);
         const path = buildRepoCheckoutPath(this.config.reposRootPath, repo.owner, repo.repo);
         await git(path, ["fetch", "origin"]);
-        await resolveRef(path, setup.base_ref!);
-        await git(path, ["rev-parse", "--verify", `refs/remotes/origin/${setup.integration_target}^{commit}`]);
+        try { await resolveRef(path, setup.base_ref!); }
+        catch { throw new TaskValidationError(`workspace.base_ref "${setup.base_ref}" does not exist on origin or is not a commit`); }
+        try { await git(path, ["rev-parse", "--verify", `refs/remotes/origin/${setup.integration_target}^{commit}`]); }
+        catch { throw new TaskValidationError(`workspace.integration_target "${setup.integration_target}" does not exist on origin`); }
     }
     private async validate(e: Entry, signal: AbortSignal) {
         const cwd = await prepareValidationWorkspace(this.config.reposRootPath);
@@ -417,7 +420,10 @@ export class CoordinationBridge {
         const planning = ["plan", "plan-oc", "revise"].includes(action);
         let attachmentText = "";
         const cachedAttachments = this.store.meta(`attachments:${e.id}`);
-        if (cachedAttachments) attachmentText = `\n${cachedAttachments}`;
+        if (cachedAttachments) {
+            const staged=await stageCachedAttachments(JSON.parse(cachedAttachments) as Awaited<ReturnType<typeof processAttachments>>,join(this.config.reposRootPath,".coordination-input"),work.path!,e.id);
+            attachmentText=`\n${JSON.stringify(staged)}`;
+        }
         else if (e.attachments.length) {
             attachmentText = `\nAttachments: ${JSON.stringify(e.attachments)}`;
             // Files are prepared using the same bounded attachment service as legacy requests.

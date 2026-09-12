@@ -52,6 +52,16 @@ it("requires merged dependencies in the retained branch, not just origin/main",a
   expect(await f.hooks.gate(f.entry,f.dep,"merged")).toBe(true);
   expect(git).toHaveBeenCalledWith("/consumer",["merge-base","--is-ancestor","dependency-sha","HEAD"]);
 });
+it.each(["base_ref","integration_target"])("classifies missing %s after fetch as invalid input",async(field)=>{
+  const f=fixture();
+  if(field==="base_ref")vi.mocked(resolveRef).mockRejectedValueOnce(new Error("Needed a single revision"));
+  else vi.mocked(git).mockImplementation(async(_cwd,args)=>{if(args[0]==="rev-parse")throw new Error("Needed a single revision");return "";});
+  await expect(f.hooks.check(f.entry.spec!)).rejects.toMatchObject({message:expect.stringContaining(`workspace.${field}`)});
+});
+it("preserves fetch failures as retryable infrastructure errors",async()=>{
+  const f=fixture();const offline=new Error("network unavailable");vi.mocked(git).mockRejectedValueOnce(offline);
+  await expect(f.hooks.check(f.entry.spec!)).rejects.toBe(offline);
+});
 
 it("checks an already frozen base even before its worktree is created",async()=>{
   const f=fixture();f.work.path=null;f.work.base_sha="old-base";f.bridge.store.saveWork(f.work);

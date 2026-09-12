@@ -44,7 +44,7 @@ export interface Entry {
 }
 export interface Outgoing {
     key: string;
-    kind: "message" | "notice";
+    kind: "message" | "notice" | "cache-cleanup";
     entry: string;
     payload: Record<string, unknown>;
 }
@@ -72,6 +72,7 @@ export class CoordinationStore {
         value: string;
     } | undefined)?.value ?? null; }
     public setMeta(key: string, value: string): void { this.db.prepare("INSERT OR REPLACE INTO coordination_local_meta VALUES (?,?)").run(key, value); }
+    public deleteMeta(key:string):void {this.db.prepare("DELETE FROM coordination_local_meta WHERE id=?").run(key);}
     public worker(): string { const old = this.meta("worker"); if (old)
         return old; const id = `actuarius-${randomUUID()}`; this.setMeta("worker", id); return id; }
     public list(): Entry[] { return (this.db.prepare("SELECT data,sequence FROM coordination_local_entries ORDER BY sequence").all() as {
@@ -98,12 +99,16 @@ export class CoordinationStore {
             this.db.exec("BEGIN IMMEDIATE");
             try {
                 this.db.prepare("INSERT OR IGNORE INTO coordination_archive VALUES(?,?,?,?)").run(e.id,e.task?.task_id ?? null,e.event_id,gzipSync(JSON.stringify(e)));
+                if(this.meta(`attachments:${e.id}`)) this.enqueue({key:`cache-cleanup:${e.id}`,kind:"cache-cleanup",entry:e.id,payload:{}});
                 this.db.prepare("DELETE FROM coordination_local_entries WHERE id=?").run(e.id);
                 const sentPrefix=`sent:${e.id}:`;
                 this.db.prepare("DELETE FROM coordination_local_meta WHERE substr(id,1,?)=?").run(sentPrefix.length,sentPrefix);
                 this.db.exec("COMMIT");
             } catch(error) {this.db.exec("ROLLBACK");throw error;}
         }
+        // Also reconcile cache metadata left by an earlier version's archive pass.
+        const cached=this.db.prepare("SELECT a.id FROM coordination_archive a JOIN coordination_local_meta m ON m.id='attachments:'||a.id").all() as Array<{id:string}>;
+        for(const e of cached) this.enqueue({key:`cache-cleanup:${e.id}`,kind:"cache-cleanup",entry:e.id,payload:{}});
     }
     public save(entry: Entry): void { this.db.prepare("UPDATE coordination_local_entries SET data=? WHERE id=?").run(JSON.stringify(entry), entry.id); }
     public moveToTail(entry: Entry): void {

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
-import { encodeSpec, executionSchema, parseSpec, type PalaceTask } from "../src/services/coordination/contract.js";
+import { TaskValidationError, encodeSpec, executionSchema, parseSpec, type PalaceTask } from "../src/services/coordination/contract.js";
 import { CoordinationStore } from "../src/services/coordination/store.js";
 import { CoordinationClient } from "../src/services/coordination/client.js";
 import { CoordinationSupervisor, type CoordinationHooks } from "../src/services/coordination/supervisor.js";
@@ -107,6 +107,29 @@ function harness() {
     return { s, tasks, messages, executed, hooks, sup, tick, fault, inbox, discovery };
 }
 describe("durable supervisor", () => {
+    it("wakes a local dependent on the next tick after accumulated backoff",async()=>{
+        const h=harness();const dep:PalaceTask={task_id:"native-dep",title:"dep",description:encodeSpec(spec),state:"running",revision:1,created_by:"sender",wing:"wing_repo",owner:h.sup.worker,lease_expires_at:null,dependencies:[],parent_id:null};
+        h.tasks.set(dep.task_id,dep);h.s.add({id:"local-dep",source:"discord",sender:"sender",wing:"wing_repo",description:dep.description,task:dep,phase:"running"});
+        const dependent={...dep,task_id:"native-child",state:"pending" as const,owner:null,dependencies:[dep.task_id]};h.tasks.set(dependent.task_id,dependent);
+        h.s.add({id:"child",source:"discord",sender:"sender",wing:"wing_repo",description:encodeSpec(spec),spec,task:dependent,phase:"execute"});
+        for(let i=0;i<5;i++){const e=h.s.get("child")!;e.next_at=0;h.s.save(e);await h.tick();}
+        expect(h.s.meta("dependency-delay:child")).toBe("600000");
+        dep.state="completed";dep.revision++;await h.tick();
+        expect(h.executed).toEqual(["child"]);expect(h.s.get("child")?.phase).toBe("completed");
+    });
+    it("returns invalid refs to the submitter as validation questions",async()=>{
+        const h=harness();h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});await h.tick();
+        h.hooks.check=async()=>{throw new TaskValidationError('workspace.integration_target "typo" does not exist on origin');};
+        await h.tick();await h.tick();expect(h.s.get("one")?.phase).toBe("input_required");
+        expect(JSON.stringify(h.messages)).toContain('does not exist on origin');
+    });
+    it("retries archived attachment cleanup and removes metadata only after success",async()=>{
+        const h=harness();const work=h.s.register(spec.workspace!);work.closed=true;h.s.saveWork(work);
+        h.s.add({id:"old",work_id:work.work_id,source:"discord",sender:"sender",wing:"wing_repo",description:"",phase:"completed",created_at:"2020-01-01T00:00:00Z"});h.s.setMeta("attachments:old","cached");
+        const cleanup=vi.fn().mockRejectedValueOnce(new Error("busy")).mockResolvedValue(undefined);h.hooks.cleanupAttachments=cleanup;
+        await h.tick();expect(h.s.list()).toHaveLength(0);expect(h.s.meta("attachments:old")).toBe("cached");expect(h.s.outbox()[0]?.kind).toBe("cache-cleanup");
+        await h.tick();expect(h.s.meta("attachments:old")).toBeNull();expect(h.s.outbox()).toHaveLength(0);expect(cleanup).toHaveBeenCalledTimes(2);
+    });
     it("backs off an unmet dependency instead of fetching it every tick",async()=>{
         const h=harness();const native={task_id:"blocked",title:"blocked",description:encodeSpec(spec),state:"pending" as const,revision:1,created_by:"sender",wing:"wing_repo",owner:null,lease_expires_at:null,dependencies:["dep"],parent_id:null};
         h.tasks.set("blocked",native);h.tasks.set("dep",{...native,task_id:"dep",dependencies:[]});h.s.add({id:"blocked",source:"discord",sender:"sender",wing:"wing_repo",description:encodeSpec(spec),spec,task:native,phase:"execute"});

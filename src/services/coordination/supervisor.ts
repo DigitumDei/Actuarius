@@ -4,6 +4,7 @@ import { CoordinationClient } from "./client.js";
 import { CoordinationStore, type Entry, type Work } from "./store.js";
 import { TaskValidationError, correctionSchema, encodeSpec, executionSchema, humanQuestionSchema, parseSpec, type ExecutionSpec, type PalaceTask, type Verdict } from "./contract.js";
 export interface CoordinationHooks {
+    cleanupAttachments?(entryId:string):Promise<void>;
     syncRequests?(): void;
     wings(): string[];
     check(spec: ExecutionSpec): Promise<void>;
@@ -74,6 +75,13 @@ export class CoordinationSupervisor {
             await this.flush();
             this.store.setMeta("last_refresh", new Date().toISOString());
             if (!this.active && !this.stopping) {
+                for (const e of this.store.list()) {
+                    const waiting = this.store.meta(`dependency-wait:${e.id}`);
+                    if (e.phase === "execute" && waiting && this.store.get(waiting)?.phase === "completed") {
+                        e.next_at=0; this.store.setMeta(`dependency-delay:${e.id}`,"0");
+                        this.store.setMeta(`dependency-wait:${e.id}`,"");this.store.save(e);
+                    }
+                }
                 const entries = this.store.list().filter(e => ["registering", "validate", "execute", "publishing", "interrupted", "input_transition"].includes(e.phase) && e.next_at <= Date.now());
                 entries.sort((a, b) => (a.source === "discord" ? 0 : 1) - (b.source === "discord" ? 0 : 1) || a.sequence - b.sequence);
                 for (const e of entries) {
@@ -194,7 +202,7 @@ export class CoordinationSupervisor {
             const dep = await this.api.get(id);
             if (!dep || dep.state !== "completed") {
                 e.reason = `Waiting for dependency ${id} (${dep?.state ?? "missing"})`;
-                this.deferDependency(e);
+                this.deferDependency(e, id);
                 this.store.save(e);
                 return false;
             }
@@ -215,7 +223,8 @@ export class CoordinationSupervisor {
         this.store.save(e);
         return true;
     }
-    private deferDependency(e: Entry): void {
+    private deferDependency(e: Entry, dependencyId=""): void {
+        this.store.setMeta(`dependency-wait:${e.id}`, dependencyId);
         const delay = Math.min(600000, Math.max(60000, Number(this.store.meta(`dependency-delay:${e.id}`) ?? 0) * 2));
         this.store.setMeta(`dependency-delay:${e.id}`, String(delay)); e.next_at = Date.now() + delay;
     }
@@ -595,7 +604,12 @@ export class CoordinationSupervisor {
             if (!e)
                 continue;
             try {
-                if (out.kind === "message")
+                if (out.kind === "cache-cleanup") {
+                    if(!this.hooks.cleanupAttachments) throw new Error("Attachment cleanup handler is unavailable");
+                    await this.hooks.cleanupAttachments(e.id);
+                    this.store.deleteMeta(`attachments:${e.id}`);
+                }
+                else if (out.kind === "message")
                     await this.api.call("message_send", { ...out.payload, idempotency_key: out.key });
                 else {
                     const message = await this.hooks.notice(e, String(out.payload.content), out.key);
