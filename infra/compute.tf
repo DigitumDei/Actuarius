@@ -88,6 +88,8 @@ resource "google_compute_instance" "actuarius" {
     env-github-app-installation-id       = var.github_app_installation_id
     env-docker-image                     = var.docker_image
     env-ask-concurrency                  = var.ask_concurrency
+    env-coordination-enabled             = tostring(var.coordination_enabled)
+    env-coordination-channel-id          = var.coordination_channel_id
     env-request-stuck-timeout-ms         = var.request_stuck_timeout_ms
     env-request-stuck-scan-interval-ms   = var.request_stuck_scan_interval_ms
     env-container-memory                 = var.container_memory
@@ -116,7 +118,7 @@ resource "google_compute_instance" "actuarius" {
   metadata_startup_script = "#!/bin/bash\nMETA=\"http://metadata.google.internal/computeMetadata/v1/instance/attributes\"\ncurl -sf -H \"Metadata-Flavor: Google\" \"$${META}/env-startup-script\" > /var/startup-inner.sh\nbash /var/startup-inner.sh\n"
 
   service_account {
-    email  = google_service_account.actuarius_bot.email
+    email = google_service_account.actuarius_bot.email
     # cloud-platform is deliberate: Secret Manager's REST API accepts no
     # narrower OAuth scope for AccessSecretVersion, and redeploy.sh fetches
     # secrets host-side with this token at deploy time. Least privilege is

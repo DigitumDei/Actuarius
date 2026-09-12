@@ -40,6 +40,8 @@ const optionalNonEmpty = z
   .transform((val) => (val === "" ? undefined : val));
 
 const envSchema = z.object({
+  COORDINATION_ENABLED: z.string().default("false").transform(v => v === "true"),
+  COORDINATION_CHANNEL_ID: optionalNonEmpty,
   DISCORD_TOKEN: z.string().min(1),
   DISCORD_CLIENT_ID: z.string().min(1),
   DISCORD_GUILD_ID: optionalNonEmpty,
@@ -185,6 +187,9 @@ if (!parsed.success) {
 }
 
 const rawConfig = parsed.data;
+if(rawConfig.COORDINATION_ENABLED && (!rawConfig.MEMPALACE_ENABLED || !rawConfig.COORDINATION_CHANNEL_ID)) {
+  throw new Error("COORDINATION_ENABLED requires MEMPALACE_ENABLED=true and COORDINATION_CHANNEL_ID for intake questions and parent summaries.");
+}
 if (rawConfig.GITHUB_APP_PRIVATE_KEY && rawConfig.GITHUB_APP_PRIVATE_KEY_B64) {
   throw new Error("Invalid environment configuration: provide only one of GITHUB_APP_PRIVATE_KEY or GITHUB_APP_PRIVATE_KEY_B64.");
 }
@@ -223,6 +228,8 @@ const githubCliConfigPath = resolve(rawConfig.REPOS_ROOT_PATH, "..", ".gh");
 mkdirSync(githubCliConfigPath, { recursive: true });
 
 export const appConfig = {
+  coordinationEnabled: rawConfig.COORDINATION_ENABLED,
+  coordinationChannelId: rawConfig.COORDINATION_CHANNEL_ID,
   discordToken: rawConfig.DISCORD_TOKEN,
   discordClientId: rawConfig.DISCORD_CLIENT_ID,
   discordGuildId: rawConfig.DISCORD_GUILD_ID,
@@ -277,4 +284,7 @@ export const appConfig = {
   mempalaceRemoteMineBatchSize: rawConfig.MEMPALACE_REMOTE_MINE_BATCH_SIZE,
 };
 
-export type AppConfig = typeof appConfig;
+export type AppConfig = Omit<typeof appConfig, "coordinationEnabled" | "coordinationChannelId"> & {
+  coordinationEnabled?: boolean;
+  coordinationChannelId?: string | undefined;
+};

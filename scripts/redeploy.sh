@@ -49,6 +49,8 @@ CLAUDE_CODE_OAUTH_TOKEN=$(get_secret actuarius-claude-oauth-token || true)
 ASK_CONCURRENCY=$(get_meta env-ask-concurrency)
 REQUEST_STUCK_TIMEOUT_MS=$(get_meta env-request-stuck-timeout-ms || true)
 REQUEST_STUCK_SCAN_INTERVAL_MS=$(get_meta env-request-stuck-scan-interval-ms || true)
+COORDINATION_ENABLED=$(get_meta env-coordination-enabled || true)
+COORDINATION_CHANNEL_ID=$(get_meta env-coordination-channel-id || true)
 CONTAINER_MEMORY=$(get_meta env-container-memory || true)
 CONTAINER_MEMORY_SWAP=$(get_meta env-container-memory-swap || true)
 CONTAINER_CPUS=$(get_meta env-container-cpus || true)
@@ -170,6 +172,12 @@ if [ "$ENABLE_OPENCODE" = "true" ]; then
 fi
 if [ "$ENABLE_MEMPALACE" = "true" ]; then
   EXTRA_ARGS+=(-e "MEMPALACE_ENABLED=true")
+fi
+if [ "$COORDINATION_ENABLED" = "true" ]; then
+  if [ -z "$COORDINATION_CHANNEL_ID" ]; then
+    echo "FATAL: coordination requires env-coordination-channel-id" >&2; exit 1
+  fi
+  EXTRA_ARGS+=(-e "COORDINATION_ENABLED=true" -e "COORDINATION_CHANNEL_ID=$COORDINATION_CHANNEL_ID" -e "MEMPALACE_ENABLED=true")
 fi
 if [ "$ENABLE_MEMPALACE_REMOTE" = "true" ]; then
   EXTRA_ARGS+=(-e "MEMPALACE_ENABLED=true")

@@ -1,4 +1,6 @@
 import { existsSync } from "node:fs";
+import { CoordinationBridge } from "./coordinationBridge.js";
+import { setProviderGateEnabled } from "../services/providerGate.js";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -92,7 +94,7 @@ import { InstallService, InstallServiceError } from "../services/installService.
 import { buildAptPackageId, getAptPackageSpec, isAptPackageId } from "../services/installerRegistry.js";
 import { createRequestWorktree, deleteRequestBranch, RequestWorktreeError } from "../services/requestWorktreeService.js";
 import { BOT_MEMORY_WING, MemPalaceClient } from "../services/memPalaceClient.js";
-import { MemPalaceRemoteService, type RepoMemoryIdentity } from "../services/memPalaceRemoteService.js";
+import { MemPalaceRemoteService, buildRepoMemoryWing, type RepoMemoryIdentity } from "../services/memPalaceRemoteService.js";
 import { createDraftPullRequest, PullRequestServiceError } from "../services/pullRequestService.js";
 import {
   AttachmentError,
@@ -622,6 +624,7 @@ export class ActuariusBot {
   private readonly lastActivityWrite = new Map<number, number>();
   private stuckRequestTimer: NodeJS.Timeout | null = null;
   private opencodeOpenAIAuthInProgress = false;
+  private coordination: CoordinationBridge | null = null;
 
   public constructor(
     config: AppConfig,
@@ -652,8 +655,55 @@ export class ActuariusBot {
   }
 
   public async start(): Promise<void> {
+    setProviderGateEnabled(!!this.config.coordinationEnabled && !!this.memPalace?.isReady());
+    if (this.config.coordinationEnabled && !this.memPalace?.isReady()) this.logger.error("Coordination unavailable: AgentPalace is offline; continuing with legacy commands");
+    if (this.config.coordinationEnabled && this.memPalace?.isReady()) {
+      this.coordination = new CoordinationBridge(this.client, this.config, this.db, this.memPalace, this.logger, {
+        parsePlan: parseIterativePlan,
+        text: async input => {
+          if(input.opencodePlan) {
+            const snapshot=await createOpencodePlanAgentSnapshot();
+            try {
+              const model=input.role==="implementation" ? snapshot.models.implementer ?? snapshot.models.planner : snapshot.models.planner;
+              return await this.runProviderText({prompt:input.prompt,cwd:input.cwd,provider:"opencode",signal:input.signal,...(model?{model}:{}),...(input.role?{role:input.role}:{})});
+            }finally{await snapshot.cleanup();}
+          }
+          const guildId = input.repo?.guild_id ?? this.db.listAllRepos()[0]?.guild_id;
+          const selected = guildId ? this.db.getGuildModelConfig(guildId) : null;
+          const roles = guildId && input.role ? await this.resolvePlanRoleModels(guildId) : null;
+          const roleModel = input.role === "implementation" ? roles?.implementer : roles?.planner;
+          const provider = input.provider ?? roleModel?.provider ?? selected?.provider ?? "claude";
+          const model = input.model ?? roleModel?.model ?? selected?.model;
+          const env = input.repo ? this.installService.buildMinimalExecutionEnvironment({repoId:input.repo.id,...(input.threadId ? {threadId:input.threadId}:{})}).env : undefined;
+          return this.runProviderText({ prompt: input.prompt, cwd: input.cwd, provider, signal: input.signal,
+            ...(model ? { model } : {}), ...(input.role ? { role: input.role } : {}), ...(env ? {env}:{}),
+            ...(input.repo ? {memoryWing:buildRepoMemoryWing({owner:input.repo.owner,repo:input.repo.repo,fullName:input.repo.full_name})}:{}) });
+        },
+        prepare: async (repo, path) => { await this.prepareWorktreeMemoryConfig({ owner: repo.owner, repo: repo.repo, fullName: repo.full_name }, path); },
+        review: async (work, repo, signal, existingOnly) => {
+          if(existingOnly) {
+            const review=this.db.getLatestCompletedReviewRunForBranch(work.request_id!,work.branch);
+            if(!review)throw new Error("Run /review first; /pr requires a completed review");
+            if(await hasUncommittedChangesExcluding(work.path!,["docs/reviews/"]))throw new Error("Worktree has uncommitted changes; commit and review before /pr");
+            if(await getHeadSha(work.path!)!==review.diff_head)throw new Error("Branch changed since review; run /review again");
+            return {ready:review.final_verdict==="ready_for_pr",sha:review.diff_head,text:review.summary_markdown ?? review.raw_result_json ?? "Reviewed"};
+          }
+          const error = await this.validateReviewConfig(repo.guild_id); if (error) throw new Error(error);
+          const runners = this.buildReviewRunners({ guildId: repo.guild_id, repoId: repo.id, threadId: work.thread_id });
+          const result = await this.requestContext.run({ requestId: work.request_id!, signal }, () => runAdversarialReview({
+            db: this.db, logger: this.logger, requestId: work.request_id!, threadId: work.thread_id!,
+            repoFullName: repo.full_name, branchName: work.branch, worktreePath: work.path!, artifactRootPath: work.path!, baseRef: `origin/${work.integration_target.replace(/^origin\//, "")}`,
+            threadHistory: this.coordination?.store.list().filter(e => e.work_id === work.work_id).map(e => e.description).join("\n") ?? "",
+            ...runners, stageTimeoutMs: this.config.askExecutionTimeoutMs, reviewerTimeoutMs: this.config.reviewerTimeoutMs,
+            totalTimeoutMs: this.config.askExecutionTimeoutMs * 2, reviewConcurrency: 1, maxConsensusRounds: this.getReviewRounds(repo.guild_id)
+          }));
+          return { ready: result.summary.verdict === "ready_for_pr", text: JSON.stringify(result.summary), sha: result.diffHeadSha };
+        }
+      });
+    }
     this.bindEvents();
     await this.client.login(this.config.discordToken);
+    this.coordination?.start();
     await this.sweepStuckRequestsSafely();
     this.stuckRequestTimer = setInterval(() => {
       void this.sweepStuckRequestsSafely();
@@ -662,6 +712,7 @@ export class ActuariusBot {
   }
 
   public async stop(): Promise<void> {
+    await this.coordination?.stop();
     if (this.stuckRequestTimer) {
       clearInterval(this.stuckRequestTimer);
       this.stuckRequestTimer = null;
@@ -739,6 +790,7 @@ export class ActuariusBot {
     const cutoff = cutoffDate.toISOString().replace("T", " ").replace(/\.\d{3}Z$/u, "");
     const stale = this.db.listStaleRunningRequests(cutoff);
     for (const request of stale) {
+      if (this.coordination?.store.works().some(w => w.request_id === request.id)) continue;
       const reason = `No request activity was recorded for ${formatRequestAge(request.updated_at)}; automatically marked as stuck.`;
       if (!this.failActiveRequest(request.id, reason)) continue;
       this.requestQueue.cancelPending(request.guild_id, String(request.id));
@@ -853,6 +905,10 @@ export class ActuariusBot {
     });
 
     this.client.on("interactionCreate", async (interaction) => {
+      if (interaction.isButton() && this.coordination) {
+        try { if (await this.coordination.button(interaction)) return; }
+        catch (error) { this.logger.warn({ error }, "Task list refresh failed"); }
+      }
       if (interaction.isAutocomplete()) {
         try {
           await this.handleAutocomplete(interaction);
@@ -906,6 +962,7 @@ export class ActuariusBot {
   }
 
   private async handleThreadMessage(message: Message): Promise<void> {
+    if (this.coordination && await this.coordination.message(message)) return;
     if (message.author.bot) return;
     if (!message.guildId || !message.guild) return;
     if (!message.channel.isThread()) return;
@@ -1013,6 +1070,11 @@ export class ActuariusBot {
   }
 
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!this.coordination && interaction.commandName === "tasks") {
+      await interaction.reply({content: this.config.coordinationEnabled ? "Coordination is unavailable because AgentPalace was offline at startup. Legacy commands remain available; restart after restoring AgentPalace." : "Coordination is disabled.", ephemeral: true}); return;
+    }
+    if (this.coordination && await this.coordination.command(interaction)) return;
+    if (interaction.commandName === "tasks") { await interaction.reply({ content: "Coordination is not enabled on this instance.", ephemeral: true }); return; }
     switch (interaction.commandName) {
       case "help":
         await interaction.reply({ content: buildHelpText(), ephemeral: true });
@@ -1577,7 +1639,10 @@ export class ActuariusBot {
           repo: repoEntry.repo,
           fullName: repoEntry.full_name
         });
-        const cleanup = await cleanupDeletedRemoteBranches(checkout.localPath);
+        const protectedBranches = this.coordination?.store.works().filter(w => w.repository === repoEntry.full_name.toLowerCase() && !w.closed).map(w => w.branch) ?? [];
+        const cleanup = protectedBranches.length
+          ? await cleanupDeletedRemoteBranches(checkout.localPath, protectedBranches)
+          : await cleanupDeletedRemoteBranches(checkout.localPath);
         results.push({
           fullName: repoEntry.full_name,
           deleted: cleanup.deleted,
@@ -2509,6 +2574,7 @@ export class ActuariusBot {
 
       await confirmation.update({ content: `Deleting branch \`${request.branch_name}\`...`, components: [] });
 
+      await this.coordination?.closeForDeletion(interaction.channelId);
       await deleteRequestBranch(
         this.config.reposRootPath,
         {
@@ -3421,6 +3487,7 @@ export class ActuariusBot {
   }
 
   private async runProviderText(input: {
+    signal?: AbortSignal;
     provider: AiProvider;
     prompt: string;
     cwd: string;
@@ -3446,7 +3513,7 @@ export class ActuariusBot {
       ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.env ? { env: input.env } : {}),
-      ...(context ? { signal: context.signal } : {}),
+      ...(input.signal || context ? { signal: input.signal ?? context!.signal } : {}),
       ...(onActivity ? { onActivity } : {})
     };
 

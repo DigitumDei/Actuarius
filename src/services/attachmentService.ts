@@ -1,5 +1,6 @@
-import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { appendFile, copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 
 export interface PendingAttachment {
   id: string;
@@ -24,6 +25,34 @@ export interface AttachmentConfig {
   maxFileSize: number;
   maxTotalSize: number;
   maxInlineText: number;
+}
+
+function taskAttachmentPath(taskId:string):string {
+  return join(".actuarius","attachments",`task-${createHash("sha256").update(taskId).digest("hex")}`);
+}
+
+/** Restore durable intake files to the relative paths advertised in the prompt. */
+export async function stageCachedAttachments(
+  cached: Awaited<ReturnType<typeof processAttachments>>, cacheRoot:string, worktreePath:string, taskId:string
+):Promise<Awaited<ReturnType<typeof processAttachments>>> {
+  const relativeDirectory=taskAttachmentPath(taskId);
+  const cacheDirectory=resolve(cacheRoot,relativeDirectory);
+  await ensureActuariusExcluded(worktreePath);
+  await mkdir(join(worktreePath,relativeDirectory),{recursive:true});
+  const processed:ProcessedAttachment[]=[];
+  for(const file of cached.processed) {
+    const source=isAbsolute(file.savedPath) ? resolve(file.savedPath) : resolve(cacheRoot,file.savedPath);
+    if(dirname(source)!==cacheDirectory) throw new AttachmentError("Cached attachment is outside its task directory.");
+    const savedPath=join(relativeDirectory,basename(source));
+    await copyFile(source,join(worktreePath,savedPath));
+    processed.push({...file,savedPath});
+  }
+  return {...cached,processed};
+}
+
+/** The target is a hash-derived child of the configured intake cache only. */
+export async function removeCachedAttachments(cacheRoot:string,taskId:string):Promise<void> {
+  await rm(resolve(cacheRoot,taskAttachmentPath(taskId)),{recursive:true,force:true});
 }
 
 const TEXT_LIKE_MIMES = new Set([
@@ -228,7 +257,8 @@ export async function processAttachments(
   attachments: PendingAttachment[],
   requestId: number,
   worktreePath: string,
-  config: AttachmentConfig
+  config: AttachmentConfig,
+  taskId?: string
 ): Promise<{ processed: ProcessedAttachment[]; promptSection: string }> {
   if (attachments.length === 0) return { processed: [], promptSection: "" };
 
@@ -239,7 +269,8 @@ export async function processAttachments(
 
   await ensureActuariusExcluded(worktreePath);
 
-  const saveDir = join(worktreePath, ".actuarius", "attachments", `request-${requestId}`);
+  const storageKey = taskId ? `task-${createHash("sha256").update(taskId).digest("hex")}` : `request-${requestId}`;
+  const saveDir = join(worktreePath, ".actuarius", "attachments", storageKey);
   await mkdir(saveDir, { recursive: true });
 
   const processed: ProcessedAttachment[] = [];
@@ -251,7 +282,7 @@ export async function processAttachments(
       const att = attachments[i]!;
       const safeName = `${i + 1}-${sanitizeFilename(att.name)}`;
       const savePath = join(saveDir, safeName);
-      const relativePath = join(".actuarius", "attachments", `request-${requestId}`, safeName);
+      const relativePath = join(".actuarius", "attachments", storageKey, safeName);
       const type = detectType(att.contentType, att.name);
       if (!type) {
         throw new AttachmentError(`Attachment ${att.name} is not supported. Supported types: text files and PNG/JPEG/WebP/GIF images.`);

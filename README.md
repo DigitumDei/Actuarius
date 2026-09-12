@@ -142,6 +142,45 @@ When both memory flags are disabled, startup removes managed `mempalace` and `ag
 
 ## Local development
 
+### Automatic coordination and Discord queue
+
+Set `COORDINATION_ENABLED=true`, `MEMPALACE_ENABLED=true`, and
+`COORDINATION_CHANNEL_ID=<Discord text channel ID>` to enable the durable
+dispatcher. It is disabled by default. The configured channel receives unresolved
+intake questions and workflow summaries; repository work uses one thread per
+`work_id` in the repository's connected channel. Run one Actuarius instance per
+guild and retain its SQLite database and repository volume across restarts.
+
+Tasks from configured AgentPalace sources opt in with a version 1
+`actuarius-task` JSON block in their description. Every repository connected
+through Discord is eligible. See the [contract and operating guide](docs/automatic-coordination-design.md)
+for a complete example, correction messages, and dependency gates.
+
+With coordination enabled, `/ask`, `/plan`, `/plan-oc`, `/review`, `/revise`,
+`/pr`, `/issue`, `/bug`, issue summaries, and work-thread messages enter the same
+queue. Discord work runs before ready background work, FIFO within each class.
+Dependencies and workspace ownership still apply. One provider invocation runs
+at a time; status, cancellation, and question replies do not need an LLM.
+
+Use `/tasks [repo] [work_id] [state] [page]` and its Refresh button to inspect
+saved queue state. Reply directly to a question to answer it. `/revise` repairs
+an interrupted task in place; `/cancel task_id:<ID>` cancels an individual task.
+Provider interruptions retain the worktree for inspection rather than replaying
+the implementation automatically. Results and Discord notifications retry
+delivery independently. Cleanup protects registered workspaces; `/delete`
+requires resolved tasks, clean files, and integrated commits.
+
+The VM redeploy script accepts `env-coordination-enabled` and
+`env-coordination-channel-id` metadata, managed by Terraform variables
+`coordination_enabled` and `coordination_channel_id`. Set those variables and
+apply Terraform so later applies preserve activation. After applying, refresh
+`/var/redeploy.sh` from metadata using the deployment instructions below before
+running it; applying metadata alone does not refresh that file or the container.
+
+The redeploy script consumes `env-coordination-enabled` and
+`env-coordination-channel-id` metadata. Enabling the feature and deploying it
+are separate operational steps; adding the code does neither.
+
 ### Dev bot setup
 
 To develop locally while a live instance is running, create a separate Discord application to avoid event conflicts:
