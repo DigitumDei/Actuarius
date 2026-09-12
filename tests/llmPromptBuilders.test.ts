@@ -15,7 +15,7 @@ describe("buildRepositoryMemoryScopedPrompt", () => {
     expect(prompt).toContain("Implement the requested change.");
     expect(prompt).toContain("project memory wing for the repository being worked on is `wing_shotquill`");
     expect(prompt).toContain("Do not derive or invent a wing from the repository owner/name.");
-    expect(prompt).toContain("durable repository knowledge with `mempalace_add_drawer`");
+    expect(prompt).toContain("durable repository knowledge with `agentpalace_add_drawer`");
     expect(prompt).toContain("Project diary entries are local-only");
   });
 

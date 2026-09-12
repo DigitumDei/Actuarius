@@ -19,22 +19,24 @@ User-level defaults for OpenCode on this machine.
 - Keep changes scoped to the task at hand and do not revert unrelated user changes.
 - Before making non-trivial changes, look for repository guidance such as `AGENTS.md`, `CLAUDE.md`, `README.md`, or nearby docs.
 
-## Memory — MemPalace
+## Memory — AgentPalace
 
-MemPalace is the persistent memory store. Use it to remember and recall anything that matters across sessions.
+Use the registered `agentpalace` HTTP MCP server. It shares the VM's existing memory server; do not launch a separate stdio MCP or `serve` process.
 
-**On session start:** Call `mempalace_wake_up(agent_name: "opencode")` to orient yourself — this loads identity, palace status, recent changes, and diary entries in one call.
+AgentPalace is the persistent memory store. Use it to remember and recall anything that matters across sessions.
+
+**On session start:** Call `agentpalace_wake_up(agent_name: "opencode")` to orient yourself — this loads identity, palace status, recent changes, and diary entries in one call.
 
 **During a session:**
 - When working in a worktree, the wing should be for the base repo, and the room for the specific branch of that worktree.
-- Before answering questions about people, projects, or past events: search first with `mempalace_kg_query` or `mempalace_search`. Never guess — verify.
-- File important decisions, facts, or context with `mempalace_add_drawer`.
-- Record structured facts (relationships, states, timelines) with `mempalace_kg_add`.
-- When facts change, invalidate the old one with `mempalace_kg_invalidate` before adding the new one.
+- Before answering questions about people, projects, or past events: search first with `agentpalace_kg_query` or `agentpalace_search`. Never guess — verify.
+- File important decisions, facts, or context with `agentpalace_add_drawer`.
+- Record structured facts (relationships, states, timelines) with `agentpalace_kg_add`.
+- When facts change, invalidate the old one with `agentpalace_kg_invalidate` before adding the new one.
 
-**On session end:** Write a diary entry with `mempalace_diary_write(agent_name: "opencode", ...)` summarising what happened and what matters.
+**On session end:** Write a diary entry with `agentpalace_diary_write(agent_name: "opencode", ...)` summarising what happened and what matters.
 
-**ALWAYS use MemPalace for memory. Do NOT write new memories to the auto-memory system.** The auto-memory files are a read-only legacy fallback — MemPalace is the only memory store. If in doubt, use MemPalace.
+**ALWAYS use AgentPalace for memory. Do NOT write new memories to the auto-memory system.** The auto-memory files are a read-only legacy fallback — AgentPalace is the only memory store. If in doubt, use AgentPalace.
 
 ## Precedence
 

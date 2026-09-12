@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { configureOpencodeSnapshot } from "./agentPalaceHttpConfig.js";
 
 export const OPENCODE_PLAN_OC_AGENT = "actuarius-plan-oc";
 export const OPENCODE_IMPLEMENT_OC_AGENT = "actuarius-implement-oc";
@@ -257,6 +258,7 @@ export async function createOpencodePlanAgentSnapshot(
 
     try {
       await copyFile(join(managedConfigDir, "opencode.json"), join(snapshotDir, "opencode.json"));
+      await configureOpencodeSnapshot(join(snapshotDir, "opencode.json"));
       for (const fileName of Object.values(AGENT_FILE_BY_ROLE)) {
         await copyFile(join(managedConfigDir, "agents", fileName), join(snapshotAgentsDir, fileName));
       }

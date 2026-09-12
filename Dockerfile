@@ -35,18 +35,12 @@ FROM base AS runtime
 
 WORKDIR /app
 
-# Download pinned MemPalace binaries from the public mempalace-rs release.
-# No auth required — public release assets are unauthenticated. Keep the
-# checksums in sync with the release assets when upgrading this version.
+# Pinned AgentPalace 0.1.47: one executable serves HTTP MCP and federation REST.
 RUN curl -fsSL \
-      https://github.com/DigitumDei/mempalace-rs/releases/download/v0.1.39-nightly.b995a6f905ba804219b0e635a5591aa3efd78f16/mempalace-mcp-linux-x86_64 \
-      -o /usr/local/bin/mempalace-mcp \
-    && curl -fsSL \
-      https://github.com/DigitumDei/mempalace-rs/releases/download/v0.1.39-nightly.b995a6f905ba804219b0e635a5591aa3efd78f16/mempalace-cli-linux-x86_64 \
-      -o /usr/local/bin/mempalace-cli \
-    && echo "27665cc52f10b2793aaf54a29d9c5ffb7cd7af30654699b14ee664352924d983  /usr/local/bin/mempalace-mcp" | sha256sum -c - \
-    && echo "1495326ad27b57737e64b143724e2046eced3d59ff3dc4821546354d1faf30f6  /usr/local/bin/mempalace-cli" | sha256sum -c - \
-    && chmod 0755 /usr/local/bin/mempalace-mcp /usr/local/bin/mempalace-cli
+      https://github.com/DigitumDei/agentpalace/releases/download/v0.1.47-nightly.a2f103e230966212719da505bf1a0c1d8fee0864/agentpalace-linux-x86_64 \
+      -o /usr/local/bin/agentpalace \
+    && echo "b66e419623a973ba409151b981a613fe1a9a7ac751515876f2f459a3c9392617  /usr/local/bin/agentpalace" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/agentpalace
 
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/data/app.db

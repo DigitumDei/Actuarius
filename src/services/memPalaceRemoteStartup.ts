@@ -24,11 +24,12 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 /**
  * Retries the initial federation server start a few times before giving up.
  * A cold start (first-ever palace creation) can occasionally exceed the
- * 15s waitForHealth() deadline under host I/O contention; once the caller
+ * readiness deadline under host I/O contention; once the caller
  * discards the service instance the internal retry/recovery machinery in
  * MemPalaceRemoteService never gets a chance to run, so a single slow boot
  * would otherwise disable federation for the rest of the process lifetime.
- * 4 attempts * 15s + 3 delays * 20s = ~2 minutes worst case.
+ * Each attempt permits two minutes for cold model startup. Shutdown cancels
+ * both the active health/MCP probe and the delay between retries.
  *
  * Deterministic failures (missing binary, malformed existing project config —
  * see MemPalaceRemoteConfigError) skip the retry loop entirely: they won't
@@ -51,7 +52,7 @@ export async function startMemPalaceRemoteWithRetry(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (signal?.aborted) return false;
     try {
-      await service.start(existingRepos);
+      await service.start(existingRepos, signal);
       return true;
     } catch (err) {
       const isConfigError = err instanceof MemPalaceRemoteConfigError;

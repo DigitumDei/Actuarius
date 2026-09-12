@@ -160,7 +160,7 @@ function runEntrypointCacheRotation(skipCacheRotation: boolean): { status: numbe
 
   const homeDir = join(tempDir, "home");
   const xdgConfigHome = join(tempDir, "xdg-config");
-  const xdgCacheHome = join(tempDir, "xdg-cache");
+  const xdgCacheHome = join(homeDir, ".cache");
   const xdgDataHome = join(tempDir, "xdg-data");
   const xdgStateHome = join(tempDir, "xdg-state");
   const npmPrefixDir = join(tempDir, "npm-global");
@@ -217,7 +217,7 @@ function runEntrypointCacheRotation(skipCacheRotation: boolean): { status: numbe
 
   return {
     status: result.status,
-    markers: Object.fromEntries(Object.entries(markers).map(([key, path]) => [key, existsSync(path)])),
+    markers: Object.fromEntries(Object.entries(markers).map(([key, path]) => [key, existsSync(key === "mempalaceModel" ? join(homeDir, ".cache", "agentpalace", "embeddings", "model.onnx") : path)])),
   };
 }
 

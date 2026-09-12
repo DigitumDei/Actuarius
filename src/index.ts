@@ -24,9 +24,10 @@ async function main(): Promise<void> {
   await registerSlashCommands(appConfig, logger);
 
   let memPalaceRemote: MemPalaceRemoteService | null = null;
-  if (appConfig.mempalaceRemoteEnabled) {
+  if (appConfig.mempalaceRemoteEnabled || appConfig.mempalaceEnabled) {
+    await ensurePalaceIdentity(logger);
     memPalaceRemote = new MemPalaceRemoteService(appConfig, logger);
-    // Retrying can take up to ~2 minutes; abort the wait promptly on shutdown
+    // Cold-model startup and retries can take several minutes; abort the wait promptly on shutdown
     // rather than leaving the process unresponsive to SIGINT/SIGTERM for that
     // whole window (the permanent shutdown handlers aren't registered yet).
     const startupAbort = new AbortController();
@@ -50,7 +51,8 @@ async function main(): Promise<void> {
         return;
       }
       if (!started) {
-        memPalaceRemote = null;
+        await memPalaceRemote.stop();
+        throw new Error("AgentPalace HTTP MCP startup failed; refusing to launch LLMs with stale registrations");
       }
     } finally {
       process.off("SIGINT", abortStartup);
@@ -59,13 +61,12 @@ async function main(): Promise<void> {
   }
 
   let memPalace: MemPalaceClient | null = null;
-  if (appConfig.mempalaceEnabled) {
+  if (appConfig.mempalaceEnabled && memPalaceRemote) {
     await ensurePalaceIdentity(logger);
     memPalace = new MemPalaceClient(
-      appConfig.mempalaceBinaryPath,
-      appConfig.mempalacePalacePath,
-      logger,
-      appConfig.mempalaceEmbeddingProfile
+      memPalaceRemote.mcpUrl,
+      await memPalaceRemote.getMcpToken(),
+      logger
     );
     try {
       await memPalace.start();

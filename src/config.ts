@@ -149,8 +149,8 @@ const envSchema = z.object({
     .default("false")
     .transform((value) => value === "true"),
   MEMPALACE_PALACE_PATH: z.string().default("/data/mempalace/palace"),
-  MEMPALACE_BINARY_PATH: z.string().default("/usr/local/bin/mempalace-mcp"),
-  MEMPALACE_CLI_PATH: z.string().default("/usr/local/bin/mempalace-cli"),
+  MEMPALACE_BINARY_PATH: z.string().default("/usr/local/bin/agentpalace"),
+  MEMPALACE_CLI_PATH: z.string().default("/usr/local/bin/agentpalace"),
   // The bot runs on a 1GB e2-micro. MemPalace's own default is `balanced`, which
   // uses the fp32 model and leaves every runtime guardrail unbounded
   // (ingest batch size, queue depth, worker threads). `low_cpu` uses the
@@ -170,7 +170,14 @@ const envSchema = z.object({
   MEMPALACE_REMOTE_MINE_BATCH_SIZE: z.string().default("0").transform((value) => Number.parseInt(value, 10)).refine((value) => Number.isFinite(value) && value >= 0, "MEMPALACE_REMOTE_MINE_BATCH_SIZE must be a non-negative number"),
 });
 
-const parsed = envSchema.safeParse(process.env);
+// Keep deployed MEMPALACE_* metadata compatible; prefer the new spelling when set.
+const memoryEnv = { ...process.env };
+for (const [key, value] of Object.entries(process.env)) {
+  if (key.startsWith("AGENTPALACE_") && value !== undefined) {
+    memoryEnv[key.replace("AGENTPALACE_", "MEMPALACE_")] = value;
+  }
+}
+const parsed = envSchema.safeParse(memoryEnv);
 
 if (!parsed.success) {
   const message = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
