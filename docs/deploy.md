@@ -250,6 +250,29 @@ Provider config files contain the local unrestricted bearer token, as required b
 
 Provider configuration references: [Claude](https://code.claude.com/docs/en/mcp), [Codex](https://developers.openai.com/codex/mcp), [Gemini](https://geminicli.com/docs/tools/mcp-server/), [OpenCode](https://opencode.ai/docs/mcp-servers/).
 
+### AgentPalace performance harness
+
+`scripts/perf-agentpalace-http.mjs` measures the shared HTTP MCP under concurrent clients. It boots a disposable palace under `/tmp` (never `/data`), runs a mixed read/write workload, and reports per-tool latency percentiles, throughput, errors, and the server's RSS. With stub embeddings it needs no model download.
+
+```bash
+npm run build
+npm run perf:agentpalace
+```
+
+Tune the workload with `PERF_CLIENTS` (default 4), `PERF_ITERATIONS` (default 3), `PERF_WARMUP` (default 1), and `PERF_OPERATIONS` (default `status,search,wake_up,add_drawer,kg_add,diary_write`; `list_wings`, `taxonomy`, and `check_duplicate` are also available). Use `PERF_REAL_EMBEDDINGS=1` for the real model, `PERF_MAX_P95_MS` and `PERF_MAX_ERROR_RATE` to gate the run on a budget, and `PERF_JSON=<path>` to capture a machine-readable report.
+
+Measure the deployed server without restarting it or touching its palace by pointing the harness at the loopback MCP and reusing the server token:
+
+```bash
+PERF_BASE_URL=http://127.0.0.1:8765 \
+PERF_TOKEN_FILE=/data/mempalace/server_tokens.json \
+PERF_PALACE_PATH=/data/mempalace/remote-palace \
+PERF_CLIENTS=1 PERF_ITERATIONS=2 PERF_OPERATIONS=status,search \
+node scripts/perf-agentpalace-http.mjs
+```
+
+A live target defaults to one client and read-only operations so it does not overload the running bot; raise `PERF_CLIENTS` or add write operations deliberately. The container is capped below one CPU, so latency grows with concurrency and throughput does not scale linearly with clients.
+
 ### MemPalace binary upgrades and rollback
 
 Treat a MemPalace binary upgrade as a data migration. Coordination schema
