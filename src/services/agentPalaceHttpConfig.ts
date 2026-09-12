@@ -37,7 +37,7 @@ async function convergeRegistrations(home: string, endpoint: { url: string; toke
   const path = join(home, ".codex", "config.toml");
   const current = await readOptional(path);
   if (!current && !endpoint) return;
-  const stripped = current.replace(/^\[mcp_servers\.(?:mempalace|agentpalace)(?:\.[A-Za-z0-9_]+)?\][\s\S]*?(?=^\[|(?![\s\S]))/gm, "").trimEnd();
+  const stripped = current.replace(/^\[mcp_servers\.(?:mempalace|agentpalace)(?:\.[A-Za-z0-9_]+)*\][\s\S]*?(?=^\[|(?![\s\S]))/gm, "").trimEnd();
   const block = `[mcp_servers.agentpalace]\nurl = ${JSON.stringify(url)}\nhttp_headers = { Authorization = ${JSON.stringify(headers.Authorization)} }\n`;
   if (!endpoint) {
     await writePrivate(path, stripped ? stripped + "\n" : "");

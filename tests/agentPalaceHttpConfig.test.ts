@@ -8,7 +8,7 @@ describe("shared HTTP MCP registrations", () => {
   it("replaces old stdio entries for all providers, preserves unrelated settings, and converges token rotation", async () => {
     const home = mkdtempSync(join(tmpdir(), "agentpalace-http-config-"));
     mkdirSync(join(home, ".codex"));
-    writeFileSync(join(home, ".codex", "config.toml"), 'model = "keep"\n[mcp_servers.mempalace]\ncommand = "old"\nargs = ["with[bracket]"]\n[mcp_servers.mempalace.env]\nSECRET = "old"\n[mcp_servers.other]\ncommand = "keep"\n');
+    writeFileSync(join(home, ".codex", "config.toml"), 'model = "keep"\n[mcp_servers.mempalace]\ncommand = "old"\nargs = ["with[bracket]"]\n[mcp_servers.mempalace.env]\nSECRET = "old"\n[mcp_servers.mempalace.tools.mempalace_wake_up]\nenabled = true\n[mcp_servers.agentpalace.tools.agentpalace_search]\nenabled = false\n[mcp_servers.other]\ncommand = "keep"\n');
     writeFileSync(join(home, ".claude.json"), JSON.stringify({ theme: "keep", mcpServers: { mempalace: { command: "old" }, other: { command: "keep" } } }));
     const url = "http://127.0.0.1:8765/mcp";
     await configureAgentPalaceHttp(home, url, "first");
@@ -31,6 +31,7 @@ describe("shared HTTP MCP registrations", () => {
     expect(codex).toContain('model = "keep"');
     expect(codex).not.toContain("mempalace");
     expect(codex).not.toContain("SECRET");
+    expect(codex).not.toContain(".tools.");
     expect(codex.match(/\[mcp_servers.agentpalace\]/g)).toHaveLength(1);
     expect(codex).toContain('Authorization = "Bearer rotated"');
     const snapshot = join(home, "snapshot.json");
@@ -57,7 +58,7 @@ describe("shared HTTP MCP registrations", () => {
       writeFileSync(path, JSON.stringify(config));
     }
     const codex = join(home, ".codex/config.toml");
-    writeFileSync(codex, readFileSync(codex, "utf8") + '\n[mcp_servers.mempalace]\ncommand = "old"\n[mcp_servers.other]\ncommand = "keep"\n');
+    writeFileSync(codex, readFileSync(codex, "utf8") + '\n[mcp_servers.mempalace]\ncommand = "old"\n[mcp_servers.mempalace.tools.mempalace_wake_up]\nenabled = true\n[mcp_servers.agentpalace.tools.agentpalace_search]\nenabled = false\n[mcp_servers.other]\ncommand = "keep"\n');
     await clearAgentPalaceHttp(home, xdg);
     await clearAgentPalaceHttp(home, xdg);
     for (const path of paths) {
