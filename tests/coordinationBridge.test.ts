@@ -26,11 +26,11 @@ function fixture() {
 describe("Discord coordination intake", () => {
     it("queues thread followups even when prior work is running, preserving workspace and dependency", async () => {
         const { bridge } = fixture();
-        bridge.store.add({ id: "prior", source: "background", description: "prior", sender: "agent", wing: "wing_repo", work_id: "shared", phase: "running" });
+        bridge.store.add({ id: "prior", source: "background", description: "prior", sender: "agent", wing: "wing_coordination", work_id: "shared", phase: "running" });
         const reply = vi.fn();
         const message = { id: "event", author: { bot: false, id: "user" }, guildId: "guild", channelId: "thread", channel: { isThread: () => true, parentId: "channel" }, content: "Add tests", attachments: new Map(), reply } as unknown as Message;
         expect(await bridge.message(message)).toBe(true);
-        expect(bridge.store.event("event")).toMatchObject({ source: "discord", work_id: "shared", dependencies: ["prior"] });
+        expect(bridge.store.event("event")).toMatchObject({ source: "discord", wing: "wing_coordination", work_id: "shared", dependencies: ["prior"] });
         await bridge.message(message);
         expect(bridge.store.list()).toHaveLength(2);
         expect(reply).toHaveBeenCalled();

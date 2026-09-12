@@ -1,4 +1,5 @@
 import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 
 export interface PendingAttachment {
@@ -228,7 +229,8 @@ export async function processAttachments(
   attachments: PendingAttachment[],
   requestId: number,
   worktreePath: string,
-  config: AttachmentConfig
+  config: AttachmentConfig,
+  taskId?: string
 ): Promise<{ processed: ProcessedAttachment[]; promptSection: string }> {
   if (attachments.length === 0) return { processed: [], promptSection: "" };
 
@@ -239,7 +241,8 @@ export async function processAttachments(
 
   await ensureActuariusExcluded(worktreePath);
 
-  const saveDir = join(worktreePath, ".actuarius", "attachments", `request-${requestId}`);
+  const storageKey = taskId ? `task-${createHash("sha256").update(taskId).digest("hex")}` : `request-${requestId}`;
+  const saveDir = join(worktreePath, ".actuarius", "attachments", storageKey);
   await mkdir(saveDir, { recursive: true });
 
   const processed: ProcessedAttachment[] = [];
@@ -251,7 +254,7 @@ export async function processAttachments(
       const att = attachments[i]!;
       const safeName = `${i + 1}-${sanitizeFilename(att.name)}`;
       const savePath = join(saveDir, safeName);
-      const relativePath = join(".actuarius", "attachments", `request-${requestId}`, safeName);
+      const relativePath = join(".actuarius", "attachments", storageKey, safeName);
       const type = detectType(att.contentType, att.name);
       if (!type) {
         throw new AttachmentError(`Attachment ${att.name} is not supported. Supported types: text files and PNG/JPEG/WebP/GIF images.`);

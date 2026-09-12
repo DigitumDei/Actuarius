@@ -50,6 +50,7 @@ it.skipIf(!process.env.AGENTPALACE_TEST_BINARY)("uses native claim, input_requir
                 throw new Error(text); return JSON.parse(text) as unknown; } });
         const task = await api.create({ created_by: "sender", idempotency_key: "first", wing: "wing_test", title: "test", description: "test", dependencies: [] });
         expect((await api.page("wing_test")).ids).toContain(task.task_id);
+        expect(await api.creationWing("wing_test", "local")).toBe("wing_test");
         expect((await api.get(task.task_id))?.state).toBe("pending");
         const claimed = await api.mutate("claim", { task_id: task.task_id, worker: "worker", expected_revision: task.revision, lease_seconds: 120 });
         const waiting = await api.mutate("transition", { task_id: task.task_id, actor: "worker", expected_revision: claimed.revision, state: "input_required" });

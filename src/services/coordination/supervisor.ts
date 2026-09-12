@@ -70,7 +70,7 @@ export class CoordinationSupervisor {
             await this.flush();
             this.store.setMeta("last_refresh", new Date().toISOString());
             if (!this.active && !this.stopping) {
-                const entries = this.store.list().filter(e => ["registering", "validate", "execute", "publishing", "interrupted"].includes(e.phase) && e.next_at <= Date.now());
+                const entries = this.store.list().filter(e => ["registering", "validate", "execute", "publishing", "interrupted", "input_transition"].includes(e.phase) && e.next_at <= Date.now());
                 entries.sort((a, b) => (a.source === "discord" ? 0 : 1) - (b.source === "discord" ? 0 : 1) || a.sequence - b.sequence);
                 for (const e of entries) {
                     try {
@@ -103,10 +103,19 @@ export class CoordinationSupervisor {
             const page = await this.api.page(wing, this.store.meta(key) ?? undefined, JSON.parse(this.store.meta(`remote:${wing}`) ?? "{}") as Record<string, string>);
             if (page.errors.length)
                 this.store.setMeta("source_error", page.errors.join("; "));
-            for (const id of page.ids) {
+            for (const [id, authority] of Object.entries(page.authorities)) this.store.setMeta(`authority:${id}`, authority);
+            const retryKey = `discovery-retries:${wing}`;
+            const retries = new Set<string>(JSON.parse(this.store.meta(retryKey) ?? "[]"));
+            for (const id of new Set([...page.ids, ...[...retries].slice(0, 100)])) {
                 if (this.store.get(id))
+                    { retries.delete(id); continue; }
+                let task: PalaceTask | null;
+                try { task = await this.api.get(id); retries.delete(id); }
+                catch (error) {
+                    retries.add(id);
+                    this.store.setMeta("source_error", `Task ${id}: ${String(error)}`);
                     continue;
-                const task = await this.api.get(id);
+                }
                 if (!task || terminal.has(task.state) || (task.state !== "pending" && task.owner !== this.worker) || !task.description.includes("```actuarius-task"))
                     continue;
                 let spec: ExecutionSpec | null = null;
@@ -121,19 +130,25 @@ export class CoordinationSupervisor {
             // A completed sweep restarts at creation-order beginning: old state changes cannot be missed.
             this.store.setMeta(key, page.next ?? "");
             this.store.setMeta(`remote:${wing}`, JSON.stringify(page.remoteCursors));
+            this.store.setMeta(retryKey, JSON.stringify([...retries]));
         }
     }
     private async reconcile(): Promise<void> {
         const entries = this.store.list().filter(e => e.task && !terminal.has(e.phase) && e.id !== this.activeEntryId);
         const offset = Number(this.store.meta("reconcile-offset") ?? "0");
         for (const e of entries.slice(offset, offset + 20)) {
-            const task = await this.api.get(e.task!.task_id);
+            let task: PalaceTask | null;
+            try { task = await this.api.get(e.task!.task_id); }
+            catch (error) { this.store.setMeta("source_error", `Task ${e.id}: ${String(error)}`); continue; }
             if (!task)
                 continue;
-            e.task = task;
+            // Discord callbacks can update this entry while the request is in flight.
+            const latest = this.store.get(e.id);
+            if (!latest || (latest.task && latest.task.revision > task.revision)) continue;
+            latest.task = task;
             if (terminal.has(task.state))
-                e.phase = task.state;
-            this.store.save(e);
+                latest.phase = task.state;
+            this.store.save(latest);
         }
         this.store.setMeta("reconcile-offset", String(offset + 20 >= entries.length ? 0 : offset + 20));
     }
@@ -173,7 +188,7 @@ export class CoordinationSupervisor {
             const depWork = local?.work_id ? this.store.work(local.work_id) : null;
             const kind = explicit?.kind ?? (ownWork && depWork && ownWork.repository === depWork.repository && ownWork.work_id !== depWork.work_id ? "merged" : null);
             if (kind && (!local || !await this.hooks.gate(e, local, kind))) {
-                e.reason = `Waiting for ${kind} artifact from ${id}`;
+                e.reason = `Waiting for ${kind} artifact from ${id}${kind === "merged" && ownWork?.path ? "; integrate the dependency into this retained branch before resuming" : ""}`;
                 this.store.save(e);
                 return false;
             }
@@ -222,7 +237,15 @@ export class CoordinationSupervisor {
                     }
                     deps.push(local?.task?.task_id ?? id);
                 }
+                const authorities = new Set(deps.map(id => this.store.meta(`authority:${id}`)).filter((v): v is string => !!v));
+                if (authorities.size > 1) throw new Error("Dependencies span coordination authorities; keep the workflow at one authority");
+                const authority = [...authorities][0];
+                if (authority) {
+                    e.wing = await this.api.creationWing(e.wing, authority);
+                    this.store.save(e);
+                }
                 e.task = await this.api.create({ created_by: e.sender, idempotency_key: e.id, wing: e.wing, title: e.spec?.requirements[0]?.slice(0, 200) ?? "Discord task", description: e.description, dependencies: deps });
+                if (authority) this.store.setMeta(`authority:${e.task.task_id}`, authority);
                 if (this.store.meta(`cancel:${e.id}`)) {
                     e.task = await this.api.mutate("transition", { task_id: e.task.task_id, actor: this.worker, expected_revision: e.task.revision, state: "cancelled" });
                     e.phase = "cancelled";
@@ -242,6 +265,10 @@ export class CoordinationSupervisor {
                 this.store.save(e);
                 return;
             }
+            if (e.phase === "input_transition" && current.state === "input_required") {
+                e.task = current; e.phase = "input_required"; e.attempts = 0;
+                this.store.save(e); this.feedback(e, [e.reason]); return;
+            }
             if (current.owner && current.owner !== this.worker && current.lease_expires_at && Date.parse(current.lease_expires_at) > Date.now()) {
                 e.reason = "Claimed by another worker";
                 e.next_at = Date.now() + 15000;
@@ -258,9 +285,13 @@ export class CoordinationSupervisor {
             renewTimer.unref();
             if (e.phase === "interrupted") {
                 e.validation_id = randomUUID();
-                e.phase = "input_required";
+                e.human_answered = false; e.question_message = null;
+                e.phase = "input_transition";
                 this.store.save(e);
+            }
+            if (e.phase === "input_transition") {
                 await transition("input_required", { reason: e.reason });
+                e.phase = "input_required"; e.attempts = 0; this.store.save(e);
                 this.feedback(e, [e.reason]);
                 return;
             }
@@ -291,10 +322,11 @@ export class CoordinationSupervisor {
                 }
                 abort.signal.throwIfAborted();
                 if (questions.length) {
-                    e.phase = "input_required";
+                    e.phase = "input_transition";
                     e.reason = questions.join("\n");
                     this.store.save(e);
                     await transition("input_required", { validation_id: e.validation_id, questions });
+                    e.phase = "input_required"; e.attempts = 0; this.store.save(e);
                     this.feedback(e, questions);
                     return;
                 }
@@ -349,7 +381,7 @@ export class CoordinationSupervisor {
             }
         }
         catch (error) {
-            e.reason = error instanceof Error ? error.message : String(error);
+            if (e.phase !== "input_transition") e.reason = error instanceof Error ? error.message : String(error);
             if (e.phase === "running") {
                 e.phase = "interrupted";
                 e.reason = `Execution stopped; retained workspace needs inspection: ${e.reason}`;
@@ -511,9 +543,10 @@ export class CoordinationSupervisor {
                     const message = await this.hooks.notice(e, String(out.payload.content), out.key);
                     if (message)
                         this.store.setMeta(`message-task:${message}`, e.id);
-                    if (out.key.includes(":question:") && message && e.phase === "input_required") {
-                        e.question_message = message;
-                        this.store.save(e);
+                    const latest = this.store.get(e.id);
+                    if (out.key.includes(":question:") && message && latest?.phase === "input_required" && latest.validation_id === e.validation_id) {
+                        latest.question_message = message;
+                        this.store.save(latest);
                         this.store.setMeta(`question:${message}`, e.id);
                     }
                 }

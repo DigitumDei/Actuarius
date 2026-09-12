@@ -14,6 +14,13 @@ export async function resolveRef(cwd: string, ref: string): Promise<string> {
     const target = /^[a-f0-9]{40}$/i.test(ref) ? ref : ref.startsWith("origin/") ? ref : `origin/${ref}`;
     return git(cwd, ["rev-parse", "--verify", "--end-of-options", `${target}^{commit}`]);
 }
+/** An isolated Git repository supports validation with providers requiring a Git cwd. */
+export async function prepareValidationWorkspace(root: string): Promise<string> {
+    const path = join(root, ".coordination-validator");
+    await mkdir(path, { recursive: true });
+    await git(path, ["init", "--quiet"]);
+    return path;
+}
 export async function provisionWork(store: CoordinationStore, root: string, identity: RepoIdentity, work: Work): Promise<Work> {
     const base = buildRepoCheckoutPath(root, identity.owner, identity.repo);
     if (work.path && existsSync(work.path)) {

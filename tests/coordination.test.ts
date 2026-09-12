@@ -47,10 +47,12 @@ function harness() {
     const messages: unknown[] = [];
     const executed: string[] = [];
     let count = 0;
-    const fault = vi.fn<(name: string, args: Record<string, unknown>) => void>();
+    const fault = vi.fn<(name: string, args: Record<string, unknown>) => void | Promise<void>>();
+    const discovery = { tasks: [] as Array<{task_id:string}>, next_cursor: null as string | null };
     const inbox: unknown[] = [];
     const api = new CoordinationClient({ coordinationCall: async (name, args) => {
-            fault(name, args);
+            await fault(name, args);
+            if (name.endsWith("task_list")) return discovery;
             if (name.endsWith("task_create")) {
                 const t: PalaceTask = { task_id: `t${++count}`, title: String(args.title), description: String(args.description), state: "pending", revision: 1, created_by: String(args.created_by), wing: String(args.wing), owner: null, lease_expires_at: null, dependencies: args.dependencies as string[], parent_id: null };
                 tasks.set(t.task_id, t);
@@ -94,9 +96,53 @@ function harness() {
     const hooks: CoordinationHooks = { wings: () => [], check: async () => { }, validate: async () => ({ ready: true, questions: [] }), execute: async (e) => { executed.push(e.id); return { result: "done" }; }, notice: async () => "message", gate: async () => true };
     const sup = new CoordinationSupervisor(s, api, hooks, pino({ level: "silent" }));
     const tick = async () => { await sup.tick(); await new Promise(r => setTimeout(r, 10)); };
-    return { s, tasks, messages, executed, hooks, sup, tick, fault, inbox };
+    return { s, tasks, messages, executed, hooks, sup, tick, fault, inbox, discovery };
 }
 describe("durable supervisor", () => {
+    it("preserves a Discord answer arriving during an authoritative status read", async () => {
+        const h = harness();
+        h.hooks.validate = async () => ({ready:false, questions:["Which version?"]});
+        h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});
+        for(let i=0;i<3;i++) await h.tick();
+        let release!:()=>void; let reading!:()=>void;
+        const started = new Promise<void>(resolve=>{reading=resolve;});
+        let hold = true;
+        h.fault.mockImplementation(async name=>{if(hold && name.endsWith("task_get")){hold=false;reading();await new Promise<void>(resolve=>{release=resolve;});}});
+        const poll = h.sup.tick(); await started;
+        await h.sup.answer("message", "Use version 2", "answer");
+        release(); await poll; await new Promise(resolve=>setTimeout(resolve,10));
+        expect(h.s.get("one")?.spec?.requirements).toContain("Human clarification: Use version 2");
+        await h.sup.stop();
+    });
+    it.each([false,true])("retries an input transition without rerunning validation (response lost: %s)", async responseLost => {
+        const h=harness();let fail=true;
+        const validate=vi.fn(async()=>({ready:false,questions:["Which version?"]}));h.hooks.validate=validate;
+        h.fault.mockImplementation((name,args)=>{
+            if(fail&&name.endsWith("task_transition")&&args.state==="input_required") {
+                if(responseLost){const t=h.tasks.get(String(args.task_id))!;t.state="input_required";t.revision++;}
+                throw new Error("connection lost");
+            }
+        });
+        h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});
+        await h.tick();await h.tick();
+        expect(h.s.get("one")?.phase).toBe("input_transition");
+        fail=false;const e=h.s.get("one")!;e.next_at=0;h.s.save(e);
+        await h.tick();await h.tick();
+        expect(h.s.get("one")?.phase).toBe("input_required");
+        expect(h.tasks.get(e.task!.task_id)?.state).toBe("input_required");
+        expect(h.s.get("one")?.reason).toBe("Which version?");expect(validate).toHaveBeenCalledTimes(1);
+    });
+    it("advances discovery past failed reads and durably retries them later",async()=>{
+        const h=harness();h.hooks.wings=()=>[""];
+        for(const id of ["bad","good"])h.tasks.set(id,{task_id:id,title:id,description:encodeSpec(spec),state:"pending",revision:1,created_by:"sender",wing:"wing_repo",owner:null,lease_expires_at:null,dependencies:[],parent_id:null});
+        h.discovery.tasks=[{task_id:"bad"},{task_id:"good"}];h.discovery.next_cursor="page-2";
+        h.fault.mockImplementation((name,args)=>{if(name.endsWith("task_get")&&args.task_id==="bad")throw new Error("offline");});
+        await h.tick();
+        expect(h.s.get("good")).not.toBeNull();expect(h.s.meta("cursor:")).toBe("page-2");
+        expect(JSON.parse(h.s.meta("discovery-retries:")!)).toContain("bad");
+        h.discovery.tasks=[];h.fault.mockReset();await h.tick();
+        expect(h.s.get("bad")).not.toBeNull();expect(JSON.parse(h.s.meta("discovery-retries:")!)).toEqual([]);
+    });
     it("aborts an active invocation after lease loss and retains it for inspection", async () => {
         const h = harness();
         h.s.add({ id: "one", source: "discord", description: encodeSpec(spec), sender: "sender", wing: "wing_repo", spec });

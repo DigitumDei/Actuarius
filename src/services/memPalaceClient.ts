@@ -155,7 +155,7 @@ export class MemPalaceClient {
 
   /** Coordination callers validate the returned payload against their wire schemas. */
   public async coordinationCall(name: string, args: Record<string, unknown>): Promise<unknown> {
-    if (!/^agentpalace_(task_|message_|inbox_|result_)/u.test(name)) throw new Error("Not a coordination tool");
+    if (name !== "agentpalace_coordination_wings" && !/^agentpalace_(task_|message_|inbox_|result_)/u.test(name)) throw new Error("Not a coordination tool");
     return JSON.parse(await this.callTool(name, args)) as unknown;
   }
 

@@ -1,9 +1,9 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildAttachmentSummary,
   formatFileSize,
@@ -166,12 +166,33 @@ describe("buildAttachmentSummary", () => {
 });
 
 describe("processAttachments", () => {
-  beforeAll(() => {
+  let testWorktree: string;
+  beforeEach(async () => {
+    testWorktree = await mkdtemp(join(tmpdir(), "actuarius-attachments-"));
+    await mkdir(join(testWorktree, ".git"));
     globalThis.fetch = vi.fn();
+  });
+  afterEach(async () => { await rm(testWorktree, { recursive: true, force: true }); });
+  it("isolates attachments and download cleanup between tasks sharing a request ID", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-attachments-"));
+    try {
+      await mkdir(join(root,".git"),{recursive:true});
+      const response = (text:string) => ({ok:true,arrayBuffer:async()=>new TextEncoder().encode(text).buffer}) as Response;
+      vi.mocked(fetch).mockResolvedValue(response("original"));
+      const first = await processAttachments([makeTextAttachment()],42,root,testConfig,"task-one");
+      vi.mocked(fetch).mockResolvedValue(response("replacement"));
+      const second = await processAttachments([makeTextAttachment()],42,root,testConfig,"task-two");
+      const firstPath = join(root,first.processed[0]!.savedPath);
+      expect(first.processed[0]!.savedPath).not.toBe(second.processed[0]!.savedPath);
+      expect(await readFile(firstPath,"utf8")).toBe("original");
+      vi.mocked(fetch).mockRejectedValue(new Error("download failed"));
+      await expect(processAttachments([makeTextAttachment()],42,root,testConfig,"task-two")).rejects.toThrow();
+      expect(await readFile(firstPath,"utf8")).toBe("original");
+    } finally { await rm(root,{recursive:true,force:true}); }
   });
 
   it("returns empty for no attachments", async () => {
-    const result = await processAttachments([], 1, "/tmp/worktree", testConfig);
+    const result = await processAttachments([], 1, testWorktree, testConfig);
     expect(result.processed).toEqual([]);
     expect(result.promptSection).toBe("");
   });
@@ -185,7 +206,7 @@ describe("processAttachments", () => {
     const result = await processAttachments(
       [makeTextAttachment()],
       42,
-      "/tmp/worktree",
+      testWorktree,
       testConfig
     );
 
@@ -206,7 +227,7 @@ describe("processAttachments", () => {
       } as Response;
     });
 
-    await processAttachments([makeTextAttachment()], 42, "/tmp/worktree", testConfig);
+    await processAttachments([makeTextAttachment()], 42, testWorktree, testConfig);
   });
 
   it("adds .actuarius to the git exclude file before saving attachments", async () => {
@@ -278,7 +299,7 @@ describe("processAttachments", () => {
     const result = await processAttachments(
       [makeImageAttachment()],
       42,
-      "/tmp/worktree",
+      testWorktree,
       testConfig
     );
 
@@ -304,7 +325,7 @@ describe("processAttachments", () => {
     const result = await processAttachments(
       [makeTextAttachment(), makeImageAttachment()],
       45,
-      "/tmp/worktree",
+      testWorktree,
       testConfig
     );
 
@@ -326,7 +347,7 @@ describe("processAttachments", () => {
     const result = await processAttachments(
       [makeTextAttachment()],
       1,
-      "/tmp/worktree",
+      testWorktree,
       smallConfig
     );
 
@@ -341,14 +362,14 @@ describe("processAttachments", () => {
     } as Response);
 
     await expect(
-      processAttachments([makeTextAttachment()], 1, "/tmp/worktree", testConfig)
+      processAttachments([makeTextAttachment()], 1, testWorktree, testConfig)
     ).rejects.toThrow("Failed to download attachment debug.log: HTTP 403");
   });
 
   it("throws on unsupported type during processing", async () => {
     const att = makeTextAttachment({ contentType: "application/octet-stream", name: "archive.bin" });
     await expect(
-      processAttachments([att], 1, "/tmp/worktree", testConfig)
+      processAttachments([att], 1, testWorktree, testConfig)
     ).rejects.toThrow("is not supported");
   });
 
@@ -362,7 +383,7 @@ describe("processAttachments", () => {
       processAttachments(
         [makeTextAttachment({ size: 5 })],
         1,
-        "/tmp/worktree",
+        testWorktree,
         { ...testConfig, maxFileSize: 10 }
       )
     ).rejects.toThrow("downloaded as 11 B, above the 10 B per-file limit");
@@ -386,7 +407,7 @@ describe("processAttachments", () => {
           makeTextAttachment({ id: "att-2", name: "two.log", size: 5 }),
         ],
         1,
-        "/tmp/worktree",
+        testWorktree,
         { ...testConfig, maxTotalSize: 15 }
       )
     ).rejects.toThrow("downloaded total 16 B, above the 15 B total limit");

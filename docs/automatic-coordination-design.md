@@ -263,3 +263,13 @@ On an interrupted invocation, retain files and require inspection plus an explic
 Generic cleanup skips open registered workspaces. Explicit `/delete` refuses unresolved tasks, dirty files, and commits not integrated into the target; a successfully closed work ID cannot silently allocate a fresh branch. Squash-merged workspaces may require manual inspection before deletion because the deletion check conservatively uses commit ancestry. No automatic retention deletion, merge, release, or cross-host execution is enabled.
 
 Verification includes scheduler priority and FIFO, dependency isolation, workspace ownership across continuations, corrected questions, lease-loss abort, failed publication/delivery, event deduplication, a real Git worktree surviving restart with dirty files, and a native AgentPalace protocol integration test. Run the latter with `AGENTPALACE_TEST_BINARY` pointing at the installed executable; it creates a temporary palace with stub embeddings and does not touch production tasks. A live Discord/provider end-to-end smoke test remains an activation check because this implementation has not been deployed.
+
+## Recovery and execution safeguards
+
+Validation and workflow summaries run in an isolated Git directory so providers that require a Git working directory can execute. A requested `input_required` transition remains durable and retryable until AgentPalace confirms it; polling preserves Discord answers received while a request is in flight. Individual discovery lookup failures are retried without blocking later pages.
+
+Discord follow-ups inherit their predecessor's coordination wing. Discovery records the owning authority, and registration selects a configured write route to that authority. If no route exists, registration waits with an actionable error instead of creating the dependency at another authority.
+
+A merged dependency must also be present in the retained consumer branch (or its frozen base). If it is missing, integrate it into that branch before continuing. Workflow parents can evaluate merged and release gates using their dependencies' repositories without owning a worktree.
+
+Attachments are isolated by task ID even when tasks share a workspace request ID. Discord thread names include a stable hash of the complete work ID to distinguish long IDs with the same prefix.

@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CoordinationStore } from "../src/services/coordination/store.js";
-import { git, provisionWork } from "../src/services/coordination/workspace.js";
+import { git, provisionWork, prepareValidationWorkspace } from "../src/services/coordination/workspace.js";
 vi.mock("../src/services/githubAuthService.js", () => ({ configureRepositoryGitAuth: async () => { } }));
 vi.mock("../src/services/gitWorkspaceService.js", () => ({
     buildRepoCheckoutPath: (root: string, owner: string, repo: string) => join(root, owner, repo),
@@ -12,6 +12,14 @@ vi.mock("../src/services/gitWorkspaceService.js", () => ({
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const fn of cleanups.splice(0))
     await fn(); });
+it("creates a reusable Git cwd for Codex validation without a repository task", async () => {
+    const root = await mkdtemp(join(tmpdir(), "coord-validation-"));
+    cleanups.push(async()=>{await rm(root,{recursive:true,force:true});});
+    const path = await prepareValidationWorkspace(root);
+    expect(await git(path,["rev-parse","--is-inside-work-tree"])).toBe("true");
+    expect(await prepareValidationWorkspace(root)).toBe(path);
+    expect(await git(path,["remote"])).toBe("");
+});
 it("reuses a worktree after restart and preserves dirty files and its original base", async () => {
     const root = await mkdtemp(join(tmpdir(), "coord-workspace-"));
     const base = join(root, "owner", "repo");
