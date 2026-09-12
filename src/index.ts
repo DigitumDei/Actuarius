@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { clearAgentPalaceHttp } from "./services/agentPalaceHttpConfig.js";
 import { fileURLToPath } from "node:url";
 import { appConfig } from "./config.js";
 import { AppDatabase } from "./db/database.js";
@@ -58,6 +60,10 @@ async function main(): Promise<void> {
       process.off("SIGINT", abortStartup);
       process.off("SIGTERM", abortStartup);
     }
+  }
+
+  if (!appConfig.mempalaceRemoteEnabled && !appConfig.mempalaceEnabled) {
+    await clearAgentPalaceHttp(homedir(), process.env.XDG_CONFIG_HOME);
   }
 
   let memPalace: MemPalaceClient | null = null;

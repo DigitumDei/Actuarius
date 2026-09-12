@@ -162,6 +162,7 @@ export class MemPalaceRemoteService {
   private remoteToken: string | null = null;
   private tokenPromise: Promise<string> | null = null;
   private writeConfigPromise: Promise<void> = Promise.resolve();
+  private healthAbort: AbortController | null = null;
   private startupSignal: AbortSignal | undefined;
 
   public constructor(config: AppConfig, logger: Logger, options: MemPalaceRemoteServiceOptions = {}) {
@@ -191,6 +192,7 @@ export class MemPalaceRemoteService {
   public async stop(): Promise<void> {
     this.serverDesired = false;
     this.clearServerRetry();
+    this.healthAbort?.abort();
     await this.runServerOp(() => this.stopGuarded());
   }
 
@@ -212,12 +214,13 @@ export class MemPalaceRemoteService {
     this.repoCheckouts.set(wing, checkoutPath);
     if (changed) {
       await this.writeGlobalConfig();
-      if (this.serverDesired) {
-        await this.restartServer().catch((error: unknown) =>
-          this.logger.warn({ error, repo: repo.fullName }, "MemPalace federation server restart failed; recovery scheduled")
-        );
+      if (this.serverDesired && this.serverRunning) {
+        // 0.1.47 snapshots server.checkouts at startup. Keep active MCP calls
+        // alive; new source-resolution mappings take effect on the next start.
+        this.logger.info({ repo: repo.fullName }, "AgentPalace checkout mapping saved; source retrieval available after the next server restart");
       }
-    } else if (this.serverDesired && !this.serverRunning) {
+    }
+    if (this.serverDesired && !this.serverRunning) {
       await this.recoverServer().catch((error: unknown) =>
         this.logger.warn({ error, repo: repo.fullName }, "MemPalace federation server recovery failed; retry scheduled")
       );
@@ -594,13 +597,6 @@ export class MemPalaceRemoteService {
     await this.runServerOp(() => this.startGuarded());
   }
 
-  private async restartServer(): Promise<void> {
-    await this.runServerOp(async () => {
-      await this.stopGuarded();
-      await this.startGuarded();
-    });
-  }
-
   private async recoverServer(): Promise<void> {
     await this.runServerOp(async () => {
       if (this.serverRunning) return;
@@ -609,14 +605,21 @@ export class MemPalaceRemoteService {
   }
 
   private async startGuarded(): Promise<void> {
-    if (this.serverRunning) return;
+    if (this.serverRunning || !this.serverDesired) return;
+    const abort = new AbortController();
+    this.healthAbort = abort;
+    const signal = this.startupSignal ? AbortSignal.any([abort.signal, this.startupSignal]) : abort.signal;
     try {
-      await this.startServerProcess();
+      signal.throwIfAborted();
+      await this.startServerProcess(signal);
+      signal.throwIfAborted();
       this.serverRunning = true;
     } catch (error) {
       this.serverRunning = false;
       this.scheduleServerRetry();
       throw error;
+    } finally {
+      if (this.healthAbort === abort) this.healthAbort = null;
     }
   }
 
@@ -650,7 +653,7 @@ export class MemPalaceRemoteService {
   }
 
   /** Spawn `agentpalace serve` and resolve once it reports healthy. Overridable in tests. */
-  protected async startServerProcess(): Promise<void> {
+  protected async startServerProcess(signal: AbortSignal): Promise<void> {
     if (this.server) return;
     await mkdir(this.config.mempalaceRemotePalacePath, { recursive: true });
     const args = [
@@ -688,7 +691,7 @@ export class MemPalaceRemoteService {
     });
 
     try {
-      await this.waitForHealth();
+      await this.waitForHealth(signal);
     } catch (error) {
       // Health never came up — tear down this (possibly hung) process so a retry
       // restarts cleanly instead of adopting a zombie handle as "running".
@@ -722,29 +725,29 @@ export class MemPalaceRemoteService {
     if (this.server === child) this.server = null;
   }
 
-  private async waitForHealth(): Promise<void> {
+  private async waitForHealth(signal: AbortSignal): Promise<void> {
     const healthUrl = new URL("/v1/health", this.config.mempalaceRemoteUrl).toString();
     // A cold cache may need to download the quantized model before binding.
     // Killing that process after 15s repeatedly interrupted valid first starts.
     const deadline = Date.now() + 120_000;
     let lastError: unknown = null;
     while (Date.now() < deadline) {
-      this.startupSignal?.throwIfAborted();
+      signal.throwIfAborted();
       if (!this.server) throw new Error("MemPalace federation server exited before it became healthy");
       try {
         const signals = [AbortSignal.timeout(2_000)];
-        if (this.startupSignal) signals.push(this.startupSignal);
+        signals.push(signal);
         const response = await fetch(healthUrl, { signal: AbortSignal.any(signals) });
         if (response.ok) {
           const probe = new MemPalaceClient(this.mcpUrl, await this.ensureToken(), this.logger);
           const abortProbe = (): void => { void probe.stop(); };
-          this.startupSignal?.addEventListener("abort", abortProbe, { once: true });
+          signal.addEventListener("abort", abortProbe, { once: true });
           try {
-            this.startupSignal?.throwIfAborted();
+            signal.throwIfAborted();
             await probe.start();
             return;
           } finally {
-            this.startupSignal?.removeEventListener("abort", abortProbe);
+            signal.removeEventListener("abort", abortProbe);
             await probe.stop();
           }
         }

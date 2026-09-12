@@ -233,6 +233,9 @@ After `terraform apply`, reboot or re-fetch `/var/redeploy.sh` from metadata so 
 
 ### AgentPalace 0.1.47 HTTP cutover
 
+When both memory flags are disabled, startup removes managed `mempalace` and `agentpalace` MCP registrations from every provider. Connecting a repository saves its checkout mapping without restarting the shared server or interrupting active tools. AgentPalace 0.1.47 loads these mappings at startup, so source retrieval for a newly connected repository requires the next planned server restart; ordinary memory reads, writes, and mining remain available.
+
+
 This upgrade supersedes the shared-directory approach in PR #215. **Do not run its remote-to-local merge.** Keep the existing `/data/mempalace/remote-palace` (or configured override) as the server authority; this preserves coordination state, drawers, KG, IDs and history in place.
 
 1. Record the deployed image and take the stopped-bot snapshot described below. It must include both palace directories, `$HOME/.mempalace`, tokens, provider configs and model cache.

@@ -494,7 +494,7 @@ describe("MemPalaceRemoteService", () => {
     expect(readFileSync(configPath, "utf8")).toBe(sentinel);
   });
 
-  it("recovers the federation server after a failed restart instead of staying down", async () => {
+  it("recovers the federation server after a failed start instead of staying down", async () => {
     vi.useFakeTimers();
     try {
       const root = mkdtempSync(join(tmpdir(), "actuarius-mempalace-recover-"));
@@ -509,29 +509,73 @@ describe("MemPalaceRemoteService", () => {
       mkdirSync(join(checkout, ".git", "info"), { recursive: true });
 
       const service = new RecoveryTestService(config, logger, { homeDir });
-      service.failStartAttempt = 2; // the restart's start attempt fails
+      service.failStartAttempt = 1;
 
-      await service.start([]);
+      await expect(service.start([])).rejects.toThrow("simulated start failure");
       expect(service.startAttempts).toBe(1);
-
-      // A brand-new repo forces a restart; its start attempt (#2) throws, so the
-      // server is down but a recovery is scheduled rather than abandoned.
-      await service.registerRepository(repo, checkout);
-      expect(service.startAttempts).toBe(2);
-      expect(service.stopAttempts).toBe(1);
 
       // The background retry brings the server back with no further repo activity.
       await vi.advanceTimersByTimeAsync(30_000);
-      expect(service.startAttempts).toBe(3);
+      expect(service.startAttempts).toBe(2);
 
       // Recovered and stable: no spurious retries once it is healthy again.
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(service.startAttempts).toBe(3);
+      expect(service.startAttempts).toBe(2);
 
       await service.stop();
     } finally {
       vi.useRealTimers();
     }
   });
+
+  it("saves a new checkout without interrupting the running shared server", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentpalace-no-restart-"));
+    const config = makeConfig(root);
+    config.mempalaceCliPath = join(root, "agentpalace");
+    writeFileSync(config.mempalaceCliPath, "");
+    const homeDir = join(root, "home");
+    const service = new RecoveryTestService(config, logger, { homeDir });
+    await service.start();
+    try {
+      const checkout = join(root, "checkout");
+      mkdirSync(checkout);
+      const wing = await service.registerRepository(makeRepo(), checkout);
+      expect(service.startAttempts).toBe(1);
+      expect(service.stopAttempts).toBe(0);
+      const saved = JSON.parse(readFileSync(join(homeDir, ".mempalace/config.json"), "utf8"));
+      expect(saved.server.checkouts[wing]).toBe(checkout);
+    } finally { await service.stop(); }
+  });
+
+  it("aborts a post-boot recovery before waiting for the serialized stop", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentpalace-stop-recovery-"));
+    const config = makeConfig(root);
+    config.mempalaceCliPath = join(root, "agentpalace");
+    writeFileSync(config.mempalaceCliPath, "");
+    let entered!: () => void;
+    const recovering = new Promise<void>(resolve => { entered = resolve; });
+    let recoverySignal: AbortSignal | undefined;
+    class HungRecoveryService extends RecoveryTestService {
+      protected override async startServerProcess(signal?: AbortSignal): Promise<void> {
+        if (this.startAttempts === 0) { await super.startServerProcess(); return; }
+        recoverySignal = signal;
+        entered();
+        await new Promise<void>((_, reject) => signal!.addEventListener("abort", () => reject(signal!.reason), { once: true }));
+      }
+    }
+    const service = new HungRecoveryService(config, logger, { homeDir: join(root, "home") });
+    await service.start([], new AbortController().signal);
+    // Simulate the state transition normally performed by the child's close event.
+    Reflect.set(service, "serverRunning", false);
+    const checkout = join(root, "checkout");
+    mkdirSync(checkout);
+    const registration = service.registerRepository(makeRepo(), checkout);
+    await recovering;
+    await service.stop();
+    await registration;
+    expect(recoverySignal?.aborted).toBe(true);
+    expect(service.stopAttempts).toBe(1);
+    expect(Reflect.get(service, "serverRetryTimer")).toBeNull();
+  }, 2_000);
 
 });

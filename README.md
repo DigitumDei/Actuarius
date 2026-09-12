@@ -138,6 +138,8 @@ The service retains `$HOME/.mempalace/config.json`, identity and token files thr
 
 Provider registrations converge after token resolution on startup, replace the old stdio entries, and are written with owner-only permissions. Startup verifies authenticated MCP readiness before launching the bot. See [the upgrade runbook](docs/deploy.md#agentpalace-047-http-cutover).
 
+When both memory flags are disabled, startup removes managed `mempalace` and `agentpalace` MCP registrations from every provider. Connecting a repository saves its checkout mapping without restarting the shared server or interrupting active tools. AgentPalace 0.1.47 loads these mappings at startup, so source retrieval for a newly connected repository requires the next planned server restart; ordinary memory reads, writes, and mining remain available.
+
 ## Local development
 
 ### Dev bot setup

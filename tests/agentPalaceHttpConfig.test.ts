@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { configureAgentPalaceHttp, configureOpencodeSnapshot } from "../src/services/agentPalaceHttpConfig.js";
+import { clearAgentPalaceHttp, configureAgentPalaceHttp, configureOpencodeSnapshot } from "../src/services/agentPalaceHttpConfig.js";
 
 describe("shared HTTP MCP registrations", () => {
   it("replaces old stdio entries for all providers, preserves unrelated settings, and converges token rotation", async () => {
@@ -40,6 +40,37 @@ describe("shared HTTP MCP registrations", () => {
     expect(plan.agent).toEqual({ planner: {} });
     expect(plan.mcp.mempalace).toBeUndefined();
     expect(plan.mcp.agentpalace).toMatchObject({ type: "remote", url, oauth: false });
+  });
+
+  it("clears both managed names when disabled and removes stale planning overrides", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agentpalace-disabled-"));
+    const xdg = join(home, "custom-xdg");
+    await clearAgentPalaceHttp(home, xdg);
+    expect(existsSync(join(home, ".claude.json"))).toBe(false);
+    await configureAgentPalaceHttp(home, "http://localhost/mcp", "secret", xdg);
+    const paths = [join(home, ".claude.json"), join(home, ".gemini/settings.json"), join(xdg, "opencode/config.json"), join(xdg, "opencode/opencode.json")];
+    for (const path of paths) {
+      const config = JSON.parse(readFileSync(path, "utf8"));
+      const servers = config.mcpServers ?? config.mcp;
+      servers.mempalace = { command: "/usr/local/bin/mempalace-mcp" };
+      servers.other = { command: "keep" };
+      writeFileSync(path, JSON.stringify(config));
+    }
+    const codex = join(home, ".codex/config.toml");
+    writeFileSync(codex, readFileSync(codex, "utf8") + '\n[mcp_servers.mempalace]\ncommand = "old"\n[mcp_servers.other]\ncommand = "keep"\n');
+    await clearAgentPalaceHttp(home, xdg);
+    await clearAgentPalaceHttp(home, xdg);
+    for (const path of paths) {
+      const config = JSON.parse(readFileSync(path, "utf8"));
+      expect(config.mcpServers ?? config.mcp).toEqual({ other: { command: "keep" } });
+    }
+    expect(readFileSync(codex, "utf8")).toBe('[mcp_servers.other]\ncommand = "keep"\n');
+    for (const source of [join(xdg, "opencode/opencode.json"), join(home, "absent.json")]) {
+      const snapshot = join(home, "snapshot.json");
+      writeFileSync(snapshot, JSON.stringify({ mcp: { mempalace: {}, agentpalace: {}, other: {} } }));
+      await configureOpencodeSnapshot(snapshot, source);
+      expect(JSON.parse(readFileSync(snapshot, "utf8")).mcp).toEqual({ other: {} });
+    }
   });
 
   it("refuses to overwrite malformed operator configuration", async () => {
