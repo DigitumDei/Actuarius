@@ -250,6 +250,35 @@ Provider config files contain the local unrestricted bearer token, as required b
 
 Provider configuration references: [Claude](https://code.claude.com/docs/en/mcp), [Codex](https://developers.openai.com/codex/mcp), [Gemini](https://geminicli.com/docs/tools/mcp-server/), [OpenCode](https://opencode.ai/docs/mcp-servers/).
 
+### AgentPalace performance harness
+
+`scripts/perf-agentpalace-http.mjs` measures the shared HTTP MCP. **Measuring an existing server is the production path**; it runs a sequential baseline first, then a concurrent phase, and reports per-tool latency percentiles, throughput, errors, peak/mean server RSS, and the container's CPU-throttling, memory/swap, and pressure counters across the measured window.
+
+```bash
+npm run build
+
+# Production path: measure the deployed server without restarting it or touching its palace.
+PERF_BASE_URL=http://127.0.0.1:8765 \
+PERF_TOKEN_FILE=/data/mempalace/server_tokens.json \
+PERF_PALACE_PATH=/data/mempalace/remote-palace \
+PERF_WING=wing_actuarius \
+PERF_QUERY='shared violet telescope calibration record' \
+PERF_CLIENTS=1 PERF_ITERATIONS=2 PERF_OPERATIONS=status,search \
+node scripts/perf-agentpalace-http.mjs
+```
+
+Set `PERF_WING` and `PERF_QUERY` to a representative project wing and query; otherwise searches use the synthetic `wing_perf` probe and the report flags this as a caveat. A live target defaults to one client and read-only operations so it does not overload the running bot.
+
+Booting a disposable palace under `/tmp` (never `/data`) is for local development and CI only and requires explicit opt-in, because a second server competes for the deployed container's shared CPU and memory quota. The harness also refuses to run at all unless `PERF_BASE_URL` or `PERF_ALLOW_BOOT=1` is set:
+
+```bash
+PERF_ALLOW_BOOT=1 npm run perf:agentpalace
+```
+
+Tune the run with `PERF_CLIENTS` (default 4; live defaults to 1), `PERF_ITERATIONS` (default 3), `PERF_BASELINE_ITERATIONS` (default 3; `0` disables the sequential baseline), `PERF_WARMUP` (default 1), `PERF_SAMPLE_INTERVAL_MS` (default 250), and `PERF_OPERATIONS` (default `status,search,wake_up,add_drawer,kg_add,diary_write`; `list_wings`, `taxonomy`, and `check_duplicate` are also available). Use `PERF_REAL_EMBEDDINGS=1` for the real model, `PERF_MAX_P95_MS` and `PERF_MAX_ERROR_RATE` to gate the run on a budget, and `PERF_JSON=<path>` to capture a machine-readable report.
+
+The report separates the sequential baseline from the concurrent phase, records CPU throttling and memory/swap/pressure deltas before and after the run, samples peak and mean AgentPalace RSS (not just the endpoint value), and lists pre-existing disposable-palace directories or harness, mining, or bot processes that could contend. **p95/p99 with fewer than 20 samples per operation are marked as indicative only** — the default live run is a small sample, so treat those percentiles as directional rather than a robust production baseline. The container is capped below one CPU, so latency grows with concurrency and throughput does not scale linearly with clients.
+
 ### MemPalace binary upgrades and rollback
 
 Treat a MemPalace binary upgrade as a data migration. Coordination schema
