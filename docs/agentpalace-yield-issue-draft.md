@@ -1,6 +1,6 @@
-# Draft upstream issue: task yield with executor affinity
+# Upstream issue: task yield with executor affinity
 
-Proposed destination: DigitumDei/agentpalace. Not published; explicit approval is required to share this cross-repository detail.
+Published as [AgentPalace #153](https://github.com/DigitumDei/agentpalace/issues/153).
 
 Actuarius needs to release a task lease between sequential execution stages while preserving routing to the executor that holds its checkpoint. The current lifecycle has no running-to-pending yield edge, so it uses running → input_required → pending.
 
