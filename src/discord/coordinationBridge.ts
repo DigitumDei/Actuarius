@@ -1,4 +1,4 @@
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, type ButtonInteraction, type ChatInputCommandInteraction, type Message, type Client, type AnyThreadChannel } from "discord.js";
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, type ButtonInteraction, type ChatInputCommandInteraction, type Message, type Client, type AnyThreadChannel } from "discord.js";
 import type { Logger } from "pino";
 import type { AppConfig } from "../config.js";
 import type { AppDatabase } from "../db/database.js";
@@ -65,6 +65,7 @@ export class CoordinationBridge {
         this.store = new CoordinationStore(config.databasePath);
         this.supervisor = new CoordinationSupervisor(this.store, new CoordinationClient(palace), {
             wings: () => [""],
+            syncRequests: () => this.syncRequests(),
             check: spec => this.check(spec), validate: (e, signal) => this.validate(e, signal),
             execute: (e, work, signal) => this.execute(e, work, signal), notice: (e, content, key) => this.notice(e, content, key),
             gate: async (e, dep, kind) => {
@@ -158,6 +159,31 @@ export class CoordinationBridge {
     }
     public start(): void { this.supervisor.start(); }
     public async stop(): Promise<void> { await this.supervisor.stop(); this.store.close(); }
+    private syncRequests(): void {
+        for (const work of this.store.works()) {
+            if (!work.request_id) continue;
+            const entries = this.store.list().filter(e => e.work_id === work.work_id);
+            if (!entries.length) continue;
+            const active = entries.filter(e => !["completed", "cancelled", "failed", "expired"].includes(e.phase));
+            const latest = entries.slice().sort((a,b) => a.created_at.localeCompare(b.created_at) || a.sequence-b.sequence).at(-1)!;
+            const status = active.some(e => e.phase === "running" || e.phase === "publishing") ? "running"
+                : active.some(e => ["registering", "validate", "execute"].includes(e.phase)) ? "queued"
+                : active.length ? "failed" : latest.phase === "completed" ? "succeeded" : "failed";
+            if (this.db.getRequestById(work.request_id)?.status !== status)
+                this.db.updateRequestStatus(work.request_id, status);
+        }
+    }
+    private authorized(interaction: ChatInputCommandInteraction, work: Work | null, task?: Entry | null): boolean {
+        if (interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return true;
+        if (task) return task.sender === `discord:${interaction.user.id}`;
+        const requester = work?.request_id ? this.db.getRequestById(work.request_id)?.user_id : null;
+        if (requester) return requester === interaction.user.id;
+        const first = this.store.list().filter(e => e.work_id === work?.work_id).sort((a,b) => a.created_at.localeCompare(b.created_at) || a.sequence-b.sequence)[0];
+        return first?.sender === `discord:${interaction.user.id}`;
+    }
+    private async denyMutation(interaction: ChatInputCommandInteraction): Promise<void> {
+        await interaction.reply({content: "Only the original requester or a user with `Manage Server` can perform this operation.", ephemeral: true});
+    }
     public async closeForDeletion(threadId: string): Promise<void> {
         const work = this.store.works().find(w => w.thread_id === threadId);
         if (!work || work.closed)
@@ -234,7 +260,7 @@ export class CoordinationBridge {
         const path = buildRepoCheckoutPath(this.config.reposRootPath, repo.owner, repo.repo);
         await git(path, ["fetch", "origin"]);
         await resolveRef(path, setup.base_ref!);
-        await resolveRef(path, setup.integration_target!);
+        await git(path, ["rev-parse", "--verify", `refs/remotes/origin/${setup.integration_target}^{commit}`]);
     }
     private async validate(e: Entry, signal: AbortSignal) {
         const cwd = await prepareValidationWorkspace(this.config.reposRootPath);
@@ -300,6 +326,7 @@ export class CoordinationBridge {
             this.store.saveWork(work);
         }
         const action = e.checkpoint ? e.action : spec.action;
+        this.db.updateRequestStatus(work.request_id!, "running");
         if (action === "verify-result") {
             const diff = await git(work.path!, ["diff", work.base_sha ?? work.base_ref, "--", ".", ":(exclude)docs/reviews/**"]);
             const feedback = await this.runners.text({ cwd: work.path!, signal, role: "verification", repo, threadId: thread.id,
@@ -314,7 +341,7 @@ export class CoordinationBridge {
             const task = plan.tasks[plan.index]!;
             const common = { repoFullName: repo.full_name, originalPrompt: spec.requirements.join("\n"), overview: plan.overview, task, completedSummaries: plan.results.join("\n") };
             if (action === "plan-implement") {
-                plan.baseline = await getHeadSha(work.path!);
+                if (!plan.baseline) plan.baseline = await getHeadSha(work.path!);
                 const prompt = buildIterativeTaskImplementationPrompt({ ...common, priorFeedback: plan.feedback });
                 plan.output = await this.runners.text({ prompt: prompt + "\nDo not spawn other LLMs or subagents. Do not push, merge, or release.", cwd: work.path!, signal, role: "implementation", repo, threadId: thread.id, opencodePlan: spec.action === "plan-oc" });
                 signal.throwIfAborted();
@@ -331,6 +358,7 @@ export class CoordinationBridge {
             plan.results.push(`${task.title}: ${plan.output}`);
             plan.index++;
             plan.attempts = 0;
+            plan.baseline = "";
             plan.feedback = "";
             if (plan.index < plan.tasks.length)
                 return { result: plan.results.at(-1)!, next: "plan-implement", checkpoint: JSON.stringify(plan) };
@@ -381,7 +409,6 @@ export class CoordinationBridge {
         }
         if (spec.deliverable !== "report")
             await autoCommitAll(work.path!, `Task: ${spec.requirements[0]!.slice(0, 100)}`, ["docs/reviews/"]);
-        this.db.updateRequestStatus(work.request_id!, "succeeded");
         this.store.setMeta(`output-sha:${e.id}`, await getHeadSha(work.path!));
         if (spec.deliverable === "draft_pr")
             return { result, next: "deliver", checkpoint: result };
@@ -483,6 +510,10 @@ export class CoordinationBridge {
             return true;
         }
         if (interaction.commandName === "cancel" && interaction.options.getString("task_id")) {
+            const task = this.store.get(interaction.options.getString("task_id", true));
+            if (!task || !this.authorized(interaction, null, task)) {
+                await this.denyMutation(interaction); return true;
+            }
             await interaction.deferReply({ ephemeral: true });
             await this.supervisor.cancel(interaction.options.getString("task_id", true));
             await interaction.editReply("Task cancelled.");
@@ -507,6 +538,9 @@ export class CoordinationBridge {
                 await interaction.reply({ content: "Specify task_id when multiple tasks share a thread. Use /tasks to find it.", ephemeral: true });
                 return true;
             }
+            if (!this.authorized(interaction, work, this.store.get(id))) {
+                await this.denyMutation(interaction); return true;
+            }
             await this.supervisor.cancel(id);
             await interaction.reply("Task cancelled.");
             return true;
@@ -514,6 +548,9 @@ export class CoordinationBridge {
         if (!thread && ["review", "revise", "pr"].includes(interaction.commandName)) {
             await interaction.reply({ content: "Use this command in a work thread.", ephemeral: true });
             return true;
+        }
+        if (thread && ["review", "revise", "pr"].includes(interaction.commandName) && !this.authorized(interaction, await this.adopt(thread.id, repo))) {
+            await this.denyMutation(interaction); return true;
         }
         await interaction.deferReply({ ephemeral: true });
         let prompt = interaction.options.getString("prompt") ?? (interaction.commandName === "revise" ? interaction.options.getString("findings") : null) ?? `${interaction.commandName} the existing work`;

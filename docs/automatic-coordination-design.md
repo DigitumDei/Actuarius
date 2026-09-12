@@ -273,3 +273,7 @@ Discord follow-ups inherit their predecessor's coordination wing. Discovery reco
 A merged dependency must also be present in the retained consumer branch (or its frozen base). If it is missing, integrate it into that branch before continuing. Workflow parents can evaluate merged and release gates using their dependencies' repositories without owning a worktree.
 
 Attachments are isolated by task ID even when tasks share a workspace request ID. Discord thread names include a stable hash of the complete work ID to distinguish long IDs with the same prefix.
+
+Coordination `/cancel` requires the task's Discord requester or `Manage Server`; `/review`, `/revise`, and `/pr` require the workspace's original requester or `Manage Server`. Background tasks require a server manager for these operator commands. Integration targets must identify an existing remote branch; commit SHAs remain supported as base refs.
+
+Scheduling resumes through `pending` if a crash or transport failure leaves a validated task in native `input_required`. Iterative verification retains the baseline from the first implementation attempt until that plan task is approved. The legacy request row reflects the shared workspace's queued/running and final state across all execution paths; cancellation and interrupted work map to its existing `failed` status, with detailed state retained in `/tasks`.

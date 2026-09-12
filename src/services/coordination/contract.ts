@@ -6,7 +6,7 @@ const ref = z.string().min(1).max(256).refine(v => !v.startsWith("-") && !/[\s~^
 export const workspaceSchema = z.object({
     work_id: workIdSchema,
     repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/).transform(v => v.toLowerCase()).optional(),
-    base_ref: ref.optional(), integration_target: ref.optional()
+    base_ref: ref.optional(), integration_target: ref.refine(v => !/^[a-f0-9]{7,64}$/i.test(v) && v !== "HEAD" && !v.startsWith("/") && !v.endsWith("/") && !v.endsWith(".") && v.split("/").every(p => !p.startsWith(".") && !p.endsWith(".lock")), "Integration target must be a branch name, not a commit SHA").optional()
 }).strict();
 export const executionSchema = z.object({
     version: z.literal(1), executor: z.literal("actuarius"),

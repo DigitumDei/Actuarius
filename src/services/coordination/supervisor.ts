@@ -4,6 +4,7 @@ import { CoordinationClient } from "./client.js";
 import { CoordinationStore, type Entry, type Work } from "./store.js";
 import { correctionSchema, encodeSpec, executionSchema, humanQuestionSchema, parseSpec, type ExecutionSpec, type PalaceTask, type Verdict } from "./contract.js";
 export interface CoordinationHooks {
+    syncRequests?(): void;
     wings(): string[];
     check(spec: ExecutionSpec): Promise<void>;
     validate(entry: Entry, signal: AbortSignal): Promise<Verdict>;
@@ -95,6 +96,7 @@ export class CoordinationSupervisor {
         }
         finally {
             this.syncing = false;
+            this.hooks.syncRequests?.();
         }
     }
     private async discover(): Promise<void> {
@@ -256,7 +258,7 @@ export class CoordinationSupervisor {
                 this.store.save(e);
                 return;
             }
-            const current = await this.api.get(e.task!.task_id);
+            let current = await this.api.get(e.task!.task_id);
             if (!current)
                 throw new Error("Authoritative task is missing");
             if (terminal.has(current.state)) {
@@ -264,6 +266,13 @@ export class CoordinationSupervisor {
                 e.phase = current.state;
                 this.store.save(e);
                 return;
+            }
+            // A crash or lost response can leave a scheduling yield halfway done.
+            // Corrected tasks also resume through pending before acquiring a lease.
+            if (["execute", "validate", "publishing"].includes(e.phase) && current.state === "input_required") {
+                current = await this.api.mutate("transition", { task_id: current.task_id, actor: this.worker, expected_revision: current.revision, state: "pending" });
+                e.task = current;
+                this.store.save(e);
             }
             if (e.phase === "input_transition" && current.state === "input_required") {
                 e.task = current; e.phase = "input_required"; e.attempts = 0;
@@ -404,6 +413,7 @@ export class CoordinationSupervisor {
                 clearInterval(renewTimer);
             await renewing;
             this.controller = null;
+            this.hooks.syncRequests?.();
         }
     }
     private async messages(): Promise<void> {
@@ -530,6 +540,7 @@ export class CoordinationSupervisor {
             this.controller?.abort();
         e.phase = "cancelled";
         this.store.save(e);
+        this.hooks.syncRequests?.();
     }
     private async flush(): Promise<void> {
         for (const out of this.store.outbox()) {

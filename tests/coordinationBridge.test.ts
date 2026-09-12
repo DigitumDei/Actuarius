@@ -9,6 +9,7 @@ import type { MemPalaceClient } from "../src/services/memPalaceClient.js";
 import type { Client, Message, ChatInputCommandInteraction } from "discord.js";
 import { CoordinationBridge } from "../src/discord/coordinationBridge.js";
 import { executionSchema } from "../src/services/coordination/contract.js";
+import { PermissionFlagsBits } from "discord.js";
 const cleanup: Array<() => void> = [];
 afterEach(() => cleanup.splice(0).forEach(fn => fn()));
 function fixture() {
@@ -24,6 +25,22 @@ function fixture() {
     return { bridge };
 }
 describe("Discord coordination intake", () => {
+    it.each(["cancel","review","revise","pr"])("rejects another member's /%s mutation",async(commandName)=>{
+        const {bridge}=fixture();
+        bridge.store.add({id:"prior",source:"discord",description:"",sender:"discord:owner",wing:"wing_repo",work_id:"shared",phase:"running"});
+        const cancel=vi.spyOn(bridge.supervisor,"cancel").mockResolvedValue();
+        const reply=vi.fn();
+        const interaction={id:"event",commandName,guildId:"guild",channelId:"thread",channel:{id:"thread",parentId:"channel",isThread:()=>true},user:{id:"other"},options:{getString:()=>commandName==="cancel"?"prior":null},reply} as unknown as ChatInputCommandInteraction;
+        expect(await bridge.command(interaction)).toBe(true);
+        expect(reply.mock.calls[0]?.[0].content).toContain("original requester");
+        expect(cancel).not.toHaveBeenCalled();expect(bridge.store.list()).toHaveLength(1);
+    });
+    it.each(["owner","manager"])("allows %s cancellation",async(user)=>{
+        const {bridge}=fixture();bridge.store.add({id:"prior",source:"discord",description:"",sender:"discord:owner",wing:"wing_repo"});
+        const cancel=vi.spyOn(bridge.supervisor,"cancel").mockResolvedValue();
+        await bridge.command({commandName:"cancel",guildId:"guild",user:{id:user},memberPermissions:{has:(bit:bigint)=>user==="manager"&&bit===PermissionFlagsBits.ManageGuild},options:{getString:()=>"prior"},deferReply:vi.fn(),editReply:vi.fn()} as unknown as ChatInputCommandInteraction);
+        expect(cancel).toHaveBeenCalledWith("prior");
+    });
     it("queues thread followups even when prior work is running, preserving workspace and dependency", async () => {
         const { bridge } = fixture();
         bridge.store.add({ id: "prior", source: "background", description: "prior", sender: "agent", wing: "wing_coordination", work_id: "shared", phase: "running" });

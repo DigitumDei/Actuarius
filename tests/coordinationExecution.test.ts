@@ -27,7 +27,7 @@ function fixture(){
   const create=vi.fn(async({name}:{name:string})=>{const value={...thread,id:`thread-${threads.size}`,name} as AnyThreadChannel;threads.set(value.id,value);return value;});
   const channel={type:ChannelType.GuildText,threads:{fetchActive:async()=>({threads:{find:(fn:(t:AnyThreadChannel)=>boolean)=>[...threads.values()].find(fn)}}),create}};
   const client={channels:{fetch:async(id:string)=>id==="channel"?channel:thread}} as unknown as Client;
-  const db={listAllRepos:()=>[repo],updateRequestStatus:vi.fn()} as unknown as AppDatabase;
+  const db={listAllRepos:()=>[repo],getRequestById:()=>({status:"queued"}),updateRequestStatus:vi.fn()} as unknown as AppDatabase;
   const text=vi.fn(async()=>"APPROVED\nAll checks passed.");
   const bridge=new CoordinationBridge(client,{databasePath:":memory:",reposRootPath:"/repos",threadAutoArchiveMinutes:60} as AppConfig,db,{} as MemPalaceClient,pino({level:"silent"}),{text,parsePlan:()=>null,review:async()=>({ready:true,text:"review",sha:"output"}),prepare:async()=>{}});
   close.push(()=>bridge.store.close());
@@ -39,8 +39,8 @@ function fixture(){
   const dep=bridge.store.add({id:"dependency",source:"background",description:"",sender:"sender",wing:"wing_coordination",work_id:other.work_id});
   bridge.store.setMeta(`output-sha:${dep.id}`,"dependency-sha");
   const hooks=(bridge.supervisor as unknown as {hooks:CoordinationHooks}).hooks;
-  const internals=bridge as unknown as {thread(w:Work,r:RepoRow):Promise<AnyThreadChannel>;execute(e:Entry,w:Work|null,s:AbortSignal):Promise<{result:string;next?:string}>};
-  return {bridge,work,other,repo,entry,dep,hooks,internals,text,create};
+  const internals=bridge as unknown as {thread(w:Work,r:RepoRow):Promise<AnyThreadChannel>;execute(e:Entry,w:Work|null,s:AbortSignal):Promise<{result:string;next?:string;checkpoint?:string}>};
+  return {bridge,work,other,repo,entry,dep,hooks,internals,text,create,db};
 }
 
 it("requires merged dependencies in the retained branch, not just origin/main",async()=>{
@@ -73,6 +73,27 @@ it("accepts an iterative approval with explanation without scheduling another im
   f.entry.checkpoint=JSON.stringify({overview:"Plan",tasks:[{title:"Task",description:"Do it"}],index:0,attempts:0,baseline:"base",output:"done",feedback:"",results:[]});
   const result=await f.internals.execute(f.entry,f.work,new AbortController().signal);
   expect(result.next).toBeUndefined();expect(result.result).toContain("done");
+});
+
+it("keeps the first implementation baseline through rejected tweaks and resets it for the next task",async()=>{
+  const f=fixture(); f.entry.action="plan-implement";
+  f.entry.checkpoint=JSON.stringify({overview:"Plan",tasks:[{title:"One",description:"Do it"},{title:"Two",description:"Next"}],index:0,attempts:1,baseline:"original-base",output:"rejected",feedback:"Fix it",results:[]});
+  const implemented=await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  expect(JSON.parse(implemented.checkpoint!).baseline).toBe("original-base");
+  f.entry.action="plan-verify";f.entry.checkpoint=implemented.checkpoint!;
+  const verified=await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  expect(git).toHaveBeenCalledWith("/consumer",["diff","original-base","--",".",":(exclude)docs/reviews/**"]);
+  expect(JSON.parse(verified.checkpoint!).baseline).toBe("");
+});
+
+it("synchronizes shared request rows for starts, completion, failure, and cancellation",async()=>{
+  const f=fixture(); f.entry.spec={...f.entry.spec!,action:"review"};
+  await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  expect(f.db.updateRequestStatus).toHaveBeenCalledWith(1,"running");
+  for (const phase of ["completed","interrupted","cancelled","failed"]) {
+    f.entry.phase=phase;f.bridge.store.save(f.entry);f.hooks.syncRequests!();
+    expect(f.db.updateRequestStatus).toHaveBeenLastCalledWith(1,phase==="completed"?"succeeded":"failed");
+  }
 });
 
 it("uses a Git validation workspace for validation and parent summaries",async()=>{

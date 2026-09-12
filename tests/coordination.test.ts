@@ -15,6 +15,13 @@ afterEach(() => { for (const s of stores.splice(0))
     s.close(); for (const d of dirs.splice(0))
     rmSync(d, { recursive: true, force: true }); });
 describe("execution contract and persistent work registration", () => {
+    it("allows commit bases but rejects commit and malformed integration targets", () => {
+        const sha = "a".repeat(40);
+        expect(executionSchema.safeParse({...spec, workspace:{...spec.workspace, base_ref:sha}}).success).toBe(true);
+        for (const integration_target of [sha, "abc1234", "HEAD", "main.lock", "/main", "main/", ".hidden"]) {
+            expect(executionSchema.safeParse({...spec, workspace:{...spec.workspace, integration_target}}).success).toBe(false);
+        }
+    });
     it("rejects typo fields and duplicate JSON blocks; ignores other executors", () => {
         expect(() => parseSpec(encodeSpec(spec) + "\n" + encodeSpec(spec))).toThrow();
         expect(() => parseSpec(encodeSpec({ ...spec, typo: true } as typeof spec))).toThrow();
@@ -84,6 +91,7 @@ function harness() {
                     t.state = args.state as PalaceTask["state"];
                 }
                 else {
+                    if (name.endsWith("claim") && t.state === "input_required") throw new Error("Cannot claim input_required");
                     t.state = "running";
                     t.owner = String(args.worker);
                     t.lease_expires_at = new Date(Date.now() + 120000).toISOString();
@@ -99,6 +107,19 @@ function harness() {
     return { s, tasks, messages, executed, hooks, sup, tick, fault, inbox, discovery };
 }
 describe("durable supervisor", () => {
+    it("recovers a failed pending transition without repeating validation", async () => {
+        const h = harness(); const validate = vi.fn(async()=>({ready:true,questions:[]})); h.hooks.validate=validate;
+        h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});
+        await h.tick();
+        let fail = true;
+        h.fault.mockImplementation((name,args)=>{if(fail && name.endsWith("transition") && args.state==="pending") {fail=false;throw new Error("transport failed");}});
+        await h.tick();
+        const e=h.s.get("one")!;
+        expect(e.phase).toBe("execute");expect(h.tasks.get(e.task!.task_id)?.state).toBe("input_required");
+        e.next_at=0;h.s.save(e);
+        await h.tick();
+        expect(h.s.get("one")?.phase).toBe("completed");expect(validate).toHaveBeenCalledTimes(1);
+    });
     it("preserves a Discord answer arriving during an authoritative status read", async () => {
         const h = harness();
         h.hooks.validate = async () => ({ready:false, questions:["Which version?"]});
