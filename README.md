@@ -128,7 +128,7 @@ record but intentionally does not remove the system package.
 
 ### AgentPalace shared HTTP MCP
 
-Actuarius pins AgentPalace 0.1.47. A single `agentpalace serve` process exposes federation REST and Streamable HTTP MCP at `http://127.0.0.1:8765/mcp`. Claude, Codex, Gemini, OpenCode (including planning snapshots), and the bot's own memory client use authenticated HTTP; they do not launch embedding-model subprocesses.
+Actuarius pins AgentPalace 0.1.48. A single `agentpalace serve` process exposes federation REST and Streamable HTTP MCP at `http://127.0.0.1:8765/mcp`. Claude, Codex, Gemini, OpenCode (including planning snapshots), and the bot's own memory client use authenticated HTTP; they do not launch embedding-model subprocesses.
 
 The existing `MEMPALACE_REMOTE_PALACE_PATH` (default `/data/mempalace/remote-palace`) remains authoritative. No database copy or merge is performed. The former local palace remains an archive, and its historical local-only diaries are not automatically included in shared-server searches. New diaries use the shared server's palace.
 
@@ -138,9 +138,48 @@ The service retains `$HOME/.mempalace/config.json`, identity and token files thr
 
 Provider registrations converge after token resolution on startup, replace the old stdio entries, and are written with owner-only permissions. Startup verifies authenticated MCP readiness before launching the bot. See [the upgrade runbook](docs/deploy.md#agentpalace-047-http-cutover).
 
-When both memory flags are disabled, startup removes managed `mempalace` and `agentpalace` MCP registrations from every provider. Connecting a repository saves its checkout mapping without restarting the shared server or interrupting active tools. AgentPalace 0.1.47 loads these mappings at startup, so source retrieval for a newly connected repository requires the next planned server restart; ordinary memory reads, writes, and mining remain available.
+When both memory flags are disabled, startup removes managed `mempalace` and `agentpalace` MCP registrations from every provider. Connecting a repository saves its checkout mapping without restarting the shared server or interrupting active tools. AgentPalace 0.1.48 loads these mappings at startup, so source retrieval for a newly connected repository requires the next planned server restart; ordinary memory reads, writes, and mining remain available.
 
 ## Local development
+
+### Automatic coordination and Discord queue
+
+Set `COORDINATION_ENABLED=true`, `MEMPALACE_ENABLED=true`, and
+`COORDINATION_CHANNEL_ID=<Discord text channel ID>` to enable the durable
+dispatcher. It is disabled by default. The configured channel receives unresolved
+intake questions and workflow summaries; repository work uses one thread per
+`work_id` in the repository's connected channel. Run one Actuarius instance per
+guild and retain its SQLite database and repository volume across restarts.
+
+Tasks from configured AgentPalace sources opt in with a version 1
+`actuarius-task` JSON block in their description. Every repository connected
+through Discord is eligible. See the [contract and operating guide](docs/automatic-coordination-design.md)
+for a complete example, correction messages, and dependency gates.
+
+With coordination enabled, `/ask`, `/plan`, `/plan-oc`, `/review`, `/revise`,
+`/pr`, `/issue`, `/bug`, issue summaries, and work-thread messages enter the same
+queue. Discord work runs before ready background work, FIFO within each class.
+Dependencies and workspace ownership still apply. One provider invocation runs
+at a time; status, cancellation, and question replies do not need an LLM.
+
+Use `/tasks [repo] [work_id] [state] [page]` and its Refresh button to inspect
+saved queue state. Reply directly to a question to answer it. `/revise` repairs
+an interrupted task in place; `/cancel task_id:<ID>` cancels an individual task.
+Provider interruptions retain the worktree for inspection rather than replaying
+the implementation automatically. Results and Discord notifications retry
+delivery independently. Cleanup protects registered workspaces; `/delete`
+requires resolved tasks, clean files, and integrated commits.
+
+The VM redeploy script accepts `env-coordination-enabled` and
+`env-coordination-channel-id` metadata, managed by Terraform variables
+`coordination_enabled` and `coordination_channel_id`. Set those variables and
+apply Terraform so later applies preserve activation. After applying, refresh
+`/var/redeploy.sh` from metadata using the deployment instructions below before
+running it; applying metadata alone does not refresh that file or the container.
+
+The redeploy script consumes `env-coordination-enabled` and
+`env-coordination-channel-id` metadata. Enabling the feature and deploying it
+are separate operational steps; adding the code does neither.
 
 ### Dev bot setup
 

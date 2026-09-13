@@ -174,3 +174,14 @@ variable "mempalace_remote_mine_batch_size" {
   default     = ""
   description = "Optional override for MEMPALACE_REMOTE_MINE_BATCH_SIZE. Leave empty for the app default."
 }
+variable "coordination_enabled" {
+  description = "Enable the durable Actuarius coordination dispatcher. Requires a ready AgentPalace client."
+  type        = bool
+  default     = false
+}
+
+variable "coordination_channel_id" {
+  description = "Discord intake channel for coordination questions and workflow summaries."
+  type        = string
+  default     = ""
+}

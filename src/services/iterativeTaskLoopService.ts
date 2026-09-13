@@ -63,7 +63,7 @@ function formatTaskTitleForMessage(title: string): string {
   return `${singleLine.slice(0, TASK_TITLE_MESSAGE_LIMIT - 3).trimEnd()}...`;
 }
 
-function isApprovedVerification(output: string): boolean {
+export function isApprovedVerification(output: string): boolean {
   const match = /^[^\r\n]+/m.exec(output.trimStart());
   const firstLine = match ? match[0].trim() : "";
   const normalized = firstLine.replace(/^[*_`~\s]+|[*_`~\s.:-]+$/gu, "");

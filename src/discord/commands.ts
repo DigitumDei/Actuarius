@@ -4,6 +4,11 @@ import type pino from "pino";
 import { INSTALLER_PACKAGE_CHOICES } from "../services/installerRegistry.js";
 
 export const commandBuilders = [
+  new SlashCommandBuilder().setName("tasks").setDescription("Show current tasks across connected repositories.")
+    .addStringOption(o => o.setName("repo").setDescription("Filter by owner/repository"))
+    .addStringOption(o => o.setName("work_id").setDescription("Filter by work ID"))
+    .addStringOption(o => o.setName("state").setDescription("Filter by task phase or terminal state"))
+    .addIntegerOption(o => o.setName("page").setDescription("Page number").setMinValue(1)),
   new SlashCommandBuilder().setName("help").setDescription("Show supported commands and usage."),
   new SlashCommandBuilder()
     .setName("connect-repo")
@@ -74,7 +79,8 @@ export const commandBuilders = [
     .setDescription("Show the latest request state and how long it has been unchanged in this thread."),
   new SlashCommandBuilder()
     .setName("cancel")
-    .setDescription("Cancel the queued or running request in this thread."),
+    .setDescription("Cancel the queued or running request in this thread.")
+    .addStringOption(o => o.setName("task_id").setDescription("Task ID when several tasks share a work thread")),
   new SlashCommandBuilder()
     .setName("plan")
     .setDescription("Plan with a deep model, implement with a flash model, then stop for review.")
@@ -345,6 +351,7 @@ export const commandBuilders = [
 ];
 
 export type CommandName =
+  | "tasks"
   | "help"
   | "connect-repo"
   | "sync-repo"

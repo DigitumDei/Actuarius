@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { access, constants } from "node:fs/promises";
 import { join } from "node:path";
 import type { Logger } from "pino";
@@ -10,6 +11,16 @@ import {
 import { spawnCollect } from "../utils/spawnCollect.js";
 
 const repoLocks = new Map<string, Promise<void>>();
+const heldRepoLocks = new AsyncLocalStorage<Set<string>>();
+export async function withRepositoryLock<T>(path:string, run:()=>Promise<T>):Promise<T> {
+  const key=process.platform==="win32" ? path.replace(/\\/g,"/").toLowerCase() : path;
+  if(heldRepoLocks.getStore()?.has(key)) return run();
+  const previous=repoLocks.get(key) ?? Promise.resolve();
+  let release!:()=>void; const waiting=new Promise<void>(resolve=>{release=resolve;});
+  const tail=previous.then(()=>waiting);repoLocks.set(key,tail);await previous;
+  try { return await heldRepoLocks.run(new Set([...(heldRepoLocks.getStore() ?? []),key]),run); }
+  finally { release();if(repoLocks.get(key)===tail)repoLocks.delete(key); }
+}
 
 export interface RepoIdentity {
   owner: string;
@@ -202,17 +213,7 @@ export async function ensureRepoCheckedOutToMaster(
   const ownerDirectory = join(reposRootPath, sanitizePathPart(repoIdentity.owner));
   const remoteUrl = `https://github.com/${repoIdentity.owner}/${repoIdentity.repo}.git`;
 
-  const previousLock = repoLocks.get(localPath) ?? Promise.resolve();
-  let releaseLock: () => void = () => undefined;
-  const currentLock = new Promise<void>((resolve) => {
-    releaseLock = resolve;
-  });
-  const lockTail = previousLock.then(() => currentLock);
-  repoLocks.set(localPath, lockTail);
-
-  await previousLock;
-
-  try {
+  return withRepositoryLock(localPath, async () => {
     mkdirSync(ownerDirectory, { recursive: true });
 
     const hasExistingCheckout = await pathExists(localGitDirectory);
@@ -282,12 +283,8 @@ export async function ensureRepoCheckedOutToMaster(
     return {
       localPath
     };
-  } finally {
-    releaseLock();
-    if (repoLocks.get(localPath) === lockTail) {
-      repoLocks.delete(localPath);
-    }
-  }
+  });
+
 }
 
 export async function listBranches(repoPath: string): Promise<RepoBranches> {
@@ -325,7 +322,10 @@ export async function listBranches(repoPath: string): Promise<RepoBranches> {
   }
 }
 
-export async function cleanupDeletedRemoteBranches(repoPath: string): Promise<CleanupDeletedBranchesResult> {
+export async function cleanupDeletedRemoteBranches(repoPath: string, protectedBranches: readonly string[] = []): Promise<CleanupDeletedBranchesResult> {
+  return withRepositoryLock(repoPath, () => cleanupDeletedRemoteBranchesUnlocked(repoPath, protectedBranches));
+}
+async function cleanupDeletedRemoteBranchesUnlocked(repoPath: string, protectedBranches: readonly string[]): Promise<CleanupDeletedBranchesResult> {
   try {
     await runGit(["-C", repoPath, "fetch", "origin", "--prune"], { useCredentialHelper: true });
     await runGit(["-C", repoPath, "worktree", "prune"]);
@@ -348,6 +348,7 @@ export async function cleanupDeletedRemoteBranches(repoPath: string): Promise<Cl
     const skippedDirtyWorktrees: Array<{ branchName: string; path: string }> = [];
     for (const line of refs.stdout.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
       const [branchName = "", upstream = "", track = ""] = line.split("\t");
+      if (protectedBranches.includes(branchName)) continue;
       if (!branchName || !upstream.startsWith("origin/") || !track.includes("[gone]")) {
         continue;
       }
@@ -535,11 +536,12 @@ export async function getReviewDiff(
   repoPath: string,
   options: {
     headRef: string;
+    baseRef?: string;
     excludePaths?: string[];
   }
 ): Promise<ReviewDiffResult> {
   try {
-    const defaultBranch = await detectDefaultBranch(repoPath);
+    const defaultBranch = options.baseRef ? { branchName: options.baseRef.replace(/^origin\//, ""), remoteRef: options.baseRef } : await detectDefaultBranch(repoPath);
     const mergeBaseResult = await runGitWithOutput(["merge-base", defaultBranch.remoteRef, options.headRef], { cwd: repoPath });
     const comparisonRef = mergeBaseResult.stdout.trim();
     const diffOptions = options.excludePaths ? { excludePaths: options.excludePaths } : undefined;

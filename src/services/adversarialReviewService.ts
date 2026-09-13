@@ -427,6 +427,7 @@ export async function runAdversarialReview(input: {
   repoFullName: string;
   branchName: string;
   worktreePath: string;
+  baseRef?: string;
   artifactRootPath: string;
   threadHistory: string;
   analyzer: ReviewModelRunner;
@@ -471,6 +472,7 @@ export async function runAdversarialReview(input: {
   };
 
   const diff = await getReviewDiff(input.worktreePath, {
+    ...(input.baseRef ? { baseRef: input.baseRef } : {}),
     headRef: input.branchName,
     excludePaths: ["docs/reviews/**"]
   });

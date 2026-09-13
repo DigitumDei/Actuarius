@@ -473,6 +473,27 @@ describe("scripts/redeploy.sh auth validation", () => {
     expect(result.dockerLog).toContain("MEMPALACE_EMBEDDING_PROFILE=low_cpu");
   });
 
+  it("enables coordination with its channel and required memory client", () => {
+    const result = runRedeploy(
+      { ...baseMetadata, "env-coordination-enabled": "true", "env-coordination-channel-id": "12345" },
+      { ...baseSecrets, "actuarius-gh-token": "gh-token" }
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dockerLog).toContain("COORDINATION_ENABLED=true");
+    expect(result.dockerLog).toContain("COORDINATION_CHANNEL_ID=12345");
+    expect(result.dockerLog).toContain("MEMPALACE_ENABLED=true");
+  });
+
+  it("rejects coordination without an intake channel before replacing the container", () => {
+    const result = runRedeploy(
+      { ...baseMetadata, "env-coordination-enabled": "true" },
+      { ...baseSecrets, "actuarius-gh-token": "gh-token" }
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("coordination requires env-coordination-channel-id");
+    expect(result.dockerLog).not.toContain("rm -f actuarius");
+  });
+
   it("omits the embedding profile flag when the metadata key is absent", () => {
     const result = runRedeploy(baseMetadata, { ...baseSecrets, "actuarius-gh-token": "gh-token" });
 
