@@ -128,7 +128,7 @@ record but intentionally does not remove the system package.
 
 ### AgentPalace shared HTTP MCP
 
-Actuarius pins AgentPalace 0.1.47. A single `agentpalace serve` process exposes federation REST and Streamable HTTP MCP at `http://127.0.0.1:8765/mcp`. Claude, Codex, Gemini, OpenCode (including planning snapshots), and the bot's own memory client use authenticated HTTP; they do not launch embedding-model subprocesses.
+Actuarius pins AgentPalace 0.1.48. A single `agentpalace serve` process exposes federation REST and Streamable HTTP MCP at `http://127.0.0.1:8765/mcp`. Claude, Codex, Gemini, OpenCode (including planning snapshots), and the bot's own memory client use authenticated HTTP; they do not launch embedding-model subprocesses.
 
 The existing `MEMPALACE_REMOTE_PALACE_PATH` (default `/data/mempalace/remote-palace`) remains authoritative. No database copy or merge is performed. The former local palace remains an archive, and its historical local-only diaries are not automatically included in shared-server searches. New diaries use the shared server's palace.
 
@@ -138,7 +138,7 @@ The service retains `$HOME/.mempalace/config.json`, identity and token files thr
 
 Provider registrations converge after token resolution on startup, replace the old stdio entries, and are written with owner-only permissions. Startup verifies authenticated MCP readiness before launching the bot. See [the upgrade runbook](docs/deploy.md#agentpalace-047-http-cutover).
 
-When both memory flags are disabled, startup removes managed `mempalace` and `agentpalace` MCP registrations from every provider. Connecting a repository saves its checkout mapping without restarting the shared server or interrupting active tools. AgentPalace 0.1.47 loads these mappings at startup, so source retrieval for a newly connected repository requires the next planned server restart; ordinary memory reads, writes, and mining remain available.
+When both memory flags are disabled, startup removes managed `mempalace` and `agentpalace` MCP registrations from every provider. Connecting a repository saves its checkout mapping without restarting the shared server or interrupting active tools. AgentPalace 0.1.48 loads these mappings at startup, so source retrieval for a newly connected repository requires the next planned server restart; ordinary memory reads, writes, and mining remain available.
 
 ## Local development
 

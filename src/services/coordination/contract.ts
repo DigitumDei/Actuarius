@@ -52,6 +52,7 @@ export function parseSpec(description: string): ExecutionSpec | null {
 export const taskSchema = z.object({ task_id: text, title: text, description: z.string(),
     state: z.enum(["pending", "running", "input_required", "completed", "cancelled", "failed", "expired"]),
     revision: z.number().int(), created_by: text, wing: text, owner: z.string().nullable(),
+    executor_affinity: z.string().nullable().optional(),
     lease_expires_at: z.string().nullable(), dependencies: z.array(z.string()), parent_id: z.string().nullable()
 });
 export type PalaceTask = z.infer<typeof taskSchema>;

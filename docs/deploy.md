@@ -231,9 +231,9 @@ Optional variables map directly to the redeploy metadata keys and can stay blank
 
 After `terraform apply`, reboot or re-fetch `/var/redeploy.sh` from metadata so the new metadata keys reach the container.
 
-### AgentPalace 0.1.47 HTTP cutover
+### AgentPalace 0.1.48 HTTP cutover
 
-When both memory flags are disabled, startup removes managed `mempalace` and `agentpalace` MCP registrations from every provider. Connecting a repository saves its checkout mapping without restarting the shared server or interrupting active tools. AgentPalace 0.1.47 loads these mappings at startup, so source retrieval for a newly connected repository requires the next planned server restart; ordinary memory reads, writes, and mining remain available.
+When both memory flags are disabled, startup removes managed `mempalace` and `agentpalace` MCP registrations from every provider. Connecting a repository saves its checkout mapping without restarting the shared server or interrupting active tools. AgentPalace 0.1.48 loads these mappings at startup, so source retrieval for a newly connected repository requires the next planned server restart; ordinary memory reads, writes, and mining remain available.
 
 
 This upgrade supersedes the shared-directory approach in PR #215. **Do not run its remote-to-local merge.** Keep the existing `/data/mempalace/remote-palace` (or configured override) as the server authority; this preserves coordination state, drawers, KG, IDs and history in place.
@@ -242,7 +242,7 @@ This upgrade supersedes the shared-directory approach in PR #215. **Do not run i
 2. Deploy the pinned image. It uses one `agentpalace` executable. Existing `MEMPALACE_*` metadata values remain supported, so no Terraform resource changes are needed for this upgrade. Custom CLI paths must point at the new executable.
 3. The entrypoint retains the old model cache under the new cache name when the new directory is absent; both are preserved when both exist. The service uses `AGENTPALACE_CONFIG_DIR=$HOME/.mempalace` so identity and server settings are retained. Old tool prefixes in identity are updated without replacing operator text.
 4. Startup allows up to two minutes for a cold model load (with cancellable shutdown), removes self-federation routes, verifies the authenticated `/mcp` handshake, then writes HTTP registrations for Claude, Codex, Gemini, OpenCode, and OpenCode planning snapshots. A failed server startup aborts boot rather than launching LLMs against stale stdio registrations. All clients share the server's palace and embedding runtime.
-5. Verify `agentpalace --version` reports 0.1.47, `/v1/info` reports the expected version and `low_cpu`, all four providers discover `agentpalace_*` tools, and a drawer written via HTTP MCP is readable from a home PC through federation. Check simultaneous clients and server restart recovery. Home-PC stdio configurations are unchanged.
+5. Verify `agentpalace --version` reports 0.1.48, `/v1/info` reports the expected version and `low_cpu`, all four providers discover `agentpalace_*` tools, and a drawer written via HTTP MCP is readable from a home PC through federation. Check simultaneous clients and server restart recovery. Home-PC stdio configurations are unchanged.
 
 **Local-only history:** the former `/data/mempalace/palace` is preserved untouched as an archive. Its old local-only diaries are not silently copied into the shared server and will not appear in new wake-ups. Keep that directory and the snapshot; if historical diary retrieval is needed, open a *snapshot copy* with an isolated matching-version server and explicit palace/config paths. New bot/LLM diaries live in the authoritative shared palace. Identity remains available through the retained config directory.
 

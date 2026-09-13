@@ -88,6 +88,10 @@ function harness() {
                 if (name.endsWith("transition")) {
                     if (t.state === "pending" && args.state === "input_required")
                         throw new Error("invalid native transition");
+                    if (t.state === "running" && args.state === "pending") {
+                        expect((args.details as {reason:string}).reason).toBeTruthy();
+                        t.executor_affinity = t.owner; t.lease_expires_at = null;
+                    }
                     t.state = args.state as PalaceTask["state"];
                 }
                 else {
@@ -107,6 +111,32 @@ function harness() {
     return { s, tasks, messages, executed, hooks, sup, tick, fault, inbox, discovery };
 }
 describe("durable supervisor", () => {
+    it("requires inspection when discovering an owned continuation without its checkpoint", async () => {
+        const h = harness(); h.hooks.wings = () => [""];
+        h.tasks.set("orphan", {task_id:"orphan",title:"continuation",description:encodeSpec(spec),state:"pending",revision:1,created_by:"sender",wing:"wing_repo",owner:h.sup.worker,executor_affinity:h.sup.worker,lease_expires_at:null,dependencies:[],parent_id:null});
+        h.discovery.tasks = [{task_id:"orphan",revision:1}];
+        await h.tick();
+        expect(h.s.get("orphan")?.phase).toBe("input_required");
+        expect(h.executed).toEqual([]);
+    });
+    it("yields validated tasks directly without a human-input transition", async () => {
+        const h = harness();
+        h.s.add({id:"yield",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});
+        await h.tick(); await h.tick();
+        const transitions = h.fault.mock.calls.filter(([name]) => name.endsWith("task_transition")).map(([,args]) => args);
+        expect(transitions.map(args => args.state)).toEqual(["pending"]);
+        expect(transitions[0]?.details).toEqual({reason:"validated; awaiting execution slot"});
+    });
+    it("does not claim a queued task with foreign executor affinity", async () => {
+        const h = harness();
+        h.s.add({id:"foreign",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});
+        await h.tick();
+        const task = h.tasks.get(h.s.get("foreign")!.task!.task_id)!;
+        task.executor_affinity = "other-worker"; task.owner = "other-worker"; task.lease_expires_at = null;
+        h.fault.mockClear(); await h.tick();
+        expect(h.fault.mock.calls.some(([name]) => name.endsWith("task_claim"))).toBe(false);
+        expect(h.executed).toEqual([]);
+    });
     it("stops calling a failing validator after three attempts and requests input",async()=>{
         const h=harness();const validate=vi.fn(async()=>{throw new Error("Validator output is not JSON");});h.hooks.validate=validate;
         h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});await h.tick();
@@ -200,7 +230,7 @@ describe("durable supervisor", () => {
         h.fault.mockImplementation((name,args)=>{if(fail && name.endsWith("transition") && args.state==="pending") {fail=false;throw new Error("transport failed");}});
         await h.tick();
         const e=h.s.get("one")!;
-        expect(e.phase).toBe("execute");expect(h.tasks.get(e.task!.task_id)?.state).toBe("input_required");
+        expect(e.phase).toBe("execute");expect(h.tasks.get(e.task!.task_id)?.state).toBe("running");
         e.next_at=0;h.s.save(e);
         await h.tick();
         expect(h.s.get("one")?.phase).toBe("completed");expect(validate).toHaveBeenCalledTimes(1);

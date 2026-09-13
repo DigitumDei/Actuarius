@@ -53,7 +53,15 @@ it.skipIf(!process.env.AGENTPALACE_TEST_BINARY)("uses native claim, input_requir
         expect(await api.creationWing("wing_test", "local")).toBe("wing_test");
         expect((await api.get(task.task_id))?.state).toBe("pending");
         const claimed = await api.mutate("claim", { task_id: task.task_id, worker: "worker", expected_revision: task.revision, lease_seconds: 120 });
-        const waiting = await api.mutate("transition", { task_id: task.task_id, actor: "worker", expected_revision: claimed.revision, state: "input_required" });
+        const yielded = await api.mutate("transition", { task_id: task.task_id, actor: "worker", expected_revision: claimed.revision, state: "pending", details: { reason: "checkpoint persisted; next stage queued" } });
+        expect(yielded.state).toBe("pending");
+        expect(yielded.owner).toBe("worker");
+        expect(yielded.executor_affinity).toBe("worker");
+        expect(yielded.lease_expires_at).toBeNull();
+        await expect(api.mutate("claim", { task_id: task.task_id, worker: "other-worker", expected_revision: yielded.revision, lease_seconds: 120 })).rejects.toThrow();
+        expect((await api.get(task.task_id))?.revision).toBe(yielded.revision);
+        const continued = await api.mutate("claim", { task_id: task.task_id, worker: "worker", expected_revision: yielded.revision, lease_seconds: 120 });
+        const waiting = await api.mutate("transition", { task_id: task.task_id, actor: "worker", expected_revision: continued.revision, state: "input_required" });
         await api.call("message_send", { task_id: task.task_id, sender: "sender", recipient: "worker", kind: "task_correction", payload: { version: 1 }, idempotency_key: "correction" });
         const messages = await api.inbox("worker");
         expect(messages).toHaveLength(1);

@@ -139,7 +139,7 @@ export class CoordinationSupervisor {
                     }
                     this.store.setMeta(`observed:${id}`, String(task.revision));
                 }
-                if (!task || terminal.has(task.state) || (task.state !== "pending" && task.owner !== this.worker) || !task.description.includes("```actuarius-task"))
+                if (!task || (task.executor_affinity && task.executor_affinity !== this.worker) || terminal.has(task.state) || (task.state !== "pending" && task.owner !== this.worker) || !task.description.includes("```actuarius-task"))
                     continue;
                 let spec: ExecutionSpec | null = null;
                 try {
@@ -148,7 +148,7 @@ export class CoordinationSupervisor {
                         continue;
                 }
                 catch { /* malformed intended submissions receive feedback */ }
-                this.store.add({ id, source: "background", description: task.description, sender: task.created_by, wing: task.wing, task, phase: task.state === "pending" ? "validate" : "interrupted", reason: task.state === "pending" ? "" : "Recovered an owned task without local execution state; inspect before continuing", spec, work_id: spec?.workspace?.work_id ?? null });
+                this.store.add({ id, source: "background", description: task.description, sender: task.created_by, wing: task.wing, task, phase: task.state === "pending" && !task.executor_affinity ? "validate" : "interrupted", reason: task.state === "pending" && !task.executor_affinity ? "" : "Recovered an owned task without local execution state; inspect before continuing", spec, work_id: spec?.workspace?.work_id ?? null });
             }
             // A completed sweep restarts at creation-order beginning: old state changes cannot be missed.
             this.store.setMeta(key, page.next ?? "");
@@ -305,7 +305,7 @@ export class CoordinationSupervisor {
                 this.store.save(e);
                 return;
             }
-            // A crash or lost response can leave a scheduling yield halfway done.
+            // Recover legacy two-transition yields and corrected tasks.
             // Corrected tasks also resume through pending before acquiring a lease.
             if (["execute", "validate", "publishing"].includes(e.phase) && current.state === "input_required") {
                 current = await this.api.mutate("transition", { task_id: current.task_id, actor: this.worker, expected_revision: current.revision, state: "pending" });
@@ -316,7 +316,8 @@ export class CoordinationSupervisor {
                 e.task = current; e.phase = "input_required"; e.attempts = 0;
                 this.store.save(e); this.feedback(e, [e.reason]); return;
             }
-            if (current.owner && current.owner !== this.worker && current.lease_expires_at && Date.parse(current.lease_expires_at) > Date.now()) {
+            if ((current.executor_affinity && current.executor_affinity !== this.worker) ||
+                (current.owner && current.owner !== this.worker && current.lease_expires_at && Date.parse(current.lease_expires_at) > Date.now())) {
                 e.reason = "Claimed by another worker";
                 e.next_at = Date.now() + 15000;
                 this.store.save(e);
@@ -407,9 +408,7 @@ export class CoordinationSupervisor {
                 e.reason = "";
                 this.store.save(e);
                 this.notice(e, `Task ${e.task!.task_id} validated and queued (${e.source} priority).`, `validated:${e.validation_id}`);
-                // The native lifecycle has no running -> pending edge. Yield through input_required.
-                await transition("input_required", { scheduling: "validated; awaiting execution slot" });
-                await transition("pending", { scheduling: "ready" });
+                await transition("pending", { reason: "validated; awaiting execution slot" });
                 return;
             }
             if (e.phase === "execute") {
@@ -429,8 +428,7 @@ export class CoordinationSupervisor {
                     e.step++;
                     this.store.save(e);
                     this.store.moveToTail(e);
-                    await transition("input_required", { scheduling: "step complete" });
-                    await transition("pending", { scheduling: "continuation" });
+                    await transition("pending", { reason: "step complete; continuation queued" });
                     return;
                 }
                 e.result = output.result;
