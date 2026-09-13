@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
-import { CoordinationClient } from "./client.js";
+import { CoordinationClient, CoordinationRevisionConflict } from "./client.js";
 import { CoordinationStore, type Entry, type Work } from "./store.js";
 import { TaskValidationError, correctionSchema, encodeSpec, executionSchema, humanQuestionSchema, parseSpec, type ExecutionSpec, type PalaceTask, type Verdict } from "./contract.js";
 export interface CoordinationHooks {
@@ -372,9 +372,18 @@ export class CoordinationSupervisor {
                     catch (error) { if (error instanceof TaskValidationError) questions = [error.message]; else throw error; }
                 }
                 if (questions.length === 0) {
-                    const verdict = await this.hooks.validate(e, abort.signal);
-                    if (!verdict.ready)
-                        questions = verdict.questions;
+                    const failureKey=`validator-failures:${e.validation_id}`;
+                    try {
+                        const verdict = await this.hooks.validate(e, abort.signal);
+                        this.store.setMeta(failureKey,"0");
+                        if (!verdict.ready) questions = verdict.questions;
+                    } catch(error) {
+                        abort.signal.throwIfAborted();
+                        const failures=Number(this.store.meta(failureKey) ?? 0)+1;
+                        this.store.setMeta(failureKey,String(failures));
+                        if(failures<3) throw error;
+                        questions=[`Validator failed after ${failures} attempts: ${error instanceof Error ? error.message : String(error)}. Check the provider/configuration or revise the task before retrying.`];
+                    }
                 }
                 abort.signal.throwIfAborted();
                 if (questions.length) {
@@ -578,7 +587,7 @@ export class CoordinationSupervisor {
         this.store.moveToTail(e);
         return e;
     }
-    public async cancel(id: string): Promise<void> {
+    public async cancel(id: string): Promise<string> {
         const e = this.store.get(id);
         if (!e)
             throw new Error("Unknown task");
@@ -586,17 +595,29 @@ export class CoordinationSupervisor {
             this.store.setMeta(`cancel:${e.id}`, "1");
             e.reason = "Cancellation requested; confirming registration outcome";
             this.store.save(e);
-            return;
+            return "Cancellation requested; confirming registration outcome.";
         }
-        const task = await this.api.get(e.task.task_id);
-        if (!task || terminal.has(task.state))
-            return;
-        await this.api.mutate("transition", { task_id: task.task_id, actor: this.worker, expected_revision: task.revision, state: "cancelled" });
+        for(let attempt=0;attempt<3;attempt++) {
+            const task = await this.api.get(e.task.task_id);
+            if(!task) return "Task was not found; cancellation could not be confirmed.";
+            if(terminal.has(task.state)) {
+                e.task=task;e.phase=task.state;this.store.save(e);this.hooks.syncRequests?.();
+                return `Task is already ${task.state}.`;
+            }
+            try {
+                e.task=await this.api.mutate("transition", { task_id: task.task_id, actor: this.worker, expected_revision: task.revision, state: "cancelled" });
+                break;
+            } catch(error) {
+                if(!(error instanceof CoordinationRevisionConflict))throw error;
+                if(attempt===2)return "Task changed while cancelling; please retry cancellation.";
+            }
+        }
         if (e.id === this.activeEntryId)
             this.controller?.abort();
         e.phase = "cancelled";
         this.store.save(e);
         this.hooks.syncRequests?.();
+        return "Task cancelled.";
     }
     private async flush(): Promise<void> {
         for (const out of this.store.outbox()) {

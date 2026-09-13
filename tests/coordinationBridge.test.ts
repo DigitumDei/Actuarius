@@ -16,20 +16,33 @@ afterEach(() => cleanup.splice(0).forEach(fn => fn()));
 function fixture() {
     const dir = mkdtempSync(join(tmpdir(), "coordbridge-"));
     const repo = { id: 1, guild_id: "guild", owner: "owner", repo: "repo", full_name: "owner/repo", channel_id: "channel" };
-    const db = { listAllRepos: () => [repo], getRepoByChannelId: () => repo } as unknown as AppDatabase;
+    const db = { listAllRepos: () => [repo], getRepoByChannelId: () => repo, getLatestRequestWithWorkspaceByThreadId:()=>undefined } as unknown as AppDatabase;
     const config = { databasePath: join(dir, "db"), reposRootPath: dir, attachmentMaxCount: 5, attachmentMaxFileSize: 10000, attachmentMaxTotalSize: 50000, attachmentMaxInlineText: 1000 } as AppConfig;
     const bridge = new CoordinationBridge({} as Client, config, db, {} as MemPalaceClient, pino({ level: "silent" }), { parsePlan: () => null, text: async () => "", review: async () => ({ ready: true, text: "ok", sha: "sha" }), prepare: async () => { } });
     const w = bridge.store.register({ work_id: "shared", repository: "owner/repo", base_ref: "main", integration_target: "main" });
     w.thread_id = "thread";
     bridge.store.saveWork(w);
     cleanup.push(() => { bridge.store.close(); rmSync(dir, { recursive: true, force: true }); });
-    return { bridge };
+    return { bridge, db };
 }
 describe("Discord coordination intake", () => {
+    it("acknowledges before adopting a legacy worktree",async()=>{
+        const {bridge,db}=fixture();vi.spyOn(db,"getLatestRequestWithWorkspaceByThreadId").mockReturnValue({user_id:"user"} as ReturnType<AppDatabase["getLatestRequestWithWorkspaceByThreadId"]>);
+        const deferReply=vi.fn();const adopt=vi.spyOn(bridge as unknown as {adopt():Promise<unknown>},"adopt").mockImplementation(async()=>{expect(deferReply).toHaveBeenCalledWith({ephemeral:true});return bridge.store.work("shared");});
+        await bridge.command({id:"legacy-review",commandName:"review",guildId:"guild",channelId:"legacy",channel:{id:"legacy",parentId:"channel",isThread:()=>true},user:{id:"user"},options:{getString:()=>null},deferReply,editReply:vi.fn()} as unknown as ChatInputCommandInteraction);
+        expect(adopt).toHaveBeenCalledTimes(1);
+    });
+    it("defers a thread cancellation before waiting for AgentPalace",async()=>{
+        const {bridge}=fixture();bridge.store.add({id:"prior",source:"discord",sender:"discord:user",wing:"wing_repo",description:"",work_id:"shared",phase:"running"});
+        let finish!:(result:string)=>void;const deferReply=vi.fn();const editReply=vi.fn();
+        vi.spyOn(bridge.supervisor,"cancel").mockImplementation(()=>{expect(deferReply).toHaveBeenCalledWith({ephemeral:true});return new Promise(resolve=>{finish=resolve;});});
+        const pending=bridge.command({commandName:"cancel",guildId:"guild",channelId:"thread",channel:{id:"thread",parentId:"channel",isThread:()=>true},user:{id:"user"},options:{getString:()=>null},deferReply,editReply} as unknown as ChatInputCommandInteraction);
+        await vi.waitFor(()=>expect(finish).toBeTypeOf("function"));expect(editReply).not.toHaveBeenCalled();finish("Task cancelled.");await pending;expect(editReply).toHaveBeenCalledWith("Task cancelled.");
+    });
     it.each(["cancel","review","revise","pr"])("rejects another member's /%s mutation",async(commandName)=>{
         const {bridge}=fixture();
         bridge.store.add({id:"prior",source:"discord",description:"",sender:"discord:owner",wing:"wing_repo",work_id:"shared",phase:"running"});
-        const cancel=vi.spyOn(bridge.supervisor,"cancel").mockResolvedValue();
+        const cancel=vi.spyOn(bridge.supervisor,"cancel").mockResolvedValue("Task cancelled.");
         const reply=vi.fn();
         const interaction={id:"event",commandName,guildId:"guild",channelId:"thread",channel:{id:"thread",parentId:"channel",isThread:()=>true},user:{id:"other"},options:{getString:()=>commandName==="cancel"?"prior":null},reply} as unknown as ChatInputCommandInteraction;
         expect(await bridge.command(interaction)).toBe(true);
@@ -38,14 +51,14 @@ describe("Discord coordination intake", () => {
     });
     it.each(["owner","manager"])("allows %s cancellation",async(user)=>{
         const {bridge}=fixture();bridge.store.add({id:"prior",source:"discord",description:"",sender:"discord:owner",wing:"wing_repo"});
-        const cancel=vi.spyOn(bridge.supervisor,"cancel").mockResolvedValue();
+        const cancel=vi.spyOn(bridge.supervisor,"cancel").mockResolvedValue("Task cancelled.");
         await bridge.command({commandName:"cancel",guildId:"guild",user:{id:user},memberPermissions:{has:(bit:bigint)=>user==="manager"&&bit===PermissionFlagsBits.ManageGuild},options:{getString:()=>"prior"},deferReply:vi.fn(),editReply:vi.fn()} as unknown as ChatInputCommandInteraction);
         expect(cancel).toHaveBeenCalledWith("prior");
     });
     it("queues thread followups even when prior work is running, preserving workspace and dependency", async () => {
         const { bridge } = fixture();
         bridge.store.add({ id: "prior", source: "background", description: "prior", sender: "discord:user", wing: "wing_coordination", work_id: "shared", phase: "running" });
-        const reply = vi.fn();
+        const reply = vi.fn().mockResolvedValue({edit:vi.fn()});
         const message = { id: "event", author: { bot: false, id: "user" }, guildId: "guild", channelId: "thread", channel: { isThread: () => true, parentId: "channel" }, content: "Add tests", attachments: new Map(), reply } as unknown as Message;
         expect(await bridge.message(message)).toBe(true);
         expect(bridge.store.event("event")).toMatchObject({ source: "discord", wing: "wing_coordination", work_id: "shared", dependencies: ["prior"] });
@@ -75,7 +88,7 @@ describe("Discord coordination intake", () => {
     });
     it("/tasks uses saved state without an LLM or a coordination request", async () => {
         const { bridge } = fixture();
-        const reply = vi.fn();
+        const reply = vi.fn().mockResolvedValue({edit:vi.fn()});
         await bridge.command({ id: "view", commandName: "tasks", guildId: "guild", options: { getString: () => null, getInteger: () => null }, reply } as unknown as ChatInputCommandInteraction);
         expect(reply.mock.calls[0]?.[0].content).toContain("No matching tasks");
     });
@@ -89,10 +102,11 @@ describe("Discord coordination intake", () => {
         const reply=vi.fn();await bridge.message({id:"answer",author:{bot:false,id:"other"},guildId:"guild",reference:{messageId:"question"},reply} as unknown as Message);
         expect(reply).toHaveBeenCalledWith(expect.stringContaining("original requester"));expect(bridge.store.get("waiting")?.phase).toBe("input_required");
     });
-    it("downloads attachments before acknowledging intake and reuses the durable cache",async()=>{
+    it("acknowledges before downloading attachments and reuses the durable cache",async()=>{
         const {bridge}=fixture();const fetch=vi.fn().mockResolvedValue({ok:true,arrayBuffer:async()=>new TextEncoder().encode("saved content").buffer});vi.stubGlobal("fetch",fetch);
-        const message={id:"attachment-event",author:{bot:false,id:"user"},guildId:"guild",channelId:"thread",channel:{isThread:()=>true,parentId:"channel"},content:"Read this",attachments:new Map([["file",{id:"file",name:"notes.txt",url:"https://cdn.discord.test/expiring",size:13,contentType:"text/plain"}]]),reply:vi.fn()} as unknown as Message;
+        const message={id:"attachment-event",author:{bot:false,id:"user"},guildId:"guild",channelId:"thread",channel:{isThread:()=>true,parentId:"channel"},content:"Read this",attachments:new Map([["file",{id:"file",name:"notes.txt",url:"https://cdn.discord.test/expiring",size:13,contentType:"text/plain"}]]),reply:vi.fn().mockResolvedValue({edit:vi.fn()})} as unknown as Message;
         bridge.store.add({id:"owner",source:"discord",sender:"discord:user",wing:"wing_repo",description:"",work_id:"shared",phase:"completed"});
+        fetch.mockImplementation(async()=>{expect(message.reply).toHaveBeenCalledWith("Queuing your request…");return {ok:true,arrayBuffer:async()=>new TextEncoder().encode("saved content").buffer};});
         try {
             await bridge.message(message);
             const cached=JSON.parse(bridge.store.meta("attachments:discord-attachment-event")!) as {processed:Array<{savedPath:string}>};

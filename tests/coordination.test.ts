@@ -107,6 +107,24 @@ function harness() {
     return { s, tasks, messages, executed, hooks, sup, tick, fault, inbox, discovery };
 }
 describe("durable supervisor", () => {
+    it("stops calling a failing validator after three attempts and requests input",async()=>{
+        const h=harness();const validate=vi.fn(async()=>{throw new Error("Validator output is not JSON");});h.hooks.validate=validate;
+        h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});await h.tick();
+        for(let i=0;i<5;i++){const e=h.s.get("one")!;e.next_at=0;h.s.save(e);await h.tick();}
+        expect(validate).toHaveBeenCalledTimes(3);expect(h.s.get("one")?.phase).toBe("input_required");expect(JSON.stringify(h.messages)).toContain("Validator failed after 3 attempts");
+    });
+    it("resets validator failures after a valid verdict",async()=>{
+        const h=harness();h.hooks.validate=vi.fn().mockRejectedValueOnce(new Error("bad JSON")).mockResolvedValue({ready:false,questions:["Which version?"]});
+        h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});await h.tick();await h.tick();
+        const e=h.s.get("one")!;e.next_at=0;h.s.save(e);await h.tick();
+        expect(h.s.meta(`validator-failures:${e.validation_id}`)).toBe("0");expect(h.s.get("one")?.reason).toBe("Which version?");
+    });
+    it("retries a cancellation revision race and reports already-terminal tasks accurately",async()=>{
+        const h=harness();h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});await h.tick();
+        let raced=false;h.fault.mockImplementation((name,args)=>{if(!raced&&name.endsWith("task_transition")){raced=true;h.tasks.get(String(args.task_id))!.revision++;}});
+        expect(await h.sup.cancel("one")).toBe("Task cancelled.");expect(h.s.get("one")?.phase).toBe("cancelled");
+        expect(await h.sup.cancel("one")).toBe("Task is already cancelled.");
+    });
     it("wakes a local dependent on the next tick after accumulated backoff",async()=>{
         const h=harness();const dep:PalaceTask={task_id:"native-dep",title:"dep",description:encodeSpec(spec),state:"running",revision:1,created_by:"sender",wing:"wing_repo",owner:h.sup.worker,lease_expires_at:null,dependencies:[],parent_id:null};
         h.tasks.set(dep.task_id,dep);h.s.add({id:"local-dep",source:"discord",sender:"sender",wing:"wing_repo",description:dep.description,task:dep,phase:"running"});

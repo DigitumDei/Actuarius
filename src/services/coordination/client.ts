@@ -3,6 +3,7 @@ import { messageSchema, taskSchema, type PalaceTask, type PalaceMessage } from "
 export interface CoordinationTransport {
     coordinationCall(name: string, args: Record<string, unknown>): Promise<unknown>;
 }
+export class CoordinationRevisionConflict extends Error {}
 export class CoordinationClient {
     public constructor(private readonly transport: CoordinationTransport) { }
     public call(name: string, args: Record<string, unknown>): Promise<unknown> { return this.transport.coordinationCall(`agentpalace_${name}`, args); }
@@ -13,7 +14,7 @@ export class CoordinationClient {
     public async mutate(name: "claim" | "renew" | "transition", args: Record<string, unknown>): Promise<PalaceTask> {
         const data = z.object({ success: z.boolean(), task: taskSchema.optional() }).parse(await this.call(`task_${name}`, args));
         if (!data.success)
-            throw new Error("Coordination revision conflict; refresh before retrying");
+            throw new CoordinationRevisionConflict("Coordination revision conflict; refresh before retrying");
         return taskSchema.parse(data.task);
     }
     public async create(args: Record<string, unknown>): Promise<PalaceTask> { return taskSchema.parse(await this.call("task_create", args)); }

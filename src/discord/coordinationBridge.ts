@@ -548,8 +548,11 @@ export class CoordinationBridge {
             await message.reply("Several tasks are unfinished in this work thread. Reply to the update for the task you want to continue.");
             return true;
         }
-        const entry = await this.intake(message.id, `discord:${message.author.id}`, repo, message.channelId, "ask", message.content || "Inspect the attachments", attachments, true, predecessor);
-        await message.reply(`Queued ${entry.id} at Discord priority on work ${entry.work_id}.`);
+        const acknowledgement=await message.reply("Queuing your request…");
+        try {
+            const entry = await this.intake(message.id, `discord:${message.author.id}`, repo, message.channelId, "ask", message.content || "Inspect the attachments", attachments, true, predecessor);
+            await acknowledgement.edit(`Queued ${entry.id} at Discord priority on work ${entry.work_id}.`);
+        } catch(error) { await acknowledgement.edit(error instanceof Error ? error.message.slice(0,1800) : "Unable to queue this request."); }
         return true;
     }
     public async command(interaction: ChatInputCommandInteraction): Promise<boolean> {
@@ -570,8 +573,7 @@ export class CoordinationBridge {
                 await this.denyMutation(interaction); return true;
             }
             await interaction.deferReply({ ephemeral: true });
-            await this.supervisor.cancel(interaction.options.getString("task_id", true));
-            await interaction.editReply("Task cancelled.");
+            await interaction.editReply(await this.supervisor.cancel(interaction.options.getString("task_id", true)));
             return true;
         }
         const issueSummary = interaction.commandName === "issues" && interaction.options.getString("mode") === "summary";
@@ -597,16 +599,18 @@ export class CoordinationBridge {
             if (!this.authorized(interaction, work, this.store.get(id))) {
                 await this.denyMutation(interaction); return true;
             }
-            await this.supervisor.cancel(id);
-            await interaction.reply("Task cancelled.");
+            await interaction.deferReply({ephemeral:true});
+            await interaction.editReply(await this.supervisor.cancel(id));
             return true;
         }
         if (!thread && ["review", "revise", "pr"].includes(interaction.commandName)) {
             await interaction.reply({ content: "Use this command in a work thread.", ephemeral: true });
             return true;
         }
-        if (thread && ["review", "revise", "pr"].includes(interaction.commandName) && !this.authorized(interaction, await this.adopt(thread.id, repo))) {
-            await this.denyMutation(interaction); return true;
+        if (thread && ["review", "revise", "pr"].includes(interaction.commandName)) {
+            const work=this.store.works().find(w=>w.thread_id===thread.id);
+            const allowed=work ? this.authorized(interaction,work) : interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) || this.db.getLatestRequestWithWorkspaceByThreadId(thread.id)?.user_id===interaction.user.id;
+            if(!allowed) {await this.denyMutation(interaction);return true;}
         }
         await interaction.deferReply({ ephemeral: true });
         let prompt = interaction.options.getString("prompt") ?? (interaction.commandName === "revise" ? interaction.options.getString("findings") : null) ?? `${interaction.commandName} the existing work`;
