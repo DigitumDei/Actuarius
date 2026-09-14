@@ -26,6 +26,30 @@ function fixture() {
     return { bridge, db };
 }
 describe("Discord coordination intake", () => {
+    it.each(["cancelled", "input_required"])("revise recovers the workspace owner despite a newer %s followup", async (phase) => {
+        const { bridge } = fixture();
+        const spec = executionSchema.parse({version:1,executor:"actuarius",action:"implement",workspace:{work_id:"shared"},requirements:["Replace Gemini CLI"],acceptance_criteria:["Tests pass"],deliverable:"workspace_changes"});
+        bridge.store.add({id:"original",source:"discord",sender:"discord:user",wing:"wing_repo",description:"",work_id:"shared",phase:"input_required",spec,created_at:"2026-01-01"});
+        bridge.store.setMeta("workspace-owner:shared","original");
+        bridge.store.add({id:"followup",source:"discord",sender:"discord:user",wing:"wing_repo",description:"",work_id:"shared",phase,created_at:"2026-01-02"});
+        const command = {id:"resume",commandName:"revise",guildId:"guild",channelId:"thread",channel:{id:"thread",parentId:"channel",isThread:()=>true},user:{id:"user"},options:{getString:()=>null},deferReply:vi.fn(),editReply:vi.fn()} as unknown as ChatInputCommandInteraction;
+        await bridge.command(command);
+        expect(bridge.store.list()).toHaveLength(2);
+        expect(bridge.store.get("original")).toMatchObject({phase:"validate",spec:{requirements:expect.arrayContaining(["Replace Gemini CLI"]),acceptance_criteria:["Tests pass"]}});
+        expect(bridge.store.get("followup")?.phase).toBe(phase);
+        await bridge.command(command);
+        expect(bridge.store.list()).toHaveLength(2);
+    });
+    it.each(["review","pr"])("does not enqueue /%s behind interrupted workspace ownership", async (commandName) => {
+        const { bridge } = fixture();
+        bridge.store.add({id:"original",source:"discord",sender:"discord:user",wing:"wing_repo",description:"",work_id:"shared",phase:"input_required"});
+        bridge.store.setMeta("workspace-owner:shared","original");
+        const editReply=vi.fn();
+        await bridge.command({id:"blocked",commandName,guildId:"guild",channelId:"thread",channel:{id:"thread",parentId:"channel",isThread:()=>true},user:{id:"user"},options:{getString:()=>null},deferReply:vi.fn(),editReply} as unknown as ChatInputCommandInteraction);
+        expect(bridge.store.list()).toHaveLength(1);
+        expect(editReply).toHaveBeenCalledWith(expect.stringContaining("Use /revise"));
+    });
+
     it("acknowledges before adopting a legacy worktree",async()=>{
         const {bridge,db}=fixture();vi.spyOn(db,"getLatestRequestWithWorkspaceByThreadId").mockReturnValue({user_id:"user"} as ReturnType<AppDatabase["getLatestRequestWithWorkspaceByThreadId"]>);
         const deferReply=vi.fn();const adopt=vi.spyOn(bridge as unknown as {adopt():Promise<unknown>},"adopt").mockImplementation(async()=>{expect(deferReply).toHaveBeenCalledWith({ephemeral:true});return bridge.store.work("shared");});

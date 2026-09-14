@@ -500,7 +500,15 @@ export class CoordinationBridge {
             workspace = { work_id: `discord-${eventId}`, repository: repo.full_name.toLowerCase(), base_ref: base.branchName, integration_target: base.branchName };
         }
         const spec = executionSchema.parse({ version: 1, executor: "actuarius", action, workspace, iterative, requirements: [prompt], acceptance_criteria: [action === "ask" ? "Answer the user's request accurately; explain any changes made." : `Complete the requested ${action} operation and report the outcome.`], deliverable: action === "pr" ? "draft_pr" : (action === "report" || action === "ask") ? "report" : "workspace_changes" });
-        const previous = predecessor ? this.store.get(predecessor) : work ? this.store.list().filter(e => e.work_id === work!.work_id).sort((a,b) => a.created_at.localeCompare(b.created_at) || (a.creation_order ?? a.sequence)-(b.creation_order ?? b.sequence)).at(-1) : null;
+        const history = work ? this.store.list().filter(e => e.work_id === work!.work_id).sort((a,b) => a.created_at.localeCompare(b.created_at) || (a.creation_order ?? a.sequence)-(b.creation_order ?? b.sequence)) : [];
+        const ownerId = work ? this.store.meta(`workspace-owner:${work.work_id}`) : null;
+        const owner = ownerId ? this.store.get(ownerId) : null;
+        const retained = owner && owner.work_id === work?.work_id && !["completed", "cancelled", "failed", "expired"].includes(owner.phase) ? owner : null;
+        if (["review", "pr"].includes(action) && retained) {
+            throw new Error(`Workspace is retained by task ${retained.id} (${retained.phase}). Use /revise to recover interrupted work, or wait for running work to finish before /${action}.`);
+        }
+        const recovery = action === "revise" && !predecessor ? retained ?? history.filter(e => !["cancelled", "expired"].includes(e.phase)).at(-1) : null;
+        const previous = predecessor ? this.store.get(predecessor) : recovery ?? history.at(-1);
         if (previous && previous.work_id !== workspace?.work_id)
             throw new Error("The replied-to task belongs to another workspace");
         const repairing = action === "revise" && previous && ["input_required", "interrupted", "failed"].includes(previous.phase);
@@ -631,7 +639,12 @@ export class CoordinationBridge {
             await interaction.editReply(error);
             return true;
         }
-        const e = await this.intake(interaction.id, `discord:${interaction.user.id}`, repo, thread?.id ?? null, issueCreation || issueSummary ? "report" : interaction.commandName as ExecutionSpec["action"], prompt, attachments, interaction.commandName === "plan" ? interaction.options.getBoolean("iterative") ?? true : true);
+        let e: Entry;
+        try { e = await this.intake(interaction.id, `discord:${interaction.user.id}`, repo, thread?.id ?? null, issueCreation || issueSummary ? "report" : interaction.commandName as ExecutionSpec["action"], prompt, attachments, interaction.commandName === "plan" ? interaction.options.getBoolean("iterative") ?? true : true);
+        } catch (error) {
+            await interaction.editReply(error instanceof Error ? error.message.slice(0, 1800) : "Unable to queue this request.");
+            return true;
+        }
         if (issueSummary) this.store.setMeta(`issue-summary:${e.id}`, "1");
         await interaction.editReply(`Queued ${e.id} at Discord priority. Work: ${e.work_id}. /tasks shows its progress.`);
         return true;
