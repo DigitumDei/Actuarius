@@ -31,6 +31,14 @@ export const executionSchema = z.object({
         ctx.addIssue({ code: "custom", path: ["gates"], message: "Release gates require an explicit release tag in ref" });
 });
 export type ExecutionSpec = z.infer<typeof executionSchema>;
+// Clarification may change intent, but never workspace identity or dependency gates.
+export const clarifiedBriefSchema = z.object({
+    action: z.enum(["ask", "implement", "plan", "plan-oc", "review", "revise", "pr", "report", "workflow"]),
+    requirements: z.array(text).min(1).max(100),
+    acceptance_criteria: z.array(text).min(1).max(100),
+    deliverable: z.enum(["workspace_changes", "report", "draft_pr"])
+}).strict();
+export type ClarifiedBrief = z.infer<typeof clarifiedBriefSchema>;
 export const verdictSchema = z.object({ ready: z.boolean(), questions: z.array(text).max(20) }).strict()
     .refine(v => v.ready ? v.questions.length === 0 : v.questions.length > 0, "Rejected validation needs questions; ready verdict must have none");
 export type Verdict = z.infer<typeof verdictSchema>;
@@ -60,3 +68,10 @@ export const messageSchema = z.object({ message_id: text, task_id: text, sender:
 export type PalaceMessage = z.infer<typeof messageSchema>;
 export const correctionSchema = z.object({ version: z.literal(1), validation_id: text, spec: executionSchema }).strict();
 export const humanQuestionSchema = z.object({ version: z.literal(1), validation_id: text, question: text, reason: text, choices: z.array(text).max(10).optional() }).strict();
+
+
+/** Only direct operator phrases count; never scan task/spec text for approval. */
+export function isDraftPrApproval(answer: string): boolean {
+    const normalized = answer.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!]+$/, "");
+    return /^(?:please )?(?:(?:create|open|publish) (?:a |the )?draft (?:pr|pull request)(?: please)?|draft (?:pr|pull request) (?:approved|authorized|please))(?:[,;] (?:please )?(?:change|update|modify) (?:the |its )?acceptance criteria)?$/.test(normalized);
+}

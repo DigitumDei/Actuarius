@@ -10,6 +10,7 @@ import type { CoordinationHooks } from "../src/services/coordination/supervisor.
 import { CoordinationBridge } from "../src/discord/coordinationBridge.js";
 import { git, prepareValidationWorkspace, resolveRef } from "../src/services/coordination/workspace.js";
 import { spawnCollect } from "../src/utils/spawnCollect.js";
+import { MAX_TASK_CONTEXT_BYTES } from "../src/services/coordination/context.js";
 import { executionSchema } from "../src/services/coordination/contract.js";
 
 vi.mock("../src/services/coordination/workspace.js",()=>({git:vi.fn(),resolveRef:vi.fn(),provisionWork:vi.fn(async()=>{}),prepareValidationWorkspace:vi.fn(async()=>"/validator")}));
@@ -156,4 +157,79 @@ it("allows deletion only when an exact squash-merged HEAD is integrated",async()
   vi.mocked(spawnCollect).mockResolvedValue({stdout:JSON.stringify({state:"MERGED",headRefOid:"output",mergeCommit:{oid:"squashed"}}),stderr:""} as Awaited<ReturnType<typeof spawnCollect>>);
   await f.bridge.closeForDeletion("thread");expect(f.bridge.store.work(f.work.work_id)?.closed).toBe(true);
   expect(git).toHaveBeenCalledWith("/consumer",["merge-base","--is-ancestor","squashed","merged-base"]);
+});
+
+
+it("provides the original task scope to clarification, validation, and follow-up execution", async () => {
+  const f=fixture();
+  const original={...f.entry.spec!,requirements:["Replace Gemini with Antigravity CLI"],acceptance_criteria:["Existing authentication works"]};
+  f.bridge.store.add({id:"original",source:"background",sender:"sender",wing:"wing_repo",description:"",work_id:f.work.work_id,spec:original,phase:"input_required"});
+  f.bridge.store.setMeta(`workspace-owner:${f.work.work_id}`,"original");
+  f.entry.spec={...f.entry.spec!,action:"ask",deliverable:"report",requirements:["Read the active task from AgentPalace"]};
+  const brief={action:"ask",requirements:["Read requirements of task original from AgentPalace and report them"],acceptance_criteria:["Report accurately identifies the retrieved task and requirements"],deliverable:"report"};
+  f.text.mockResolvedValueOnce(JSON.stringify(brief));
+  expect(await f.hooks.clarify(f.entry,"Read the active task",new AbortController().signal)).toEqual(brief);
+  f.text.mockResolvedValueOnce('{"ready":true,"questions":[]}');
+  await f.hooks.validate(f.entry,new AbortController().signal);
+  f.text.mockResolvedValueOnce("Retrieved task original");
+  await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  for(const [input] of f.text.mock.calls) expect(input.prompt).toContain("Replace Gemini with Antigravity CLI");
+});
+
+
+it("finds a stalled task across repository workspaces before a root request is registered", async () => {
+  const f=fixture();
+  const original={...f.entry.spec!,requirements:["Replace Gemini with Antigravity CLI"],acceptance_criteria:["Do not publish a PR"]};
+  f.entry.spec=original; f.entry.phase="input_required"; f.bridge.store.save(f.entry);
+  f.bridge.store.setMeta(`workspace-owner:${f.work.work_id}`,f.entry.id);
+  const foreign=f.bridge.store.register({work_id:"foreign",repository:"owner/other",base_ref:"main",integration_target:"main"});
+  f.bridge.store.add({id:"foreign-task",source:"background",sender:"sender",wing:"wing_other",description:"",work_id:foreign.work_id,spec:{...original,workspace:{work_id:foreign.work_id},requirements:["Unrelated private work"]},phase:"input_required"});
+  const rootSpec=executionSchema.parse({version:1,executor:"actuarius",action:"ask",workspace:{work_id:"root-request",repository:"OWNER/REPO",base_ref:"main",integration_target:"main"},requirements:["Pull the current task and update its acceptance criteria to allow a draft PR"],acceptance_criteria:["Answer accurately"],deliverable:"report"});
+  const root=f.bridge.store.add({id:"root-request",source:"discord",sender:"discord:user",wing:"wing_repo",description:"root request",work_id:"root-request",spec:rootSpec});
+  expect(f.bridge.store.work(root.work_id!)).toBeNull();
+  f.text.mockResolvedValueOnce('{"ready":true,"questions":[]}');
+  await f.hooks.validate(root,new AbortController().signal);
+  f.text.mockResolvedValueOnce(JSON.stringify({action:"ask",requirements:rootSpec.requirements,acceptance_criteria:rootSpec.acceptance_criteria,deliverable:"report"}));
+  await f.hooks.clarify(root,"The stalled task in this repo",new AbortController().signal);
+  const rootWork=f.bridge.store.register(rootSpec.workspace!);rootWork.path="/root-request";rootWork.thread_id="thread";rootWork.request_id=1;f.bridge.store.saveWork(rootWork);
+  f.text.mockResolvedValueOnce("Found the stalled task");
+  await f.internals.execute(root,rootWork,new AbortController().signal);
+  for(const [input] of f.text.mock.calls) {
+    expect(input.prompt).toContain("Replace Gemini with Antigravity CLI");
+    expect(input.prompt).toContain('"work_id":"consumer"');
+    expect(input.prompt).not.toContain("Unrelated private work");
+  }
+  expect(root.dependencies).toEqual([]);
+  expect(root.spec?.workspace?.work_id).toBe("root-request");
+  expect(rootWork.branch).not.toBe(f.work.branch);
+  expect(f.bridge.store.meta(`workspace-owner:${f.work.work_id}`)).toBe(f.entry.id);
+  expect(f.bridge.store.get(f.entry.id)?.phase).toBe("input_required");
+});
+
+
+it("bounds complete serialized context including multibyte and escaped text", async () => {
+  const f=fixture();
+  const large='"\\\n' + String.fromCodePoint(0x1f680).repeat(10000);
+  for(let i=0;i<15;i++) f.bridge.store.add({id:`large-${i}`,source:"background",sender:"agent",wing:"wing_repo",description:"",work_id:f.work.work_id,phase:"input_required",reason:large.repeat(4),result:large,spec:{...f.entry.spec!,requirements:[large.repeat(2)],acceptance_criteria:[large.repeat(2)]}});
+  f.bridge.store.setMeta(`workspace-owner:${f.work.work_id}`,"large-0");
+  f.text.mockResolvedValueOnce('{"ready":true,"questions":[]}');
+  await f.hooks.validate(f.entry,new AbortController().signal);
+  const serialized=f.text.mock.calls[0]![0].prompt.split("Work context:\n").at(-1)!;
+  const context=JSON.parse(serialized);
+  expect(Buffer.byteLength(serialized,"utf8")).toBeLessThanOrEqual(MAX_TASK_CONTEXT_BYTES);
+  expect(context.tasks[0].id).toBe("large-0");
+  expect(context.tasks[0].spec.truncated).toBe(true);
+  expect(context.tasks[0].reason).toContain("[truncated]");
+  expect(context.tasks.length + context.omitted_tasks).toBe(15);
+  expect(context.omitted_tasks).toBeGreaterThan(3);
+});
+it("includes failed retained owners but excludes unrelated failed history", async () => {
+  const f=fixture();
+  for(const id of ["failed-owner","old-failure"]) f.bridge.store.add({id,source:"background",sender:"agent",wing:"wing_repo",description:"",work_id:f.other.work_id,phase:"failed",spec:{...f.entry.spec!,workspace:{work_id:f.other.work_id}}});
+  f.bridge.store.setMeta(`workspace-owner:${f.other.work_id}`,"failed-owner");
+  f.text.mockResolvedValueOnce('{"ready":true,"questions":[]}');
+  await f.hooks.validate(f.entry,new AbortController().signal);
+  const context=JSON.parse(f.text.mock.calls[0]![0].prompt.split("Work context:\n").at(-1)!);
+  expect(context.tasks.map((task:{id:string})=>task.id)).toContain("failed-owner");
+  expect(context.tasks.map((task:{id:string})=>task.id)).not.toContain("old-failure");
 });

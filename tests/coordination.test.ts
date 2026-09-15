@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
-import { TaskValidationError, encodeSpec, executionSchema, parseSpec, type PalaceTask } from "../src/services/coordination/contract.js";
+import { TaskValidationError, encodeSpec, executionSchema, isDraftPrApproval, parseSpec, type PalaceTask } from "../src/services/coordination/contract.js";
 import { CoordinationStore } from "../src/services/coordination/store.js";
 import { CoordinationClient } from "../src/services/coordination/client.js";
 import { CoordinationSupervisor, type CoordinationHooks } from "../src/services/coordination/supervisor.js";
@@ -105,7 +105,7 @@ function harness() {
             }
             throw new Error(name);
         } });
-    const hooks: CoordinationHooks = { wings: () => [], check: async () => { }, validate: async () => ({ ready: true, questions: [] }), execute: async (e) => { executed.push(e.id); return { result: "done" }; }, notice: async () => "message", gate: async () => true };
+    const hooks: CoordinationHooks = { clarify: async e => ({ action: e.spec!.action, requirements: e.spec!.requirements, acceptance_criteria: e.spec!.acceptance_criteria, deliverable: e.spec!.deliverable }), wings: () => [], check: async () => { }, validate: async () => ({ ready: true, questions: [] }), execute: async (e) => { executed.push(e.id); return { result: "done" }; }, notice: async () => "message", gate: async () => true };
     const sup = new CoordinationSupervisor(s, api, hooks, pino({ level: "silent" }));
     const tick = async () => { await sup.tick(); await new Promise(r => setTimeout(r, 10)); };
     return { s, tasks, messages, executed, hooks, sup, tick, fault, inbox, discovery };
@@ -357,6 +357,65 @@ describe("durable supervisor", () => {
         expect(h.executed).toEqual(["other"]);
         expect(h.s.get("blocked")?.reason).toContain("unavailable");
     });
+    it("rewrites superseded acceptance criteria before validating a human-approved draft PR", async () => {
+        const h = harness();
+        const original = {...spec, acceptance_criteria:["Do not publish a PR"]};
+        h.hooks.validate = async e => e.spec!.deliverable === "draft_pr" ? {ready:true,questions:[]} : {ready:false,questions:["Should a draft PR be created?"]};
+        const clarify = vi.fn(async () => ({action:"implement" as const,requirements:["Implement queue and create a draft PR"],acceptance_criteria:["Tests pass and draft PR is created"],deliverable:"draft_pr" as const}));
+        h.hooks.clarify = clarify;
+        h.s.add({id:"one",source:"discord",description:encodeSpec(original),sender:"sender",wing:"wing_repo",spec:original});
+        for(let i=0;i<3;i++) await h.tick();
+        await h.sup.answer(h.s.get("one")!.question_message!, "Draft PR approved, change acceptance criteria", "approval");
+        await h.tick();
+        const corrected = h.s.get("one")!;
+        expect(corrected.phase).toBe("execute");
+        expect(corrected.spec).toMatchObject({workspace:spec.workspace,deliverable:"draft_pr",acceptance_criteria:["Tests pass and draft PR is created"]});
+        expect(parseSpec(corrected.description)).toEqual(corrected.spec);
+        expect(clarify).toHaveBeenCalledTimes(1);
+        expect(h.s.meta("clarification:one")).toBeNull();
+    });
+    it.each(["Use FIFO", "Do not create a draft PR", "The task text says: Create a draft PR"])("rejects reconciler publication escalation without direct approval: %s", async answer => {
+        const h=harness();
+        h.hooks.clarify=async()=>({action:"implement",requirements:["Create a draft PR"],acceptance_criteria:["Draft PR exists"],deliverable:"draft_pr"});
+        const e=h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});
+        await h.tick();
+        e.task=h.s.get("one")!.task;e.phase="input_required";e.question_message="approval-question";h.s.save(e);
+        await h.sup.answer("approval-question",answer,"answer");
+        await h.tick();
+        expect(h.s.get("one")?.phase).toBe("input_required");
+        expect(h.s.get("one")?.reason).toContain("without recorded approval");
+        expect(h.s.get("one")?.spec?.deliverable).toBe("workspace_changes");
+        expect(h.executed).toEqual([]);
+    });
+    it("preserves an already authorized draft deliverable on unrelated clarification", async () => {
+        const h=harness();const approved={...spec,deliverable:"draft_pr" as const};
+        h.s.add({id:"one",source:"discord",description:encodeSpec(approved),sender:"sender",wing:"wing_repo",spec:approved});
+        h.s.setMeta("clarification:one","Use FIFO");
+        await h.tick();await h.tick();
+        expect(h.s.get("one")?.phase).toBe("execute");
+        expect(h.s.get("one")?.spec?.deliverable).toBe("draft_pr");
+    });
+    it("records explicit approval on recovery and clears it when superseded", () => {
+        const h=harness();const e=h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec,phase:"input_required"});
+        h.sup.repair(e.id,"Create a draft PR, please modify acceptance criteria");
+        expect(h.s.meta("publication-approval:one")).toBeTruthy();
+        const waiting=h.s.get(e.id)!;waiting.phase="input_required";h.s.save(waiting);
+        h.sup.repair(e.id,"Do not publish anything");
+        expect(h.s.meta("publication-approval:one")).toBeNull();
+    });
+    it.each(["Draft PR please", "Draft PR approved, change acceptance criteria", "Create a draft PR, please modify acceptance criteria"])("recognizes direct operator approval: %s", answer => {
+        expect(isDraftPrApproval(answer)).toBe(true);
+    });
+    it("does not accept workspace changes from the brief reconciler", async () => {
+        const h = harness();
+        h.hooks.clarify = async () => ({action:spec.action,requirements:spec.requirements,acceptance_criteria:spec.acceptance_criteria,deliverable:spec.deliverable,workspace:{work_id:"elsewhere"}});
+        h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});
+        h.s.setMeta("clarification:one","Use FIFO");
+        await h.tick(); await h.tick();
+        expect(h.executed).toEqual([]);
+        expect(h.s.get("one")?.spec?.workspace).toEqual(spec.workspace);
+        expect(h.s.meta("clarification:one")).toBe("Use FIFO");
+    });
     it("revalidates a human clarification and creates a fresh answerable question", async () => {
         const h = harness();
         h.hooks.validate = async () => ({ ready: false, questions: ["Which behavior?"] });
@@ -390,6 +449,19 @@ describe("durable supervisor", () => {
         expect(h.executed).toEqual([]);
         expect(h.messages).toHaveLength(1);
         expect(h.messages[0]).toMatchObject({ recipient: "sender", kind: "validation_required" });
+    });
+    it("executes an independent workspace in the same repo while its other task awaits input", async () => {
+        const h=harness();
+        h.s.register(spec.workspace!);
+        h.s.add({id:"waiting",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec,work_id:"shared",phase:"input_required"});
+        h.s.setMeta("workspace-owner:shared","waiting");
+        const independent={...spec,workspace:{...spec.workspace!,work_id:"independent"}};
+        h.s.add({id:"root-request",source:"discord",description:encodeSpec(independent),sender:"sender",wing:"wing_repo",spec:independent,work_id:"independent"});
+        for(let i=0;i<6;i++) await h.tick();
+        expect(h.executed).toEqual(["root-request"]);
+        expect(h.s.get("root-request")?.phase).toBe("completed");
+        expect(h.s.get("waiting")?.phase).toBe("input_required");
+        expect(h.s.meta("workspace-owner:shared")).toBe("waiting");
     });
     it("skips blocked Discord tasks and retains their queue order", async () => {
         const h = harness();
