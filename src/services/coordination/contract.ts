@@ -68,3 +68,10 @@ export const messageSchema = z.object({ message_id: text, task_id: text, sender:
 export type PalaceMessage = z.infer<typeof messageSchema>;
 export const correctionSchema = z.object({ version: z.literal(1), validation_id: text, spec: executionSchema }).strict();
 export const humanQuestionSchema = z.object({ version: z.literal(1), validation_id: text, question: text, reason: text, choices: z.array(text).max(10).optional() }).strict();
+
+
+/** Only direct operator phrases count; never scan task/spec text for approval. */
+export function isDraftPrApproval(answer: string): boolean {
+    const normalized = answer.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!]+$/, "");
+    return /^(?:please )?(?:(?:create|open|publish) (?:a |the )?draft (?:pr|pull request)(?: please)?|draft (?:pr|pull request) (?:approved|authorized|please))(?:[,;] (?:please )?(?:change|update|modify) (?:the |its )?acceptance criteria)?$/.test(normalized);
+}

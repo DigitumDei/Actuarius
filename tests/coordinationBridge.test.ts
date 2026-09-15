@@ -94,6 +94,27 @@ describe("Discord coordination intake", () => {
         await bridge.command({commandName:"cancel",guildId:"guild",user:{id:user},memberPermissions:{has:(bit:bigint)=>user==="manager"&&bit===PermissionFlagsBits.ManageGuild},options:{getString:()=>"prior"},deferReply:vi.fn(),editReply:vi.fn()} as unknown as ChatInputCommandInteraction);
         expect(cancel).toHaveBeenCalledWith("prior");
     });
+    it("queues ordinary follow-ups behind the running owner rather than a newer orphan", async () => {
+        const {bridge}=fixture();
+        bridge.store.add({id:"owner",source:"discord",sender:"discord:user",wing:"wing_repo",description:"",work_id:"shared",phase:"running",created_at:"2026-01-01"});
+        bridge.store.setMeta("workspace-owner:shared","owner");
+        bridge.store.add({id:"orphan",source:"discord",sender:"discord:user",wing:"wing_repo",description:"",work_id:"shared",phase:"input_required",created_at:"2026-01-02"});
+        await bridge.message({id:"followup",author:{bot:false,id:"user"},guildId:"guild",channelId:"thread",channel:{isThread:()=>true,parentId:"channel"},content:"Report progress afterwards",attachments:new Map(),reply:vi.fn().mockResolvedValue({edit:vi.fn()})} as unknown as Message);
+        expect(bridge.store.event("followup")?.dependencies).toEqual(["owner"]);
+    });
+    it.each(["running","completed","input_required"])("authorizes workspace-owner replies separately from background task recovery (%s)", async phase => {
+        const {bridge}=fixture();
+        bridge.store.add({id:"initial",source:"discord",sender:"discord:user",wing:"wing_repo",description:"",work_id:"shared",phase:"completed",created_at:"2026-01-01"});
+        bridge.store.add({id:"background",source:"background",sender:"agent",wing:"wing_repo",description:"",work_id:"shared",phase,created_at:"2026-01-02"});
+        bridge.store.setMeta("message-task:update","background");
+        const reply=vi.fn().mockResolvedValue({edit:vi.fn()});
+        await bridge.message({id:"followup",author:{bot:false,id:"user"},guildId:"guild",channelId:"thread",channel:{isThread:()=>true,parentId:"channel"},reference:{messageId:"update"},content:"Report progress afterwards",attachments:new Map(),reply} as unknown as Message);
+        if (phase === "input_required") {
+            expect(bridge.store.event("followup")).toBeNull();
+            expect(reply).toHaveBeenCalledWith(expect.stringContaining("original requester"));
+        } else expect(bridge.store.event("followup")?.dependencies).toEqual(["background"]);
+        expect(bridge.store.get("background")?.phase).toBe(phase);
+    });
     it("queues thread followups even when prior work is running, preserving workspace and dependency", async () => {
         const { bridge } = fixture();
         bridge.store.add({ id: "prior", source: "background", description: "prior", sender: "discord:user", wing: "wing_coordination", work_id: "shared", phase: "running" });

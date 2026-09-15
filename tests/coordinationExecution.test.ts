@@ -10,6 +10,7 @@ import type { CoordinationHooks } from "../src/services/coordination/supervisor.
 import { CoordinationBridge } from "../src/discord/coordinationBridge.js";
 import { git, prepareValidationWorkspace, resolveRef } from "../src/services/coordination/workspace.js";
 import { spawnCollect } from "../src/utils/spawnCollect.js";
+import { MAX_TASK_CONTEXT_BYTES } from "../src/services/coordination/context.js";
 import { executionSchema } from "../src/services/coordination/contract.js";
 
 vi.mock("../src/services/coordination/workspace.js",()=>({git:vi.fn(),resolveRef:vi.fn(),provisionWork:vi.fn(async()=>{}),prepareValidationWorkspace:vi.fn(async()=>"/validator")}));
@@ -203,4 +204,32 @@ it("finds a stalled task across repository workspaces before a root request is r
   expect(rootWork.branch).not.toBe(f.work.branch);
   expect(f.bridge.store.meta(`workspace-owner:${f.work.work_id}`)).toBe(f.entry.id);
   expect(f.bridge.store.get(f.entry.id)?.phase).toBe("input_required");
+});
+
+
+it("bounds complete serialized context including multibyte and escaped text", async () => {
+  const f=fixture();
+  const large='"\\\n' + String.fromCodePoint(0x1f680).repeat(10000);
+  for(let i=0;i<15;i++) f.bridge.store.add({id:`large-${i}`,source:"background",sender:"agent",wing:"wing_repo",description:"",work_id:f.work.work_id,phase:"input_required",reason:large.repeat(4),result:large,spec:{...f.entry.spec!,requirements:[large.repeat(2)],acceptance_criteria:[large.repeat(2)]}});
+  f.bridge.store.setMeta(`workspace-owner:${f.work.work_id}`,"large-0");
+  f.text.mockResolvedValueOnce('{"ready":true,"questions":[]}');
+  await f.hooks.validate(f.entry,new AbortController().signal);
+  const serialized=f.text.mock.calls[0]![0].prompt.split("Work context:\n").at(-1)!;
+  const context=JSON.parse(serialized);
+  expect(Buffer.byteLength(serialized,"utf8")).toBeLessThanOrEqual(MAX_TASK_CONTEXT_BYTES);
+  expect(context.tasks[0].id).toBe("large-0");
+  expect(context.tasks[0].spec.truncated).toBe(true);
+  expect(context.tasks[0].reason).toContain("[truncated]");
+  expect(context.tasks.length + context.omitted_tasks).toBe(15);
+  expect(context.omitted_tasks).toBeGreaterThan(3);
+});
+it("includes failed retained owners but excludes unrelated failed history", async () => {
+  const f=fixture();
+  for(const id of ["failed-owner","old-failure"]) f.bridge.store.add({id,source:"background",sender:"agent",wing:"wing_repo",description:"",work_id:f.other.work_id,phase:"failed",spec:{...f.entry.spec!,workspace:{work_id:f.other.work_id}}});
+  f.bridge.store.setMeta(`workspace-owner:${f.other.work_id}`,"failed-owner");
+  f.text.mockResolvedValueOnce('{"ready":true,"questions":[]}');
+  await f.hooks.validate(f.entry,new AbortController().signal);
+  const context=JSON.parse(f.text.mock.calls[0]![0].prompt.split("Work context:\n").at(-1)!);
+  expect(context.tasks.map((task:{id:string})=>task.id)).toContain("failed-owner");
+  expect(context.tasks.map((task:{id:string})=>task.id)).not.toContain("old-failure");
 });

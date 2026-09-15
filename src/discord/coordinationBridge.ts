@@ -5,6 +5,7 @@ import type { AppConfig } from "../config.js";
 import type { AppDatabase } from "../db/database.js";
 import type { AiProvider, RepoRow } from "../db/types.js";
 import { CoordinationStore, type Entry, type Work } from "../services/coordination/store.js";
+import { contextText, contextValue, serializeTaskContext } from "../services/coordination/context.js";
 import { CoordinationClient } from "../services/coordination/client.js";
 import { CoordinationSupervisor } from "../services/coordination/supervisor.js";
 import { TaskValidationError, clarifiedBriefSchema, executionSchema, fingerprint, verdictSchema, type ExecutionSpec } from "../services/coordination/contract.js";
@@ -295,20 +296,21 @@ export class CoordinationBridge {
             if (!sameWork && (!repository || otherRepository !== repository)) return [];
             const id = other.task?.task_id ?? other.id;
             const explicit = request.includes(id);
-            if (terminal.has(other.phase) && !explicit && (!sameWork || ["cancelled", "expired"].includes(other.phase))) return [];
             const ownsWorkspace = !!other.work_id && this.store.meta(`workspace-owner:${other.work_id}`) === other.id;
+            const retainedFailure = ownsWorkspace && other.phase === "failed";
+            if (terminal.has(other.phase) && !explicit && !retainedFailure && (!sameWork || ["cancelled", "expired"].includes(other.phase))) return [];
             const rank = explicit ? 0 : sameWork && ownsWorkspace ? 1 : sameWork ? 2 : ownsWorkspace ? 3 : 4;
             return [{ other, otherWork, id, ownsWorkspace, rank }];
         }).sort((a, b) => a.rank - b.rank || b.other.created_at.localeCompare(a.other.created_at) || b.other.sequence - a.other.sequence);
-        return JSON.stringify({
+        return serializeTaskContext({
             repository: repository ?? null,
-            work: work ?? e.spec?.workspace ?? null,
+            work: contextValue(work ?? e.spec?.workspace ?? null, 4096),
             note: "Local coordination snapshot, not a new dependency or a change of workspace. Resolve task references by ID, scope and workspace ownership. Do not assume the newest task is the intended one. If several candidates fit, retrieve their details before asking which one. Refresh the authoritative AgentPalace task before updating it.",
             omitted_tasks: Math.max(0, candidates.length - 12),
             tasks: candidates.slice(0, 12).map(({other, otherWork, id, ownsWorkspace}) => ({
                 id, work_id: other.work_id, branch: otherWork?.branch ?? null,
-                owns_workspace: ownsWorkspace, phase: other.phase, reason: other.reason,
-                spec: other.spec, result: other.result?.slice(0, 8000)
+                owns_workspace: ownsWorkspace, phase: other.phase, reason: contextText(other.reason, 1024),
+                spec: contextValue(other.spec, 4096), result: other.result ? contextText(other.result, 2048) : null
             }))
         });
     }
@@ -596,14 +598,14 @@ export class CoordinationBridge {
             await message.reply("Several tasks are unfinished in this work thread. Reply to the update for the task you want to continue.");
             return true;
         }
-        if (target && !this.authorized({user:message.author,memberPermissions:message.member?.permissions}, currentWork, target)) {
+        const recovering = target && attachments.length === 0 && ["input_required", "interrupted"].includes(target.phase) ? target : null;
+        if (recovering && !this.authorized({user:message.author,memberPermissions:message.member?.permissions}, currentWork, recovering)) {
             await message.reply("Only the original requester or a user with Manage Server can continue this task.");
             return true;
         }
-        const recovering = target && attachments.length === 0 && ["input_required", "interrupted"].includes(target.phase) ? target : null;
         const acknowledgement=await message.reply("Queuing your request…");
         try {
-            const entry = await this.intake(message.id, `discord:${message.author.id}`, repo, message.channelId, recovering ? "revise" : "ask", message.content || "Inspect the attachments", attachments, true, recovering ? recovering.id : predecessor);
+            const entry = await this.intake(message.id, `discord:${message.author.id}`, repo, message.channelId, recovering ? "revise" : "ask", message.content || "Inspect the attachments", attachments, true, target?.id ?? predecessor);
             await acknowledgement.edit(`Queued ${entry.id} at Discord priority on work ${entry.work_id}.`);
         } catch(error) { await acknowledgement.edit(error instanceof Error ? error.message.slice(0,1800) : "Unable to queue this request."); }
         return true;

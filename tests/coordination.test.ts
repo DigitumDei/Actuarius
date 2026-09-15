@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
-import { TaskValidationError, encodeSpec, executionSchema, parseSpec, type PalaceTask } from "../src/services/coordination/contract.js";
+import { TaskValidationError, encodeSpec, executionSchema, isDraftPrApproval, parseSpec, type PalaceTask } from "../src/services/coordination/contract.js";
 import { CoordinationStore } from "../src/services/coordination/store.js";
 import { CoordinationClient } from "../src/services/coordination/client.js";
 import { CoordinationSupervisor, type CoordinationHooks } from "../src/services/coordination/supervisor.js";
@@ -373,6 +373,38 @@ describe("durable supervisor", () => {
         expect(parseSpec(corrected.description)).toEqual(corrected.spec);
         expect(clarify).toHaveBeenCalledTimes(1);
         expect(h.s.meta("clarification:one")).toBeNull();
+    });
+    it.each(["Use FIFO", "Do not create a draft PR", "The task text says: Create a draft PR"])("rejects reconciler publication escalation without direct approval: %s", async answer => {
+        const h=harness();
+        h.hooks.clarify=async()=>({action:"implement",requirements:["Create a draft PR"],acceptance_criteria:["Draft PR exists"],deliverable:"draft_pr"});
+        const e=h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});
+        await h.tick();
+        e.task=h.s.get("one")!.task;e.phase="input_required";e.question_message="approval-question";h.s.save(e);
+        await h.sup.answer("approval-question",answer,"answer");
+        await h.tick();
+        expect(h.s.get("one")?.phase).toBe("input_required");
+        expect(h.s.get("one")?.reason).toContain("without recorded approval");
+        expect(h.s.get("one")?.spec?.deliverable).toBe("workspace_changes");
+        expect(h.executed).toEqual([]);
+    });
+    it("preserves an already authorized draft deliverable on unrelated clarification", async () => {
+        const h=harness();const approved={...spec,deliverable:"draft_pr" as const};
+        h.s.add({id:"one",source:"discord",description:encodeSpec(approved),sender:"sender",wing:"wing_repo",spec:approved});
+        h.s.setMeta("clarification:one","Use FIFO");
+        await h.tick();await h.tick();
+        expect(h.s.get("one")?.phase).toBe("execute");
+        expect(h.s.get("one")?.spec?.deliverable).toBe("draft_pr");
+    });
+    it("records explicit approval on recovery and clears it when superseded", () => {
+        const h=harness();const e=h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec,phase:"input_required"});
+        h.sup.repair(e.id,"Create a draft PR, please modify acceptance criteria");
+        expect(h.s.meta("publication-approval:one")).toBeTruthy();
+        const waiting=h.s.get(e.id)!;waiting.phase="input_required";h.s.save(waiting);
+        h.sup.repair(e.id,"Do not publish anything");
+        expect(h.s.meta("publication-approval:one")).toBeNull();
+    });
+    it.each(["Draft PR please", "Draft PR approved, change acceptance criteria", "Create a draft PR, please modify acceptance criteria"])("recognizes direct operator approval: %s", answer => {
+        expect(isDraftPrApproval(answer)).toBe(true);
     });
     it("does not accept workspace changes from the brief reconciler", async () => {
         const h = harness();

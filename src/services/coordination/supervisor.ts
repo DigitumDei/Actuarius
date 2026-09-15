@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 import { CoordinationClient, CoordinationRevisionConflict } from "./client.js";
 import { CoordinationStore, type Entry, type Work } from "./store.js";
-import { TaskValidationError, clarifiedBriefSchema, correctionSchema, encodeSpec, executionSchema, humanQuestionSchema, parseSpec, type ClarifiedBrief, type ExecutionSpec, type PalaceTask, type Verdict } from "./contract.js";
+import { TaskValidationError, clarifiedBriefSchema, correctionSchema, encodeSpec, executionSchema, humanQuestionSchema, isDraftPrApproval, parseSpec, type ClarifiedBrief, type ExecutionSpec, type PalaceTask, type Verdict } from "./contract.js";
 export interface CoordinationHooks {
     cleanupAttachments?(entryId:string):Promise<void>;
     syncRequests?(): void;
@@ -380,21 +380,29 @@ export class CoordinationSupervisor {
                         if (clarification) {
                             const brief = clarifiedBriefSchema.parse(await this.hooks.clarify(e, clarification, abort.signal));
                             abort.signal.throwIfAborted();
+                            if (brief.deliverable === "draft_pr" && e.spec?.deliverable !== "draft_pr" && !this.store.meta(`publication-approval:${e.id}`)) {
+                                throw new TaskValidationError('The proposed correction would publish a draft PR without recorded approval. To authorize publication, reply "Create a draft PR"; otherwise clarify the requested work without publication.');
+                            }
                             e.spec = executionSchema.parse({ ...e.spec, ...brief });
                             e.description = encodeSpec(e.spec);
                             e.action = e.spec.action;
                             this.store.save(e);
                             this.store.deleteMeta(`clarification:${e.id}`);
+                            this.store.deleteMeta(`publication-approval:${e.id}`);
                         }
                         const verdict = await this.hooks.validate(e, abort.signal);
                         this.store.setMeta(failureKey,"0");
                         if (!verdict.ready) questions = verdict.questions;
                     } catch(error) {
                         abort.signal.throwIfAborted();
-                        const failures=Number(this.store.meta(failureKey) ?? 0)+1;
-                        this.store.setMeta(failureKey,String(failures));
-                        if(failures<3) throw error;
-                        questions=[`Validator failed after ${failures} attempts: ${error instanceof Error ? error.message : String(error)}. Check the provider/configuration or revise the task before retrying.`];
+                        if (error instanceof TaskValidationError) {
+                            questions = [error.message];
+                        } else {
+                            const failures=Number(this.store.meta(failureKey) ?? 0)+1;
+                            this.store.setMeta(failureKey,String(failures));
+                            if(failures<3) throw error;
+                            questions=[`Validator failed after ${failures} attempts: ${error instanceof Error ? error.message : String(error)}. Check the provider/configuration or revise the task before retrying.`];
+                        }
                     }
                 }
                 abort.signal.throwIfAborted();
@@ -502,6 +510,7 @@ export class CoordinationSupervisor {
                                 continue;
                             }
                             this.store.deleteMeta(`clarification:${e.id}`);
+                            this.store.deleteMeta(`publication-approval:${e.id}`);
                             e.spec = correction.data.spec;
                             e.description = encodeSpec(e.spec);
                             e.checkpoint = null;
@@ -554,6 +563,7 @@ export class CoordinationSupervisor {
             if (e.work_id && this.store.work(e.work_id) && replacement.workspace?.work_id !== e.work_id)
                 throw new Error("A correction cannot change the registered work_id");
             this.store.deleteMeta(`clarification:${e.id}`);
+            this.store.deleteMeta(`publication-approval:${e.id}`);
             e.spec = replacement;
             e.description = encodeSpec(replacement);
             e.phase = "validate";
@@ -564,6 +574,7 @@ export class CoordinationSupervisor {
         }
         else if (e.source === "discord") {
             // Reconcile superseded requirements and acceptance criteria before validation.
+            this.recordPublicationApproval(e.id, answer);
             this.store.setMeta(`clarification:${e.id}`, answer);
             e.spec = executionSchema.parse({ ...e.spec, requirements: [...(e.spec?.requirements ?? []), `Human clarification: ${answer}`] });
             e.description = encodeSpec(e.spec);
@@ -579,11 +590,16 @@ export class CoordinationSupervisor {
         }
         return true;
     }
+    private recordPublicationApproval(id: string, answer: string): void {
+        this.store.deleteMeta(`publication-approval:${id}`);
+        if (isDraftPrApproval(answer)) this.store.setMeta(`publication-approval:${id}`, answer);
+    }
     public repair(id: string, clarification: string): Entry {
         const e = this.store.get(id);
         if (!e?.spec || !["input_required", "interrupted"].includes(e.phase) || this.activeEntryId === e.id)
             throw new Error("Task is not awaiting recovery");
         e.spec = executionSchema.parse({ ...e.spec, action: "revise", requirements: [...e.spec.requirements, ...(e.reason ? [`Recovery context: ${e.reason.slice(0, 15000)}`] : []), clarification] });
+        this.recordPublicationApproval(e.id, clarification);
         this.store.setMeta(`clarification:${e.id}`, clarification);
         e.description = encodeSpec(e.spec);
         e.checkpoint = null;
