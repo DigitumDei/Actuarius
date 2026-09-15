@@ -40,6 +40,21 @@ describe("Discord coordination intake", () => {
         await bridge.command(command);
         expect(bridge.store.list()).toHaveLength(2);
     });
+    it.each([false, true])("routes a plain follow-up to the waiting owner without creating a task (newer orphan: %s)", async orphan => {
+        const { bridge } = fixture();
+        const spec = executionSchema.parse({version:1,executor:"actuarius",action:"implement",workspace:{work_id:"shared"},requirements:["Replace Gemini CLI"],acceptance_criteria:["Tests pass"],deliverable:"workspace_changes"});
+        bridge.store.add({id:"original",source:"discord",sender:"discord:user",wing:"wing_repo",description:"",work_id:"shared",phase:"input_required",spec});
+        bridge.store.setMeta("workspace-owner:shared","original");
+        if (orphan) bridge.store.add({id:"orphan",source:"discord",sender:"discord:user",wing:"wing_repo",description:"",work_id:"shared",phase:"input_required"});
+        const message = {id:"continue",author:{bot:false,id:"user"},guildId:"guild",channelId:"thread",channel:{isThread:()=>true,parentId:"channel"},content:"Can you at least make this ready for review?",attachments:new Map(),reply:vi.fn().mockResolvedValue({edit:vi.fn()})} as unknown as Message;
+        await bridge.message(message);
+        expect(bridge.store.list()).toHaveLength(orphan ? 2 : 1);
+        expect(bridge.store.get("original")).toMatchObject({phase:"validate",spec:{requirements:expect.arrayContaining(["Replace Gemini CLI",message.content])}});
+        expect(bridge.store.meta("clarification:original")).toBe(message.content);
+        await bridge.message(message);
+        expect(bridge.store.list()).toHaveLength(orphan ? 2 : 1);
+    });
+
     it.each(["review","pr"])("does not enqueue /%s behind interrupted workspace ownership", async (commandName) => {
         const { bridge } = fixture();
         bridge.store.add({id:"original",source:"discord",sender:"discord:user",wing:"wing_repo",description:"",work_id:"shared",phase:"input_required"});

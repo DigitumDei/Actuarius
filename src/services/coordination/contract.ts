@@ -31,6 +31,14 @@ export const executionSchema = z.object({
         ctx.addIssue({ code: "custom", path: ["gates"], message: "Release gates require an explicit release tag in ref" });
 });
 export type ExecutionSpec = z.infer<typeof executionSchema>;
+// Clarification may change intent, but never workspace identity or dependency gates.
+export const clarifiedBriefSchema = z.object({
+    action: z.enum(["ask", "implement", "plan", "plan-oc", "review", "revise", "pr", "report", "workflow"]),
+    requirements: z.array(text).min(1).max(100),
+    acceptance_criteria: z.array(text).min(1).max(100),
+    deliverable: z.enum(["workspace_changes", "report", "draft_pr"])
+}).strict();
+export type ClarifiedBrief = z.infer<typeof clarifiedBriefSchema>;
 export const verdictSchema = z.object({ ready: z.boolean(), questions: z.array(text).max(20) }).strict()
     .refine(v => v.ready ? v.questions.length === 0 : v.questions.length > 0, "Rejected validation needs questions; ready verdict must have none");
 export type Verdict = z.infer<typeof verdictSchema>;

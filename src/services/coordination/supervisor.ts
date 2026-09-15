@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 import { CoordinationClient, CoordinationRevisionConflict } from "./client.js";
 import { CoordinationStore, type Entry, type Work } from "./store.js";
-import { TaskValidationError, correctionSchema, encodeSpec, executionSchema, humanQuestionSchema, parseSpec, type ExecutionSpec, type PalaceTask, type Verdict } from "./contract.js";
+import { TaskValidationError, clarifiedBriefSchema, correctionSchema, encodeSpec, executionSchema, humanQuestionSchema, parseSpec, type ClarifiedBrief, type ExecutionSpec, type PalaceTask, type Verdict } from "./contract.js";
 export interface CoordinationHooks {
     cleanupAttachments?(entryId:string):Promise<void>;
     syncRequests?(): void;
     wings(): string[];
     check(spec: ExecutionSpec): Promise<void>;
     validate(entry: Entry, signal: AbortSignal): Promise<Verdict>;
+    clarify(entry: Entry, answer: string, signal: AbortSignal): Promise<ClarifiedBrief>;
     execute(entry: Entry, work: Work | null, signal: AbortSignal): Promise<{
         result: string;
         next?: string;
@@ -375,6 +376,16 @@ export class CoordinationSupervisor {
                 if (questions.length === 0) {
                     const failureKey=`validator-failures:${e.validation_id}`;
                     try {
+                        const clarification = this.store.meta(`clarification:${e.id}`);
+                        if (clarification) {
+                            const brief = clarifiedBriefSchema.parse(await this.hooks.clarify(e, clarification, abort.signal));
+                            abort.signal.throwIfAborted();
+                            e.spec = executionSchema.parse({ ...e.spec, ...brief });
+                            e.description = encodeSpec(e.spec);
+                            e.action = e.spec.action;
+                            this.store.save(e);
+                            this.store.deleteMeta(`clarification:${e.id}`);
+                        }
                         const verdict = await this.hooks.validate(e, abort.signal);
                         this.store.setMeta(failureKey,"0");
                         if (!verdict.ready) questions = verdict.questions;
@@ -490,6 +501,7 @@ export class CoordinationSupervisor {
                                 await this.api.call("message_acknowledge", { message_id: msg.message_id, actor: this.worker });
                                 continue;
                             }
+                            this.store.deleteMeta(`clarification:${e.id}`);
                             e.spec = correction.data.spec;
                             e.description = encodeSpec(e.spec);
                             e.checkpoint = null;
@@ -541,6 +553,7 @@ export class CoordinationSupervisor {
         if (replacement) {
             if (e.work_id && this.store.work(e.work_id) && replacement.workspace?.work_id !== e.work_id)
                 throw new Error("A correction cannot change the registered work_id");
+            this.store.deleteMeta(`clarification:${e.id}`);
             e.spec = replacement;
             e.description = encodeSpec(replacement);
             e.phase = "validate";
@@ -550,7 +563,8 @@ export class CoordinationSupervisor {
             this.store.save(e);
         }
         else if (e.source === "discord") {
-            // The next validation receives the human clarification as context; structured setup remains fixed.
+            // Reconcile superseded requirements and acceptance criteria before validation.
+            this.store.setMeta(`clarification:${e.id}`, answer);
             e.spec = executionSchema.parse({ ...e.spec, requirements: [...(e.spec?.requirements ?? []), `Human clarification: ${answer}`] });
             e.description = encodeSpec(e.spec);
             e.phase = "validate";
@@ -570,6 +584,7 @@ export class CoordinationSupervisor {
         if (!e?.spec || !["input_required", "interrupted"].includes(e.phase) || this.activeEntryId === e.id)
             throw new Error("Task is not awaiting recovery");
         e.spec = executionSchema.parse({ ...e.spec, action: "revise", requirements: [...e.spec.requirements, ...(e.reason ? [`Recovery context: ${e.reason.slice(0, 15000)}`] : []), clarification] });
+        this.store.setMeta(`clarification:${e.id}`, clarification);
         e.description = encodeSpec(e.spec);
         e.checkpoint = null;
         e.action = "revise";
