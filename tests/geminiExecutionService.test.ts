@@ -10,13 +10,24 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
+// Keep the settings-file fixup off the test runner's real $HOME.
+vi.mock("../src/services/antigravityCli.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/services/antigravityCli.js")>();
+  return {
+    ...actual,
+    ensureAntigravityApiKeyConfig: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
 const logger = pino({ level: "silent" });
 
 const { GeminiExecutionError, runGeminiRequest } = await import("../src/services/geminiExecutionService.js");
+const { ensureAntigravityApiKeyConfig } = await import("../src/services/antigravityCli.js");
 const { spawn } = await import("node:child_process");
 const { DEFAULT_ARGV_TOTAL_LIMIT } = await import("../src/utils/spawnCollect.js");
 
 const mockSpawn = vi.mocked(spawn);
+const mockEnsureApiKeyConfig = vi.mocked(ensureAntigravityApiKeyConfig);
 
 function createMockChild(opts: {
   stdout?: string;
@@ -109,66 +120,124 @@ describe("runGeminiRequest — integration (real transport)", () => {
     vi.stubEnv("GEMINI_API_KEY", "test-key");
   });
 
-  it("fails before spawning when GEMINI_API_KEY is not set", async () => {
+  it("runs agy with signed-in account auth without requiring GEMINI_API_KEY", async () => {
     vi.stubEnv("GEMINI_API_KEY", "");
-    await expect(runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
-      code: "NOT_AUTHENTICATED",
-      name: "GeminiExecutionError",
-      message: "Gemini requires `GEMINI_API_KEY` to be set for API-key-based authentication."
-    });
-    expect(mockSpawn).not.toHaveBeenCalled();
-  });
-
-  it("uses argv transport for a small prompt (prompt stays in args, stdin not written)", async () => {
     mockSpawn.mockImplementation(() =>
-      createMockChild({ stdout: "gemini result", exitCode: 0 }),
+      createMockChild({ stdout: "account auth result", exitCode: 0 }),
     );
 
     const result = await runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
 
-    expect(result.text).toBe("gemini result");
+    expect(result.text).toBe("account auth result");
+    const [file, args] = mockSpawn.mock.calls[0]!;
+    expect(file).toBe("agy");
+    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions"]);
+    expect(mockEnsureApiKeyConfig).toHaveBeenCalledWith(logger, expect.anything(), false);
+  });
+
+  it("merges the API-key settings marker when GEMINI_API_KEY is present", async () => {
+    mockSpawn.mockImplementation(() =>
+      createMockChild({ stdout: "key result", exitCode: 0 }),
+    );
+
+    await runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+
+    expect(mockEnsureApiKeyConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("decides API-key auth from the child environment, not just process.env", async () => {
+    mockSpawn.mockImplementation(() =>
+      createMockChild({ stdout: "scoped result", exitCode: 0 }),
+    );
+
+    await runGeminiRequest(
+      { prompt: "hello", cwd: "/tmp", timeoutMs: 5000, env: { PATH: "/scoped/bin" } },
+      logger
+    );
+
+    // process.env has a key but the scoped child env does not, so the marker
+    // must not be written (agy would otherwise refuse to start).
+    expect(mockEnsureApiKeyConfig).toHaveBeenCalledWith(logger, undefined, false);
+  });
+
+  it("uses argv transport for a small prompt (prompt stays in args, stdin not written)", async () => {
+    mockSpawn.mockImplementation(() =>
+      createMockChild({ stdout: "agy result", exitCode: 0 }),
+    );
+
+    const result = await runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
+
+    expect(result.text).toBe("agy result");
 
     const [file, args] = mockSpawn.mock.calls[0]!;
-    expect(file).toBe("gemini");
-    expect(args).toEqual(["-p", "hello", "--yolo"]);
+    expect(file).toBe("agy");
+    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions"]);
 
     const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
     expect(stdinWrite).not.toHaveBeenCalled();
   });
 
-  it("uses stdin transport for an oversized prompt (-p stays with empty value, prompt written to stdin)", async () => {
+  it("uses stream-json stdin transport for an oversized prompt (prompt sent as a user event)", async () => {
     const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
 
     mockSpawn.mockImplementation(() =>
-      createMockChild({ stdout: "gemini result", exitCode: 0 }),
+      createMockChild({ stdout: [
+        '{"event":"init","conversation_id":"055a398f-db14-4c5f-abbb-1bf03f8120a7","init":{"cwd":"/tmp"}}',
+        '{"event":"result","result":{"conversation_id":"055a398f-db14-4c5f-abbb-1bf03f8120a7","status":"SUCCESS","response":"agy result\\n","num_turns":1}}'
+      ].join("\n"), exitCode: 0 }),
     );
 
     const result = await runGeminiRequest({ prompt: hugePrompt, cwd: "/tmp", timeoutMs: 5000 }, logger);
 
-    expect(result.text).toBe("gemini result");
+    expect(result.text).toBe("agy result");
 
     const [file, args] = mockSpawn.mock.calls[0]!;
-    expect(file).toBe("gemini");
-    expect(args).toEqual(["-p", "", "--yolo"]);
+    expect(file).toBe("agy");
+    expect(args).toEqual([
+      "--input-format", "stream-json", "--output-format", "stream-json",
+      "--dangerously-skip-permissions"
+    ]);
 
     const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
     expect(stdinWrite).toHaveBeenCalled();
-    const writtenText = stdinWrite.mock.calls[0]?.[0];
-    expect(typeof writtenText).toBe("string");
-    expect(writtenText).toBe(hugePrompt);
+    const written = stdinWrite.mock.calls[0]?.[0] as string;
+    expect(typeof written).toBe("string");
+    const message = JSON.parse(written) as { event: string; message: { content: string } };
+    expect(message.event).toBe("user");
+    expect(message.message.content).toBe(hugePrompt);
+  });
+
+  it("throws FAILED when a clean-exit stream reports a non-SUCCESS terminal status", async () => {
+    const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
+
+    mockSpawn.mockImplementation(() =>
+      createMockChild({
+        stdout: '{"event":"result","result":{"conversation_id":"abc","status":"ERROR","response":"","error":"invalid model selection"}}\n',
+        exitCode: 0,
+      }),
+    );
+
+    await expect(runGeminiRequest({ prompt: hugePrompt, cwd: "/tmp", timeoutMs: 5000 }, logger)).rejects.toMatchObject({
+      code: "FAILED",
+      name: "GeminiExecutionError",
+      message: expect.stringContaining("status ERROR"),
+    });
   });
 
   it("preserves --model flag in correct position for oversized prompt with stdin transport", async () => {
     const hugePrompt = "y".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
 
     mockSpawn.mockImplementation(() =>
-      createMockChild({ stdout: "ok", exitCode: 0 }),
+      createMockChild({ stdout: '{"event":"result","result":{"conversation_id":"abc","status":"SUCCESS","response":"ok\\n","num_turns":1}}\n', exitCode: 0 }),
     );
 
     await runGeminiRequest({ prompt: hugePrompt, cwd: "/tmp", timeoutMs: 5000, model: "gemini-2.5-pro" }, logger);
 
     const [, args] = mockSpawn.mock.calls[0]!;
-    expect(args).toEqual(["-p", "", "--yolo", "--model", "gemini-2.5-pro"]);
+    expect(args).toEqual([
+      "--input-format", "stream-json", "--output-format", "stream-json",
+      "--dangerously-skip-permissions", "--model", "gemini-2.5-pro"
+    ]);
 
     const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
     expect(stdinWrite).toHaveBeenCalled();
@@ -182,7 +251,7 @@ describe("runGeminiRequest — integration (real transport)", () => {
     await runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, model: "gemini-2.5-pro" }, logger);
 
     const [, args] = mockSpawn.mock.calls[0]!;
-    expect(args).toEqual(["-p", "hello", "--yolo", "--model", "gemini-2.5-pro"]);
+    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions", "--model", "gemini-2.5-pro"]);
   });
 
   it("passes a scoped environment through to the subprocess", async () => {
@@ -193,7 +262,7 @@ describe("runGeminiRequest — integration (real transport)", () => {
     await runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, env: { PATH: "/scoped/bin" } }, logger);
 
     const [, args, opts] = mockSpawn.mock.calls[0]!;
-    expect(args).toEqual(["-p", "hello", "--yolo"]);
+    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions"]);
     expect(opts).toMatchObject({ env: { PATH: "/scoped/bin" } });
   });
 

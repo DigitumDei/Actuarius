@@ -127,7 +127,9 @@ const PR_TITLE_LIMIT = 120;
 const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
   claude: "Claude",
   codex: "Codex",
-  gemini: "Gemini",
+  // The CLI is Google's Antigravity CLI (`agy`); the provider config value
+  // stays `gemini` for persisted-model compatibility.
+  gemini: "Antigravity",
   opencode: "OpenCode"
 };
 
@@ -137,11 +139,22 @@ interface ResolvedModelRole {
   fallbackReason?: string;
 }
 
-const PROVIDER_NPM_PACKAGES: Record<string, string> = {
-  claude: "@anthropic-ai/claude-code",
-  codex: "@openai/codex",
-  gemini: "@google/gemini-cli",
-  opencode: "opencode-ai"
+interface ProviderCliUpdate {
+  label: string;
+  kind: "npm" | "agy";
+  packages?: string[];
+}
+
+/**
+ * Provider CLI update targets for `/update-clis`. npm-based providers are
+ * upgraded with `npm install -g`; the Antigravity CLI is a native binary
+ * installed through Google's official installer script.
+ */
+const PROVIDER_CLI_UPDATES: Record<string, ProviderCliUpdate> = {
+  claude: { label: "Claude", kind: "npm", packages: ["@anthropic-ai/claude-code"] },
+  codex: { label: "Codex", kind: "npm", packages: ["@openai/codex"] },
+  gemini: { label: "Antigravity", kind: "agy" },
+  opencode: { label: "OpenCode", kind: "npm", packages: ["opencode-ai"] }
 };
 
 const KNOWN_MODELS_BY_PROVIDER: Partial<Record<AiProvider, string[]>> = {
@@ -1983,11 +1996,7 @@ export class ActuariusBot {
     }
 
     if (provider === "gemini" && !this.config.enableGeminiExecution) {
-      return "Gemini execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.";
-    }
-
-    if (provider === "gemini" && !this.config.geminiApiKey?.trim()) {
-      return "Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.";
+      return "Antigravity CLI execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.";
     }
 
     if (provider === "opencode" && !this.config.enableOpencodeExecution) {
@@ -3534,7 +3543,7 @@ export class ActuariusBot {
         if (!this.config.enableGeminiExecution) {
           throw new GeminiExecutionError(
             "GEMINI_DISABLED",
-            "The server's configured AI provider (Gemini) is currently disabled. An admin can switch providers with `/model-select`."
+            "The server's configured AI provider (Antigravity) is currently disabled. An admin can switch providers with `/model-select`."
           );
         }
 
@@ -4143,13 +4152,13 @@ export class ActuariusBot {
     }
 
     const selected = interaction.options.getString("provider") ?? "all";
-    const packages = selected === "all"
-      ? Object.values(PROVIDER_NPM_PACKAGES)
-      : PROVIDER_NPM_PACKAGES[selected]
-        ? [PROVIDER_NPM_PACKAGES[selected]!]
+    const updates = selected === "all"
+      ? Object.values(PROVIDER_CLI_UPDATES)
+      : PROVIDER_CLI_UPDATES[selected]
+        ? [PROVIDER_CLI_UPDATES[selected]!]
         : null;
 
-    if (!packages) {
+    if (!updates) {
       await interaction.reply({
         content: `Unknown provider \`${selected}\`. Use \`claude\`, \`codex\`, \`gemini\`, \`opencode\`, or omit for all.`,
         ephemeral: true
@@ -4159,25 +4168,37 @@ export class ActuariusBot {
 
     await interaction.deferReply({ ephemeral: true });
 
-    const label = selected === "all" ? "All provider CLIs" : AI_PROVIDER_LABELS[selected as AiProvider] ?? selected;
+    const label = selected === "all" ? "All provider CLIs" : PROVIDER_CLI_UPDATES[selected]!.label;
     await interaction.editReply(`Updating ${label} to latest...`);
 
     this.requestQueue.enqueue(interaction.guildId, async () => {
       try {
         const { spawnCollect } = await import("../utils/spawnCollect.js");
+        const details: string[] = [];
 
-        const result = await spawnCollect("npm", ["install", "-g", ...packages], {
-          cwd: process.cwd(),
-          env: { ...process.env },
-          timeoutMs: 120_000,
-          maxBuffer: 1024 * 1024
-        });
+        for (const update of updates) {
+          if (update.kind === "agy") {
+            const { installOrUpdateAgy } = await import("../services/antigravityCli.js");
+            const result = await installOrUpdateAgy({ timeoutMs: 120_000 });
+            const detail = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+            if (detail) details.push(`[${update.label}] ${detail}`);
+            continue;
+          }
 
-        const installedList = packages.join(", ");
-        const stderrTrimmed = result.stderr.trim();
-        const body = [`Updated \`${installedList}\` to latest.`];
-        if (stderrTrimmed) {
-          body.push("", "```", stderrTrimmed.slice(0, 1500), "```");
+          const result = await spawnCollect("npm", ["install", "-g", ...(update.packages ?? [])], {
+            cwd: process.cwd(),
+            env: { ...process.env },
+            timeoutMs: 120_000,
+            maxBuffer: 1024 * 1024
+          });
+          const detail = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+          if (detail) details.push(`[${update.label}] ${detail}`);
+        }
+
+        const body = [`Updated \`${updates.map((update) => update.label).join(", ")}\` to latest.`];
+        const detailsTrimmed = details.join("\n");
+        if (detailsTrimmed) {
+          body.push("", "```", detailsTrimmed.slice(0, 1500), "```");
         }
         await interaction.editReply(body.join("\n"));
       } catch (error) {

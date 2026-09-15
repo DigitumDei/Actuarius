@@ -2196,7 +2196,7 @@ describe("ActuariusBot review command", () => {
     await (bot as any).handleReview(interaction);
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     expect(interaction.editReply).toHaveBeenCalledWith(
-      "**Provider unavailable** — the `analyzer` role override uses `gemini` which is not available. Gemini execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it."
+      "**Provider unavailable** — the `analyzer` role override uses `gemini` which is not available. Antigravity CLI execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it."
     );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
@@ -2300,7 +2300,7 @@ describe("ActuariusBot review command", () => {
         id: 1, owner: "octocat", repo: "hello-world", full_name: "octocat/hello-world", channel_id: "channel-1"
       })
     });
-    (bot as any).config.enableGeminiExecution = true;
+    (bot as any).config.enableGeminiExecution = false;
     (bot as any).config.enableCodexExecution = true;
     (bot as any).config.geminiApiKey = undefined;
     const interaction = createInteraction({
@@ -2309,7 +2309,7 @@ describe("ActuariusBot review command", () => {
     await (bot as any).handleReview(interaction);
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     expect(interaction.editReply).toHaveBeenCalledWith(
-      "**Provider unavailable** — slot 2 uses `gemini` which is not available. Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it."
+      "**Provider unavailable** — slot 2 uses `gemini` which is not available. Antigravity CLI execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it."
     );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
@@ -2353,7 +2353,7 @@ describe("ActuariusBot review command", () => {
       }),
       getGuildModelConfig: vi.fn().mockReturnValue({ provider: "gemini", model: null, updated_at: "2026-03-18T00:00:00Z" })
     });
-    (bot as any).config.enableGeminiExecution = true;
+    (bot as any).config.enableGeminiExecution = false;
     (bot as any).config.geminiApiKey = undefined;
     const interaction = createInteraction({
       memberPermissions: { has: vi.fn().mockReturnValue(true) }
@@ -2361,7 +2361,7 @@ describe("ActuariusBot review command", () => {
     await (bot as any).handleReview(interaction);
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     expect(interaction.editReply).toHaveBeenCalledWith(
-      "**Provider unavailable** — saved default provider `gemini` is not available. Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it."
+      "**Provider unavailable** — saved default provider `gemini` is not available. Antigravity CLI execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it."
     );
     expect(runAdversarialReview).not.toHaveBeenCalled();
   });
@@ -2799,7 +2799,7 @@ describe("ActuariusBot model-select command", () => {
     await (bot as any).handleModelCurrent(interaction);
 
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("Planner role: **Gemini**, model: `none (CLI default)`."),
+      content: expect.stringContaining("Planner role: **Antigravity**, model: `none (CLI default)`."),
       ephemeral: true
     });
   });
@@ -2915,7 +2915,7 @@ describe("ActuariusBot model-select command", () => {
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("Slot **2**: **Gemini**, model: `gemini-2.5-pro`"),
+      content: expect.stringContaining("Slot **2**: **Antigravity**, model: `gemini-2.5-pro`"),
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
@@ -2927,7 +2927,7 @@ describe("ActuariusBot model-select command", () => {
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("**Summarizer**: falls back to **Slot 2** (**Gemini**)"),
+      content: expect.stringContaining("**Summarizer**: falls back to **Slot 2** (**Antigravity**)"),
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
@@ -2970,7 +2970,7 @@ describe("ActuariusBot model-select command", () => {
     await (bot as any).handleModelCurrent(interaction);
 
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("**Analyzer**: **Gemini**, model: CLI default model (set via `/model-select`)"),
+      content: expect.stringContaining("**Analyzer**: **Antigravity**, model: CLI default model (set via `/model-select`)"),
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
@@ -3012,7 +3012,7 @@ describe("ActuariusBot model-select command", () => {
     await (bot as any).handleModelCurrent(interaction);
 
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("**Analyzer**: **Gemini**, model: CLI default model (legacy override)"),
+      content: expect.stringContaining("**Analyzer**: **Antigravity**, model: CLI default model (legacy override)"),
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
@@ -3057,7 +3057,7 @@ describe("ActuariusBot model-select command", () => {
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("**Summarizer**: falls back to **Slot 2** (**Gemini**)"),
+      content: expect.stringContaining("**Summarizer**: falls back to **Slot 2** (**Antigravity**)"),
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
@@ -3131,11 +3131,11 @@ describe("ActuariusBot model-select command", () => {
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("Slot **2**: **Gemini**, model: `gemini-2.5-pro`"),
+      content: expect.stringContaining("Slot **2**: **Antigravity**, model: `gemini-2.5-pro`"),
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("**Analyzer**: **Gemini**, model: CLI default model (set via `/model-select`)"),
+      content: expect.stringContaining("**Analyzer**: **Antigravity**, model: CLI default model (set via `/model-select`)"),
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
@@ -3214,7 +3214,7 @@ describe("ActuariusBot model-select command", () => {
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("**Summarizer**: falls back to **Slot 3** (**Gemini**)"),
+      content: expect.stringContaining("**Summarizer**: falls back to **Slot 3** (**Antigravity**)"),
       ephemeral: true
     });
   });
@@ -3244,14 +3244,14 @@ describe("ActuariusBot model-select command", () => {
 
     (bot as any).config = {
       ...(bot as any).config,
-      enableGeminiExecution: true,
+      enableGeminiExecution: false,
       geminiApiKey: "   "
     };
 
     await (bot as any).handleModelSelect(interaction);
 
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: "Gemini execution requires `GEMINI_API_KEY` on this instance. Choose a different provider or ask the instance administrator to configure it.",
+      content: "Antigravity CLI execution is not enabled on this instance (`ENABLE_GEMINI_EXECUTION` is not set). Choose a different provider or ask the instance administrator to enable it.",
       ephemeral: true
     });
   });
@@ -3358,7 +3358,7 @@ describe("ActuariusBot model-select command", () => {
     });
     (bot as any).config = {
       ...(bot as any).config,
-      enableGeminiExecution: true,
+      enableGeminiExecution: false,
       geminiApiKey: undefined
     };
 
@@ -3366,7 +3366,7 @@ describe("ActuariusBot model-select command", () => {
     await (bot as any).handleModelCurrent(interaction);
 
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("Slot **2**: **Gemini**, model: `gemini-2.5-pro` ⚠️ *unavailable*"),
+      content: expect.stringContaining("Slot **2**: **Antigravity**, model: `gemini-2.5-pro` ⚠️ *unavailable*"),
       ephemeral: true
     });
   });
@@ -3397,7 +3397,7 @@ describe("ActuariusBot model-select command", () => {
     });
     (bot as any).config = {
       ...(bot as any).config,
-      enableGeminiExecution: true,
+      enableGeminiExecution: false,
       geminiApiKey: undefined
     };
 
@@ -3405,7 +3405,7 @@ describe("ActuariusBot model-select command", () => {
     await (bot as any).handleModelCurrent(interaction);
 
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("**Analyzer**: **Gemini**, model: CLI default model (set via `/model-select`) ⚠️ *unavailable*"),
+      content: expect.stringContaining("**Analyzer**: **Antigravity**, model: CLI default model (set via `/model-select`) ⚠️ *unavailable*"),
       ephemeral: true
     });
   });
@@ -3543,7 +3543,7 @@ describe("ActuariusBot model-select command", () => {
     await (bot as any).handleModelCurrent(interaction);
 
     expect(interaction.reply).toHaveBeenCalledWith({
-      content: expect.stringContaining("**Analyzer**: **Gemini**, model: CLI default model (legacy override)"),
+      content: expect.stringContaining("**Analyzer**: **Antigravity**, model: CLI default model (legacy override)"),
       ephemeral: true
     });
     expect(interaction.reply).toHaveBeenCalledWith({

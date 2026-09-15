@@ -1,6 +1,7 @@
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { antigravityMcpConfigPath } from "./antigravityCli.js";
 
 /** Converge persistent harness registrations after the server token is resolved. */
 export async function configureAgentPalaceHttp(home: string, url: string, token: string, xdgConfigHome = join(home, ".config")): Promise<void> {
@@ -18,6 +19,10 @@ async function convergeRegistrations(home: string, endpoint: { url: string; toke
   const registrations = [
     [join(home, ".claude.json"), "mcpServers", { type: "http", url, headers }],
     [join(home, ".gemini", "settings.json"), "mcpServers", { httpUrl: url, headers }],
+    // The Antigravity CLI (agy) keeps MCP servers in a dedicated config file
+    // (`~/.gemini/config/mcp_config.json`) and uses the `serverUrl` key for
+    // remote servers (legacy `url`/`httpUrl` were re-keyed).
+    [antigravityMcpConfigPath(home), "mcpServers", { serverUrl: url, headers }],
     [join(xdgConfigHome, "opencode", "config.json"), "mcp", { type: "remote", url, headers, oauth: false, enabled: true }],
     [join(xdgConfigHome, "opencode", "opencode.json"), "mcp", { type: "remote", url, headers, oauth: false, enabled: true }],
   ] as const;

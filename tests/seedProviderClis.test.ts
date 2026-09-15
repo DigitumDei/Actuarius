@@ -38,11 +38,16 @@ function createExecutable(path: string, contents: string) {
   chmodSync(path, 0o755);
 }
 
-function runSeedProviderClis(existingBinaries: string[], failPackages: string[] = []): SeedResult {
+function runSeedProviderClis(
+  existingBinaries: string[],
+  failPackages: string[] = [],
+  options: { curlFailsFirst?: boolean } = {}
+): SeedResult {
   const tempDir = mkdtempSync(join(tmpdir(), "seed-provider-clis-"));
   tempDirs.push(tempDir);
 
   const npmLogPath = join(tempDir, "npm.log");
+  const curlStatePath = join(tempDir, "curl.state");
   const prefixDir = join(tempDir, "npm-global");
   const prefixBinDir = join(prefixDir, "bin");
 
@@ -74,6 +79,27 @@ esac
 exit 0
 `
   );
+  // The Antigravity CLI (agy) is installed via Google's official installer,
+  // downloaded to a temp file with `curl -o` (not piped, so a failed download
+  // is detectable). Mock curl so tests never hit the network: it writes an
+  // empty installer script, and `bash <empty>` succeeds as a no-op.
+  const curlScript = `#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$out" ] || exit 0
+${options.curlFailsFirst ? `if [ ! -f ${JSON.stringify(toBashPath(curlStatePath))} ]; then
+  : > ${JSON.stringify(toBashPath(curlStatePath))}
+  exit 1
+fi
+` : ""}: > "$out"
+exit 0
+`;
+  createExecutable(join(mockBinDir, "curl"), curlScript);
 
   // Windows spells it "Path"; leaving both casings in the child env makes which
   // one wins undefined, so drop every existing spelling before setting ours.
@@ -224,7 +250,6 @@ function runEntrypointCacheRotation(skipCacheRotation: boolean): { status: numbe
 const EXPECTED_INSTALLS = [
   "install -g @anthropic-ai/claude-code@latest",
   "install -g @openai/codex@latest",
-  "install -g @google/gemini-cli@latest",
   "install -g opencode-ai@latest",
 ].join("\n") + "\n";
 
@@ -238,7 +263,7 @@ describe("seed-provider-clis.sh", () => {
   });
 
   it("re-installs the latest even when the binaries already exist (no stale CLIs)", () => {
-    const result = runSeedProviderClis(["claude", "codex", "gemini", "opencode"]);
+    const result = runSeedProviderClis(["claude", "codex", "agy", "opencode"]);
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
@@ -249,13 +274,12 @@ describe("seed-provider-clis.sh", () => {
     const result = runSeedProviderClis([], ["@openai/codex"]);
 
     // The failing package is attempted twice (clean + reinstall); the others
-    // still install once each, in order.
+    // still install once each, in order, and agy installs via the installer.
     expect(result.npmLog).toBe(
       [
         "install -g @anthropic-ai/claude-code@latest",
         "install -g @openai/codex@latest",
         "install -g @openai/codex@latest",
-        "install -g @google/gemini-cli@latest",
         "install -g opencode-ai@latest",
       ].join("\n") + "\n"
     );
@@ -263,6 +287,14 @@ describe("seed-provider-clis.sh", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("cleaning package dir and retrying");
     expect(result.stderr).toContain("@openai/codex");
+  });
+
+  it("retries the Antigravity installer after a failed download", () => {
+    const result = runSeedProviderClis([], [], { curlFailsFirst: true });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("agy install failed; removing partial install and retrying");
+    expect(result.npmLog).toBe(EXPECTED_INSTALLS);
   });
 
   // Runs the real container entrypoint via `sh`, which invokes Linux-only commands

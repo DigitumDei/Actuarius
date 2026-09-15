@@ -48,10 +48,13 @@ try {
   assert.equal((await stored.json()).content, "Shared violet telescope calibration record.");
   await clients[0].diaryWrite("HTTP diary schema works", "smoke");
   await clients[1].search("violet telescope", { wing: "wing_smoke" });
-  for (const path of [".claude.json", ".gemini/settings.json", ".config/opencode/opencode.json"]) {
+  for (const path of [".claude.json", ".gemini/settings.json", ".gemini/config/mcp_config.json", ".config/opencode/opencode.json"]) {
     const data = JSON.parse(await readFile(join(home, path), "utf8"));
     const entry = (data.mcpServers ?? data.mcp).agentpalace;
-    assert.equal(entry.url ?? entry.httpUrl, service.mcpUrl);
+    // The Antigravity CLI (agy) reads its dedicated mcp_config.json with the
+    // `serverUrl` key; the legacy .gemini/settings.json registration uses
+    // `httpUrl`. Either way the URL must resolve to the shared server.
+    assert.equal(entry.url ?? entry.httpUrl ?? entry.serverUrl, service.mcpUrl);
     assert.equal(entry.command, undefined);
   }
   assert.match(await readFile(join(home, ".codex/config.toml"), "utf8"), /\[mcp_servers.agentpalace\]/);
