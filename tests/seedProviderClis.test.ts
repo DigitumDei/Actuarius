@@ -278,6 +278,13 @@ const EXPECTED_INSTALLS = [
 ].join("\n") + "\n";
 
 describe("seed-provider-clis.sh", () => {
+  it("bounds every Antigravity boot install stage and keeps staged replacement semantics", () => {
+    const script = readFileSync(scriptPath, "utf8");
+    expect(script).toContain('AGY_INSTALL_TIMEOUT_SECONDS="${AGY_INSTALL_TIMEOUT_SECONDS:-120}"');
+    expect(script.match(/timeout --foreground --kill-after=5s/g)).toHaveLength(3);
+    expect(script).toContain("preserving the existing binary");
+  });
+
   it("installs the latest of every provider package on a fresh volume", () => {
     const result = runSeedProviderClis([]);
 

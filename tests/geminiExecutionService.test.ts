@@ -131,7 +131,7 @@ describe("runGeminiRequest — integration (real transport)", () => {
     expect(result.text).toBe("account auth result");
     const [file, args] = mockSpawn.mock.calls[0]!;
     expect(file).toBe("agy");
-    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions"]);
+    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions", "--print-timeout", "5s"]);
     expect(mockEnsureApiKeyConfig).toHaveBeenCalledWith(logger, expect.anything(), false);
   });
 
@@ -171,7 +171,7 @@ describe("runGeminiRequest — integration (real transport)", () => {
 
     const [file, args] = mockSpawn.mock.calls[0]!;
     expect(file).toBe("agy");
-    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions"]);
+    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions", "--print-timeout", "5s"]);
 
     const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
     expect(stdinWrite).not.toHaveBeenCalled();
@@ -203,7 +203,7 @@ describe("runGeminiRequest — integration (real transport)", () => {
     expect(file).toBe("agy");
     expect(args).toEqual([
       "--input-format", "stream-json", "--output-format", "stream-json",
-      "--dangerously-skip-permissions"
+      "--dangerously-skip-permissions", "--print-timeout", "5s"
     ]);
 
     const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
@@ -277,7 +277,7 @@ describe("runGeminiRequest — integration (real transport)", () => {
     const [, args] = mockSpawn.mock.calls[0]!;
     expect(args).toEqual([
       "--input-format", "stream-json", "--output-format", "stream-json",
-      "--dangerously-skip-permissions", "--model", "gemini-2.5-pro"
+      "--dangerously-skip-permissions", "--print-timeout", "5s", "--model", "gemini-2.5-pro"
     ]);
 
     const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
@@ -292,7 +292,7 @@ describe("runGeminiRequest — integration (real transport)", () => {
     await runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, model: "gemini-2.5-pro" }, logger);
 
     const [, args] = mockSpawn.mock.calls[0]!;
-    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions", "--model", "gemini-2.5-pro"]);
+    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions", "--print-timeout", "5s", "--model", "gemini-2.5-pro"]);
   });
 
   it("passes a scoped environment through to the subprocess", async () => {
@@ -303,7 +303,7 @@ describe("runGeminiRequest — integration (real transport)", () => {
     await runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000, env: { PATH: "/scoped/bin" } }, logger);
 
     const [, args, opts] = mockSpawn.mock.calls[0]!;
-    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions"]);
+    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions", "--print-timeout", "5s"]);
     expect(opts).toMatchObject({ env: { PATH: "/scoped/bin" } });
   });
 

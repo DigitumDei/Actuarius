@@ -95,6 +95,15 @@ describe("detectAntigravityResultFailure", () => {
     ].join("\n");
     expect(detectAntigravityResultFailure(stdout)).toEqual({ status: "INTERRUPTED", error: "^C" });
   });
+
+  it("does not reuse an earlier response when the final result is malformed", () => {
+    const stdout = [
+      '{"event":"result","result":{"status":"SUCCESS","response":"stale\\n"}}',
+      '{"event":"result","result":{"status":"SUCCESS"}}'
+    ].join("\n");
+    expect(() => extractAntigravityStreamResponse(stdout, true)).toThrow("terminal result response");
+    expect(detectAntigravityResultFailure(stdout, true)).toBeUndefined();
+  });
 });
 
 describe("buildAntigravityStreamPrompt", () => {

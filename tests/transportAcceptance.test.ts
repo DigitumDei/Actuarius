@@ -145,7 +145,7 @@ describe("Transport behavior acceptance", () => {
 
     const [file, args] = mockSpawn.mock.calls[0]!;
     expect(file).toBe("agy");
-    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions"]);
+    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions", "--print-timeout", "5s"]);
 
     const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
     expect(stdinWrite).not.toHaveBeenCalled();
@@ -175,7 +175,7 @@ describe("Transport behavior acceptance", () => {
     expect(file).toBe("agy");
     expect(args).toEqual([
       "--input-format", "stream-json", "--output-format", "stream-json",
-      "--dangerously-skip-permissions"
+      "--dangerously-skip-permissions", "--print-timeout", "5s"
     ]);
 
     const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
@@ -218,7 +218,7 @@ describe("Transport behavior acceptance", () => {
     const [, args] = mockSpawn.mock.calls[0]!;
     expect(args).toEqual([
       "--input-format", "stream-json", "--output-format", "stream-json",
-      "--dangerously-skip-permissions", "--model", "gemini-2.5-pro"
+      "--dangerously-skip-permissions", "--print-timeout", "5s", "--model", "gemini-2.5-pro"
     ]);
 
     const transportLog = records.find(

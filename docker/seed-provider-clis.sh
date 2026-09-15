@@ -23,6 +23,9 @@ packages="@anthropic-ai/claude-code @openai/codex opencode-ai"
 # The container HOME is on the persisted /data volume, so the binary and its
 # auth state survive container replacement.
 AGY_INSTALL_URL="https://antigravity.google/cli/install.sh"
+# Keep boot bounded. `timeout --foreground` lets the child receive signals,
+# while --kill-after cleans up an installer that ignores SIGTERM.
+AGY_INSTALL_TIMEOUT_SECONDS="${AGY_INSTALL_TIMEOUT_SECONDS:-120}"
 
 modules_dir="$NPM_CONFIG_PREFIX/lib/node_modules"
 
@@ -61,10 +64,13 @@ install_agy() {
   mkdir -p "$target_dir"
   stage_dir="$(mktemp -d "$target_dir/.agy-staging-XXXXXX")"
   installer="${TMPDIR:-/tmp}/actuarius-agy-install-$$.sh"
-  if curl -fsSL "$AGY_INSTALL_URL" -o "$installer" \
-    && bash "$installer" --dir "$stage_dir" \
+  if timeout --foreground --kill-after=5s "${AGY_INSTALL_TIMEOUT_SECONDS}s" \
+      curl -fsSL "$AGY_INSTALL_URL" -o "$installer" \
+    && timeout --foreground --kill-after=5s "${AGY_INSTALL_TIMEOUT_SECONDS}s" \
+      bash "$installer" --dir "$stage_dir" \
     && test -x "$stage_dir/agy" \
-    && "$stage_dir/agy" --version >/dev/null 2>&1 \
+    && timeout --foreground --kill-after=5s "${AGY_INSTALL_TIMEOUT_SECONDS}s" \
+      "$stage_dir/agy" --version >/dev/null 2>&1 \
     && mv -f "$stage_dir/agy" "$target_dir/agy"; then
     rm -f "$installer"
     rmdir "$stage_dir" 2>/dev/null || true

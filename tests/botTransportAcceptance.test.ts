@@ -347,7 +347,7 @@ describe("Bot entrypoint transport acceptance", () => {
     const [, args] = mockSpawn.mock.calls[0]!;
     expect(args).toEqual([
       "--input-format", "stream-json", "--output-format", "stream-json",
-      "--dangerously-skip-permissions"
+      "--dangerously-skip-permissions", "--print-timeout", "5s"
     ]);
     expect(args).not.toContain(hugePrompt);
 
@@ -412,7 +412,7 @@ describe("Bot entrypoint transport acceptance", () => {
     const [, args] = mockSpawn.mock.calls[0]!;
     expect(args).toEqual([
       "--input-format", "stream-json", "--output-format", "stream-json",
-      "--dangerously-skip-permissions", "--model", "gemini-2.5-pro"
+      "--dangerously-skip-permissions", "--print-timeout", "5s", "--model", "gemini-2.5-pro"
     ]);
 
     const transportLog = records.find(
@@ -648,7 +648,7 @@ describe("Bot entrypoint transport acceptance", () => {
     expect(result).toBe("gemini small");
 
     const [, args] = mockSpawn.mock.calls[0]!;
-    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions"]);
+    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions", "--print-timeout", "5s"]);
 
     const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
     expect(stdinWrite).not.toHaveBeenCalled();

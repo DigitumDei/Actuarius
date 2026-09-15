@@ -182,8 +182,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * `text` output format of the small-prompt argv path passes through untouched.
  */
 export function extractAntigravityStreamResponse(stdout: string, requireTerminalResult = false): string {
-  let lastResponse: string | undefined;
-  let sawResult = false;
+  let terminalResult: Record<string, unknown> | undefined;
   for (const line of stdout.split(/\r?\n/u)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -194,15 +193,16 @@ export function extractAntigravityStreamResponse(stdout: string, requireTerminal
       continue;
     }
     if (!isRecord(event) || event.event !== "result") continue;
-    sawResult = true;
-    if (isRecord(event.result) && typeof event.result.response === "string") {
-      lastResponse = event.result.response;
-    }
+    // A stream session may contain one result per turn. The final result is
+    // authoritative; never retain a response from an earlier turn if the
+    // terminal envelope is malformed.
+    terminalResult = isRecord(event.result) ? event.result : undefined;
   }
-  if (requireTerminalResult && (!sawResult || lastResponse === undefined)) {
+  const response = terminalResult?.response;
+  if (requireTerminalResult && (!terminalResult || typeof response !== "string")) {
     throw new Error("Antigravity stream-json output did not contain a terminal result response");
   }
-  return sawResult && lastResponse !== undefined ? lastResponse : stdout;
+  return typeof response === "string" ? response : stdout;
 }
 
 /**
@@ -229,8 +229,7 @@ export function detectAntigravityResultFailure(
   stdout: string,
   requireTerminalResult = false
 ): { status: string; error?: string } | undefined {
-  let lastStatus: string | undefined;
-  let lastError: string | undefined;
+  let terminalResult: Record<string, unknown> | undefined;
   for (const line of stdout.split(/\r?\n/u)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -240,13 +239,15 @@ export function detectAntigravityResultFailure(
     } catch {
       continue;
     }
-    if (!isRecord(event) || event.event !== "result" || !isRecord(event.result)) continue;
-    if (typeof event.result.status === "string") lastStatus = event.result.status;
-    if (typeof event.result.error === "string") lastError = event.result.error;
+    if (!isRecord(event) || event.event !== "result") continue;
+    terminalResult = isRecord(event.result) ? event.result : undefined;
   }
-  if (lastStatus === undefined) {
+  if (!terminalResult || typeof terminalResult.status !== "string") {
     return requireTerminalResult ? { status: "MISSING_RESULT" } : undefined;
   }
+  const lastStatus = terminalResult.status;
   if (lastStatus.toUpperCase() === "SUCCESS") return undefined;
-  return lastError === undefined ? { status: lastStatus } : { status: lastStatus, error: lastError };
+  return typeof terminalResult.error === "string"
+    ? { status: lastStatus, error: terminalResult.error }
+    : { status: lastStatus };
 }

@@ -68,7 +68,13 @@ export async function runGeminiRequest(input: GeminiExecutionInput, logger: Logg
     input,
     {
       binary: AGY_BINARY,
-      extraArgs: ["--dangerously-skip-permissions"],
+      // agy's own response deadline must not exceed Actuarius's total request
+      // deadline. It accepts human-readable durations (for example "15m").
+      extraArgs: [
+        "--dangerously-skip-permissions",
+        "--print-timeout",
+        `${Math.max(1, Math.ceil(input.timeoutMs / 1000))}s`
+      ],
       // Gemini's `-p ""` + raw-stdin fallback does NOT transfer to agy. The
       // documented input contract is a JSON streaming protocol on stdin, so
       // oversized prompts switch to `--input-format stream-json` and write a
@@ -107,7 +113,7 @@ export async function runGeminiRequest(input: GeminiExecutionInput, logger: Logg
       // response to stdout, so only stderr is inspected. Matching stdout would
       // false-positive on arbitrary text the agent prints while working.
       authCheckOnlyStderr: true,
-      authFailurePattern: /set an Auth method|authentication required|not authenticated|Enter the authorization code:|GEMINI_API_KEY is not set|modelProvider/i,
+      authFailurePattern: /authentication required|not authenticated|Enter the authorization code:|GEMINI_API_KEY is not set|set an Auth method/i,
       authHint: "Set `GEMINI_API_KEY` (with `modelProvider` in `~/.gemini/antigravity-cli/settings.json`) or sign in an `agy` account.",
       timeoutCode: "TIMEOUT",
       failedCode: "FAILED",
