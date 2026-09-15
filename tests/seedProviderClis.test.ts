@@ -9,6 +9,7 @@ type SeedResult = {
   stdout: string;
   stderr: string;
   npmLog: string;
+  agyContent: string;
 };
 
 const repoRoot = process.cwd();
@@ -38,18 +39,29 @@ function createExecutable(path: string, contents: string) {
   chmodSync(path, 0o755);
 }
 
-function runSeedProviderClis(existingBinaries: string[], failPackages: string[] = []): SeedResult {
+function runSeedProviderClis(
+  existingBinaries: string[],
+  failPackages: string[] = [],
+  options: { curlFailsFirst?: boolean; installerFails?: boolean } = {}
+): SeedResult {
   const tempDir = mkdtempSync(join(tmpdir(), "seed-provider-clis-"));
   tempDirs.push(tempDir);
 
   const npmLogPath = join(tempDir, "npm.log");
+  const curlStatePath = join(tempDir, "curl.state");
   const prefixDir = join(tempDir, "npm-global");
   const prefixBinDir = join(prefixDir, "bin");
+  const homeDir = join(tempDir, "home");
+  const agyPath = join(homeDir, ".local", "bin", "agy");
 
   mkdirSync(prefixBinDir, { recursive: true });
 
-  for (const binary of existingBinaries) {
+  for (const binary of existingBinaries.filter((name) => name !== "agy")) {
     createExecutable(join(prefixBinDir, binary), "#!/bin/sh\nexit 0\n");
+  }
+  if (existingBinaries.includes("agy")) {
+    mkdirSync(join(homeDir, ".local", "bin"), { recursive: true });
+    createExecutable(agyPath, "#!/bin/sh\necho old\n");
   }
 
   // Mock npm logs each invocation's args. It exits 1 when the args mention any
@@ -74,6 +86,42 @@ esac
 exit 0
 `
   );
+  // The Antigravity CLI (agy) is installed via Google's official installer,
+  // downloaded to a temp file with `curl -o` (not piped, so a failed download
+  // is detectable). Mock curl so tests never hit the network: it writes an
+  // installer script that writes a versioned agy binary into --dir.
+  const curlScript = `#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$out" ] || exit 0
+${options.curlFailsFirst ? `if [ ! -f ${JSON.stringify(toBashPath(curlStatePath))} ]; then
+  : > ${JSON.stringify(toBashPath(curlStatePath))}
+  exit 1
+fi
+` : ""}cat > "$out" <<'INSTALLER'
+#!/bin/sh
+${options.installerFails ? "exit 1\n" : ""}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dir) dir="$2"; shift 2 ;;
+    *) exit 1 ;;
+  esac
+done
+mkdir -p "$dir"
+cat > "$dir/agy" <<'AGY'
+#!/bin/sh
+echo "agy test version"
+AGY
+chmod 755 "$dir/agy"
+INSTALLER
+exit 0
+`;
+  createExecutable(join(mockBinDir, "curl"), curlScript);
 
   // Windows spells it "Path"; leaving both casings in the child env makes which
   // one wins undefined, so drop every existing spelling before setting ours.
@@ -84,6 +132,7 @@ exit 0
   }
   childEnv.PATH = `${mockBinDir}${delimiter}${inheritedPath}`;
   childEnv.NPM_CONFIG_PREFIX = toBashPath(prefixDir);
+  childEnv.HOME = toBashPath(homeDir);
 
   const result = spawnSync(shellExecutable, [toBashPath(scriptPath)], {
     cwd: repoRoot,
@@ -96,6 +145,7 @@ exit 0
     stdout: result.stdout,
     stderr: result.stderr,
     npmLog: readFileSync(npmLogPath, { encoding: "utf8", flag: "a+" }),
+    agyContent: existsSync(agyPath) ? readFileSync(agyPath, "utf8") : "",
   };
 }
 
@@ -224,7 +274,6 @@ function runEntrypointCacheRotation(skipCacheRotation: boolean): { status: numbe
 const EXPECTED_INSTALLS = [
   "install -g @anthropic-ai/claude-code@latest",
   "install -g @openai/codex@latest",
-  "install -g @google/gemini-cli@latest",
   "install -g opencode-ai@latest",
 ].join("\n") + "\n";
 
@@ -238,24 +287,23 @@ describe("seed-provider-clis.sh", () => {
   });
 
   it("re-installs the latest even when the binaries already exist (no stale CLIs)", () => {
-    const result = runSeedProviderClis(["claude", "codex", "gemini", "opencode"]);
+    const result = runSeedProviderClis(["claude", "codex", "agy", "opencode"]);
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.npmLog).toBe(EXPECTED_INSTALLS);
   });
 
-  it("retries a failed install once after cleaning, then keeps going", () => {
+  it("reports a failed package install and keeps going", () => {
     const result = runSeedProviderClis([], ["@openai/codex"]);
 
-    // The failing package is attempted twice (clean + reinstall); the others
-    // still install once each, in order.
+    // A failed npm install is retried after cleanup; the others still install,
+    // and agy installs independently via the official installer.
     expect(result.npmLog).toBe(
       [
         "install -g @anthropic-ai/claude-code@latest",
         "install -g @openai/codex@latest",
         "install -g @openai/codex@latest",
-        "install -g @google/gemini-cli@latest",
         "install -g opencode-ai@latest",
       ].join("\n") + "\n"
     );
@@ -263,6 +311,30 @@ describe("seed-provider-clis.sh", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("cleaning package dir and retrying");
     expect(result.stderr).toContain("@openai/codex");
+  });
+
+  it("reports a failed Antigravity download", () => {
+    const result = runSeedProviderClis([], [], { curlFailsFirst: true });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("agy install/update failed; preserving the existing binary");
+    expect(result.npmLog).toBe(EXPECTED_INSTALLS);
+  });
+
+  it("replaces an existing agy binary only after a successful staged update", () => {
+    const result = runSeedProviderClis(["agy"]);
+
+    expect(result.status).toBe(0);
+    expect(result.agyContent).toContain("agy test version");
+    expect(result.stderr).toBe("");
+  });
+
+  it("preserves an existing agy binary when the staged installer fails", () => {
+    const result = runSeedProviderClis(["agy"], [], { installerFails: true });
+
+    expect(result.status).toBe(1);
+    expect(result.agyContent).toContain("echo old");
+    expect(result.stderr).toContain("preserving the existing binary");
   });
 
   // Runs the real container entrypoint via `sh`, which invokes Linux-only commands

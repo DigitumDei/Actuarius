@@ -18,7 +18,7 @@ export const BOT_MEMORY_WING = "wing_actuarius_agent";
  */
 const IDENTITY_TEMPLATE = `# Identity — Actuarius agents
 
-You are an AI agent (Claude, Codex, Gemini, or OpenCode) executing requests
+You are an AI agent (Claude, Codex, Antigravity/agy, or OpenCode) executing requests
 for the Actuarius Discord bot. Requests arrive from Discord threads and run in
 isolated git worktrees on a branch created for the request.
 

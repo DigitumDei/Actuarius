@@ -4,17 +4,26 @@ set -eu
 # npm needs a writable global prefix; fail loudly if it is missing.
 : "${NPM_CONFIG_PREFIX:?NPM_CONFIG_PREFIX must be set}"
 
-# Provider CLIs install into $NPM_CONFIG_PREFIX, which lives on the persisted
-# /data volume. Installing "only when missing" means a CLI that landed on the
-# volume during an earlier container run is never upgraded — it goes stale even
-# after the image is rebuilt. So we always install the latest of each package
-# on startup; a restart then picks up upstream releases.
+# Provider CLIs install into $NPM_CONFIG_PREFIX (npm) or $HOME/.local/bin
+# (agy, the Antigravity CLI), both of which live on the persisted /data volume.
+# Installing "only when missing" means a CLI that landed on the volume during an
+# earlier container run is never upgraded — it goes stale even after the image
+# is rebuilt. So we always install the latest of each provider on startup; a
+# restart then picks up upstream releases.
 #
-# Each install is best-effort and isolated: if one package fails we keep going
+# Each install is best-effort and isolated: if one provider fails we keep going
 # so the others still update, and we exit non-zero (with a warning) only at the
 # end so the entrypoint logs it but still starts the bot.
 
-packages="@anthropic-ai/claude-code @openai/codex @google/gemini-cli opencode-ai"
+packages="@anthropic-ai/claude-code @openai/codex opencode-ai"
+
+# Antigravity CLI (agy) replaces the discontinued @google/gemini-cli npm
+# package and is distributed as a native binary via Google's official installer
+# (https://antigravity.google/cli/install.sh), which installs to ~/.local/bin.
+# The container HOME is on the persisted /data volume, so the binary and its
+# auth state survive container replacement.
+AGY_INSTALL_URL="https://antigravity.google/cli/install.sh"
+
 modules_dir="$NPM_CONFIG_PREFIX/lib/node_modules"
 
 install_package() {
@@ -40,6 +49,33 @@ install_package() {
   npm install -g "$package@latest"
 }
 
+# Install/update the Antigravity CLI binary. The installer is downloaded to a
+# temp file and executed (never piped) so a failed download is detected rather
+# than masked by the pipe's exit status. The official installer only supports
+# --dir, so install into a fresh staging directory and atomically replace the
+# target after verifying it. This also works around the installer's intentional
+# no-op when its target already exists. A failed update never deletes an
+# existing `agy`: a previously working binary is better than none.
+install_agy() {
+  target_dir="$HOME/.local/bin"
+  mkdir -p "$target_dir"
+  stage_dir="$(mktemp -d "$target_dir/.agy-staging-XXXXXX")"
+  installer="${TMPDIR:-/tmp}/actuarius-agy-install-$$.sh"
+  if curl -fsSL "$AGY_INSTALL_URL" -o "$installer" \
+    && bash "$installer" --dir "$stage_dir" \
+    && test -x "$stage_dir/agy" \
+    && "$stage_dir/agy" --version >/dev/null 2>&1 \
+    && mv -f "$stage_dir/agy" "$target_dir/agy"; then
+    rm -f "$installer"
+    rmdir "$stage_dir" 2>/dev/null || true
+    return 0
+  fi
+  echo "agy install/update failed; preserving the existing binary" >&2
+  rm -f "$installer"
+  rm -rf "$stage_dir"
+  return 1
+}
+
 failed=""
 for package in $packages; do
   if ! install_package "$package"; then
@@ -50,6 +86,14 @@ for package in $packages; do
     fi
   fi
 done
+
+if ! install_agy; then
+  if [ -n "$failed" ]; then
+    failed="$failed agy"
+  else
+    failed="agy"
+  fi
+fi
 
 if [ -n "$failed" ]; then
   echo "WARNING: failed to install/update provider CLIs:$failed" >&2

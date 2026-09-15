@@ -124,6 +124,9 @@ if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ];then echo "FATAL: secret actuarius-claude-o
 if [ -z "$ASK_CONCURRENCY" ];        then echo "FATAL: env-ask-concurrency is not set"     >&2; exit 1; fi
 
 ENABLE_CODEX=$(get_meta "env-enable-codex-execution" || true)
+# Antigravity CLI (agy) runs the Gemini provider; the operator env/secret names
+# (`env-enable-gemini-execution`, `actuarius-gemini-api-key`) are preserved for
+# compatibility with persisted deployments.
 ENABLE_GEMINI=$(get_meta "env-enable-gemini-execution" || true)
 ENABLE_OPENCODE=$(get_meta "env-enable-opencode-execution" || true)
 ENABLE_MEMPALACE=$(get_meta "env-enable-mempalace" || true)

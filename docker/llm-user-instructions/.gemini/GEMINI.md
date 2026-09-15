@@ -1,6 +1,8 @@
 # GEMINI.md
 
-User-level defaults for Gemini on this machine.
+User-level defaults for the Antigravity CLI (`agy`, formerly the Gemini CLI)
+on this machine. Actuarius drives Gemini models through `agy`; this global
+advisory file (`~/.gemini/GEMINI.md`) is still read by agy.
 
 ## Scope
 
@@ -21,11 +23,13 @@ User-level defaults for Gemini on this machine.
 
 ## Memory — AgentPalace
 
-Use the registered `agentpalace` HTTP MCP server. It shares the VM's existing memory server; do not launch a separate stdio MCP or `serve` process.
+Use the registered `agentpalace` HTTP MCP server (declared in
+`~/.gemini/config/mcp_config.json`). It shares the VM's existing memory server;
+do not launch a separate stdio MCP or `serve` process.
 
 AgentPalace is the persistent memory store. Use it to remember and recall anything that matters across sessions.
 
-**On session start:** Call `agentpalace_wake_up(agent_name: "gemini")` to orient yourself — this loads identity, palace status, recent changes, and diary entries in one call.
+**On session start:** Call `agentpalace_wake_up(agent_name: "agy")` to orient yourself — this loads identity, palace status, recent changes, and diary entries in one call.
 
 **During a session:**
 - When working in a worktree, the wing should be for the base repo, and the room for the specific branch of that worktree.
@@ -34,7 +38,7 @@ AgentPalace is the persistent memory store. Use it to remember and recall anythi
 - Record structured facts (relationships, states, timelines) with `agentpalace_kg_add`.
 - When facts change, invalidate the old one with `agentpalace_kg_invalidate` before adding the new one.
 
-**On session end:** Write a diary entry with `agentpalace_diary_write(agent_name: "gemini", ...)` summarising what happened and what matters.
+**On session end:** Write a diary entry with `agentpalace_diary_write(agent_name: "agy", ...)` summarising what happened and what matters.
 
 **ALWAYS use AgentPalace for memory. Do NOT write new memories to the auto-memory system.** The auto-memory files are a read-only legacy fallback — AgentPalace is the only memory store. If in doubt, use AgentPalace.
 

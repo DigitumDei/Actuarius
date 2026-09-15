@@ -166,7 +166,7 @@ export const commandBuilders = [
         .addChoices(
           { name: "Claude", value: "claude" },
           { name: "Codex", value: "codex" },
-          { name: "Gemini", value: "gemini" },
+          { name: "Antigravity (Gemini models)", value: "gemini" },
           { name: "OpenCode (DeepSeek)", value: "opencode" }
         )
     )
@@ -320,7 +320,7 @@ export const commandBuilders = [
     .setDescription("Push the reviewed request branch and open a draft pull request."),
   new SlashCommandBuilder()
     .setName("update-clis")
-    .setDescription("Update provider CLIs (claude, codex, gemini, opencode) to latest. Requires Manage Server permission.")
+    .setDescription("Update provider CLIs (claude, codex, antigravity, opencode) to latest. Manage Server only.")
     .addStringOption((option) =>
       option
         .setName("provider")
@@ -330,7 +330,7 @@ export const commandBuilders = [
           { name: "All", value: "all" },
           { name: "Claude", value: "claude" },
           { name: "Codex", value: "codex" },
-          { name: "Gemini", value: "gemini" },
+          { name: "Antigravity", value: "gemini" },
           { name: "OpenCode", value: "opencode" }
         )
     ),

@@ -13,14 +13,14 @@ describe("shared HTTP MCP registrations", () => {
     const url = "http://127.0.0.1:8765/mcp";
     await configureAgentPalaceHttp(home, url, "first");
     await configureAgentPalaceHttp(home, url, "rotated");
-    const paths = [".claude.json", ".gemini/settings.json", ".config/opencode/config.json", ".config/opencode/opencode.json"];
+    const paths = [".claude.json", ".gemini/settings.json", ".gemini/config/mcp_config.json", ".config/opencode/config.json", ".config/opencode/opencode.json"];
     for (const path of paths) {
       const data = JSON.parse(readFileSync(join(home, path), "utf8"));
       const servers = data.mcpServers ?? data.mcp;
       expect(servers.mempalace).toBeUndefined();
       expect(servers.agentpalace.headers).toEqual({ Authorization: "Bearer rotated" });
       expect(servers.agentpalace.command).toBeUndefined();
-      expect(servers.agentpalace.url ?? servers.agentpalace.httpUrl).toBe(url);
+      expect(servers.agentpalace.url ?? servers.agentpalace.httpUrl ?? servers.agentpalace.serverUrl).toBe(url);
       if (process.platform !== "win32") expect(statSync(join(home, path)).mode & 0o777).toBe(0o600);
     }
     const claude = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
@@ -49,7 +49,7 @@ describe("shared HTTP MCP registrations", () => {
     await clearAgentPalaceHttp(home, xdg);
     expect(existsSync(join(home, ".claude.json"))).toBe(false);
     await configureAgentPalaceHttp(home, "http://localhost/mcp", "secret", xdg);
-    const paths = [join(home, ".claude.json"), join(home, ".gemini/settings.json"), join(xdg, "opencode/config.json"), join(xdg, "opencode/opencode.json")];
+    const paths = [join(home, ".claude.json"), join(home, ".gemini/settings.json"), join(home, ".gemini/config/mcp_config.json"), join(xdg, "opencode/config.json"), join(xdg, "opencode/opencode.json")];
     for (const path of paths) {
       const config = JSON.parse(readFileSync(path, "utf8"));
       const servers = config.mcpServers ?? config.mcp;

@@ -35,7 +35,7 @@ MDS="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
 # the reviewed commit this script ships with. Update both together with any
 # change to those files.
 EXPECTED_STARTUP_SHA256="ec74a0c4c7e01ea94f37dbd73552bab8751018e7d21cae30cfc1109649fe2a80"
-EXPECTED_REDEPLOY_SHA256="90e9508743f2ae619529477078ecaa5030102b89948d9aef72789bae33408fa3"
+EXPECTED_REDEPLOY_SHA256="7b15d99f51016aece8a75aa0d58c935840b8309524cacbb4f8b159d8f3720eaf"
 
 fail() {
   echo "FATAL: $*" >&2
