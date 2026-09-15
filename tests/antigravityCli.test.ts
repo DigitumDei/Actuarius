@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -29,6 +29,11 @@ function makeHome(): string {
   const dir = mkdtempSync(join(tmpdir(), "antigravity-cli-test-"));
   tempDirs.push(dir);
   return dir;
+}
+
+function createExecutable(path: string, contents: string): void {
+  writeFileSync(path, contents);
+  chmodSync(path, 0o755);
 }
 
 describe("extractAntigravityStreamResponse", () => {
@@ -164,11 +169,21 @@ describe("ensureAntigravityApiKeyConfig", () => {
 
 describe("installOrUpdateAgy", () => {
   it("downloads the official installer and runs it with the documented skip flags", async () => {
-    vi.mocked(spawnCollect)
-      .mockResolvedValueOnce({ stdout: "downloaded", stderr: "" })
-      .mockResolvedValueOnce({ stdout: "installed", stderr: "" });
+    const home = makeHome();
+    vi.mocked(spawnCollect).mockImplementation(async (file, args) => {
+      if (file === "bash") {
+        const dir = args[2];
+        expect(args[1]).toBe("--dir");
+        createExecutable(`${dir}/agy`, "#!/bin/sh\necho new\n");
+        return { stdout: "installed", stderr: "" };
+      }
+      if (typeof file === "string" && file.includes(".agy-staging-")) {
+        return { stdout: "agy 1.0.0", stderr: "" };
+      }
+      return { stdout: "downloaded", stderr: "" };
+    });
 
-    const result = await installOrUpdateAgy();
+    const result = await installOrUpdateAgy({ env: { HOME: home }, targetPath: join(home, ".local/bin/agy") });
 
     const [downloadFile, downloadArgs] = vi.mocked(spawnCollect).mock.calls[0]!;
     expect(downloadFile).toBe("curl");
@@ -177,16 +192,22 @@ describe("installOrUpdateAgy", () => {
 
     const [runnerFile, runnerArgs] = vi.mocked(spawnCollect).mock.calls[1]!;
     expect(runnerFile).toBe("bash");
-    expect(runnerArgs).toEqual([expect.stringContaining("install.sh"), "--skip-aliases", "--skip-path"]);
+    expect(runnerArgs).toEqual([expect.stringContaining("install.sh"), "--dir", expect.stringContaining(".agy-staging-")]);
+    expect(vi.mocked(spawnCollect)).toHaveBeenCalledTimes(3);
     expect(result.stdout).toContain("installed");
   });
 
-  it("propagates a non-zero installer exit", async () => {
+  it("preserves an existing binary when the installer fails", async () => {
+    const home = makeHome();
+    const targetPath = join(home, ".local/bin/agy");
+    mkdirSync(dirname(targetPath), { recursive: true });
+    createExecutable(targetPath, "#!/bin/sh\necho old\n");
     vi.mocked(spawnCollect)
       .mockResolvedValueOnce({ stdout: "", stderr: "" })
       .mockRejectedValueOnce(new Error("installer failed"));
 
-    await expect(installOrUpdateAgy()).rejects.toThrow("installer failed");
+    await expect(installOrUpdateAgy({ env: { HOME: home }, targetPath })).rejects.toThrow("installer failed");
+    expect(readFileSync(targetPath, "utf8")).toContain("old");
   });
 });
 

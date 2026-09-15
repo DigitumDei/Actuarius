@@ -1,6 +1,6 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Logger } from "pino";
 import { spawnCollect } from "../utils/spawnCollect.js";
 
@@ -113,18 +113,26 @@ export async function ensureAntigravityApiKeyConfig(
 /**
  * Install or update the Antigravity CLI binary using Google's official
  * installer. The installer is downloaded to a temp file and executed with
- * bash (never piped), with `--skip-aliases --skip-path` so it does not edit
- * the container's shell profiles — the container PATH already includes
- * `~/.local/bin`. Throws on non-zero exit.
+ * bash (never piped), with the supported `--dir` argument pointing at a fresh
+ * staging directory. The validated staged binary is then atomically moved to
+ * `~/.local/bin/agy`, so existing installations are really updated without
+ * risking the known-good binary. Throws on non-zero exit.
  */
 export async function installOrUpdateAgy(options: {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  targetPath?: string;
 } = {}): Promise<{ stdout: string; stderr: string }> {
   const timeoutMs = options.timeoutMs ?? 120_000;
   const tempDir = await mkdtemp(join(tmpdir(), "actuarius-agy-install-"));
   const installerPath = join(tempDir, "install.sh");
+  const targetPath = options.targetPath
+    ?? join(options.env?.HOME ?? homedir(), ".local", "bin", AGY_BINARY);
+  const targetDir = dirname(targetPath);
+  await mkdir(targetDir, { recursive: true });
+  const stagingDir = await mkdtemp(join(targetDir, ".agy-staging-"));
+  const stagedPath = join(stagingDir, AGY_BINARY);
   try {
     const download = await spawnCollect("curl", ["-fsSL", AGY_INSTALL_URL, "-o", installerPath], {
       cwd: options.cwd ?? process.cwd(),
@@ -134,7 +142,7 @@ export async function installOrUpdateAgy(options: {
     });
     const install = await spawnCollect(
       "bash",
-      [installerPath, "--skip-aliases", "--skip-path"],
+      [installerPath, "--dir", stagingDir],
       {
         cwd: options.cwd ?? process.cwd(),
         timeoutMs,
@@ -142,20 +150,24 @@ export async function installOrUpdateAgy(options: {
         ...(options.env ? { env: options.env } : {}),
       }
     );
+    const installed = await stat(stagedPath).catch(() => undefined);
+    if (!installed?.isFile() || (installed.mode & 0o111) === 0) {
+      throw new Error(`agy installer completed without producing an executable at ${stagedPath}`);
+    }
+    const validation = await spawnCollect(stagedPath, ["--version"], {
+      cwd: options.cwd ?? process.cwd(),
+      timeoutMs: Math.min(timeoutMs, 15_000),
+      maxBuffer: 64 * 1024,
+      ...(options.env ? { env: options.env } : {}),
+    });
+    await rename(stagedPath, targetPath);
     return {
-      stdout: [download.stdout, install.stdout].filter(Boolean).join("\n"),
-      stderr: [download.stderr, install.stderr].filter(Boolean).join("\n")
+      stdout: [download.stdout, install.stdout, validation.stdout].filter(Boolean).join("\n"),
+      stderr: [download.stderr, install.stderr, validation.stderr].filter(Boolean).join("\n")
     };
   } finally {
-    try {
-      const systemTmp = await realpath(tmpdir());
-      const realTempDir = await realpath(tempDir);
-      if (realTempDir === join(systemTmp, basename(realTempDir))) {
-        await rm(realTempDir, { recursive: true, force: true });
-      }
-    } catch {
-      // Best-effort cleanup; the temp dir is under the system tmp dir.
-    }
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -169,7 +181,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Falls back to the raw stdout when no `result` event is found, so the plain
  * `text` output format of the small-prompt argv path passes through untouched.
  */
-export function extractAntigravityStreamResponse(stdout: string): string {
+export function extractAntigravityStreamResponse(stdout: string, requireTerminalResult = false): string {
   let lastResponse: string | undefined;
   let sawResult = false;
   for (const line of stdout.split(/\r?\n/u)) {
@@ -186,6 +198,9 @@ export function extractAntigravityStreamResponse(stdout: string): string {
     if (isRecord(event.result) && typeof event.result.response === "string") {
       lastResponse = event.result.response;
     }
+  }
+  if (requireTerminalResult && (!sawResult || lastResponse === undefined)) {
+    throw new Error("Antigravity stream-json output did not contain a terminal result response");
   }
   return sawResult && lastResponse !== undefined ? lastResponse : stdout;
 }
@@ -211,7 +226,8 @@ export function buildAntigravityStreamPrompt(prompt: string): string {
  * argv transport) or when the terminal status is `SUCCESS`.
  */
 export function detectAntigravityResultFailure(
-  stdout: string
+  stdout: string,
+  requireTerminalResult = false
 ): { status: string; error?: string } | undefined {
   let lastStatus: string | undefined;
   let lastError: string | undefined;
@@ -228,6 +244,9 @@ export function detectAntigravityResultFailure(
     if (typeof event.result.status === "string") lastStatus = event.result.status;
     if (typeof event.result.error === "string") lastError = event.result.error;
   }
-  if (lastStatus === undefined || lastStatus.toUpperCase() === "SUCCESS") return undefined;
+  if (lastStatus === undefined) {
+    return requireTerminalResult ? { status: "MISSING_RESULT" } : undefined;
+  }
+  if (lastStatus.toUpperCase() === "SUCCESS") return undefined;
   return lastError === undefined ? { status: lastStatus } : { status: lastStatus, error: lastError };
 }

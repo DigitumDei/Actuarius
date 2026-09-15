@@ -177,6 +177,14 @@ describe("runGeminiRequest — integration (real transport)", () => {
     expect(stdinWrite).not.toHaveBeenCalled();
   });
 
+  it("preserves plain text that happens to contain an NDJSON-shaped result line", async () => {
+    const text = 'Example output:\n{"event":"result","result":{"status":"ERROR","response":"example only"}}\n';
+    mockSpawn.mockImplementation(() => createMockChild({ stdout: text, exitCode: 0 }));
+
+    await expect(runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger))
+      .resolves.toEqual({ text: text.trim() });
+  });
+
   it("uses stream-json stdin transport for an oversized prompt (prompt sent as a user event)", async () => {
     const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
 
@@ -222,6 +230,39 @@ describe("runGeminiRequest — integration (real transport)", () => {
       name: "GeminiExecutionError",
       message: expect.stringContaining("status ERROR"),
     });
+  });
+
+  it.each(["WAITING", "RUNNING"]) ("rejects a %s terminal stream status", async (status) => {
+    const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
+    mockSpawn.mockImplementation(() => createMockChild({
+      stdout: `{"event":"result","result":{"status":"${status}","response":""}}\n`,
+      exitCode: 0,
+    }));
+
+    await expect(runGeminiRequest({ prompt: hugePrompt, cwd: "/tmp", timeoutMs: 5000 }, logger))
+      .rejects.toMatchObject({ code: "FAILED", message: expect.stringContaining(`status ${status}`) });
+  });
+
+  it("rejects a structured stream without a terminal result", async () => {
+    const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
+    mockSpawn.mockImplementation(() => createMockChild({
+      stdout: '{"event":"init","conversation_id":"abc"}\n',
+      exitCode: 0,
+    }));
+
+    await expect(runGeminiRequest({ prompt: hugePrompt, cwd: "/tmp", timeoutMs: 5000 }, logger))
+      .rejects.toMatchObject({ code: "FAILED", message: expect.stringContaining("MISSING_RESULT") });
+  });
+
+  it("treats an empty SUCCESS response as empty output", async () => {
+    const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
+    mockSpawn.mockImplementation(() => createMockChild({
+      stdout: '{"event":"result","result":{"status":"SUCCESS","response":""}}\n',
+      exitCode: 0,
+    }));
+
+    await expect(runGeminiRequest({ prompt: hugePrompt, cwd: "/tmp", timeoutMs: 5000 }, logger))
+      .rejects.toMatchObject({ code: "EMPTY_OUTPUT" });
   });
 
   it("preserves --model flag in correct position for oversized prompt with stdin transport", async () => {
@@ -284,6 +325,19 @@ describe("runGeminiRequest — integration (real transport)", () => {
       code: "TIMEOUT",
       name: "GeminiExecutionError",
     });
+  });
+
+  it("includes the terminal result status in timeout activity", async () => {
+    const err = Object.assign(new Error("timed out"), {
+      code: "ETIMEDOUT", killed: true, signal: "SIGTERM",
+      stdout: '{"event":"result","result":{"status":"WAITING"}}\n',
+      stderr: "",
+      lastOutput: { stream: "stdout" },
+    });
+    mockSpawn.mockImplementation(() => { throw err; });
+
+    await expect(runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger))
+      .rejects.toMatchObject({ code: "TIMEOUT", lastActivity: "result status=WAITING" });
   });
 
   it("throws NOT_AUTHENTICATED when stderr contains auth prompt", async () => {

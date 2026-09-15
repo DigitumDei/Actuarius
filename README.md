@@ -223,7 +223,7 @@ Or without rebuilding (uses cached image):
 docker-compose up
 ```
 
-The first container start after a fresh volume mount is slower than normal because it seeds `claude`, `codex`, `opencode` into `/data/home/appuser/.npm-global` and installs the Antigravity CLI (`agy`) into `/data/home/appuser/.local/bin`. Later restarts skip installs for CLIs that are already present and only repair the specific provider binaries that are missing.
+The first container start after a fresh volume mount is slower than normal because it seeds `claude`, `codex`, `opencode` into `/data/home/appuser/.npm-global` and installs the Antigravity CLI (`agy`) into `/data/home/appuser/.local/bin`. Later restarts reapply the latest provider versions; the Antigravity installer runs against a staging directory and atomically replaces `agy` only after validation.
 
 If the npm registry or the Antigravity installer is unavailable during first boot or a later repair of a missing CLI, the bot still starts and logs a warning instead of crash-looping. Requests that need a missing provider CLI will continue to fail until network access is restored and the container is restarted or the CLI is reinstalled manually.
 
@@ -274,7 +274,7 @@ The npm-based provider CLIs live under `/data/home/appuser/.npm-global`; the Ant
 ```bash
 docker exec -u appuser actuarius npm install -g @anthropic-ai/claude-code@latest
 docker exec -u appuser actuarius npm install -g @openai/codex@latest
-docker exec -u appuser actuarius bash -c "curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --skip-aliases --skip-path"
+docker exec -u appuser actuarius bash -c "staging=\$(mktemp -d ~/.local/bin/.agy-staging-XXXXXX) && curl -fsSL https://antigravity.google/cli/install.sh -o /tmp/agy-install.sh && bash /tmp/agy-install.sh --dir \"\$staging\" && test -x \"\$staging/agy\" && \"\$staging/agy\" --version && mv -f \"\$staging/agy\" ~/.local/bin/agy"
 docker exec -u appuser actuarius npm install -g opencode-ai@latest
 ```
 

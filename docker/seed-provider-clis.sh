@@ -51,25 +51,28 @@ install_package() {
 
 # Install/update the Antigravity CLI binary. The installer is downloaded to a
 # temp file and executed (never piped) so a failed download is detected rather
-# than masked by the pipe's exit status. --skip-aliases --skip-path stop the
-# installer from editing shell profiles — the container PATH is managed by the
-# image and entrypoint, and `~/.local/bin` is already on it. A failed update is
-# retried once but never deletes an existing `agy`: a previously working binary
-# is better than none, and the installer replaces atomically on success.
+# than masked by the pipe's exit status. The official installer only supports
+# --dir, so install into a fresh staging directory and atomically replace the
+# target after verifying it. This also works around the installer's intentional
+# no-op when its target already exists. A failed update never deletes an
+# existing `agy`: a previously working binary is better than none.
 install_agy() {
+  target_dir="$HOME/.local/bin"
+  mkdir -p "$target_dir"
+  stage_dir="$(mktemp -d "$target_dir/.agy-staging-XXXXXX")"
   installer="${TMPDIR:-/tmp}/actuarius-agy-install-$$.sh"
-  if curl -fsSL "$AGY_INSTALL_URL" -o "$installer" && bash "$installer" --skip-aliases --skip-path; then
+  if curl -fsSL "$AGY_INSTALL_URL" -o "$installer" \
+    && bash "$installer" --dir "$stage_dir" \
+    && test -x "$stage_dir/agy" \
+    && "$stage_dir/agy" --version >/dev/null 2>&1 \
+    && mv -f "$stage_dir/agy" "$target_dir/agy"; then
     rm -f "$installer"
+    rmdir "$stage_dir" 2>/dev/null || true
     return 0
   fi
-  echo "agy install failed; removing partial install and retrying" >&2
+  echo "agy install/update failed; preserving the existing binary" >&2
   rm -f "$installer"
-  installer="${TMPDIR:-/tmp}/actuarius-agy-install-$$.sh"
-  if curl -fsSL "$AGY_INSTALL_URL" -o "$installer" && bash "$installer" --skip-aliases --skip-path; then
-    rm -f "$installer"
-    return 0
-  fi
-  rm -f "$installer"
+  rm -rf "$stage_dir"
   return 1
 }
 

@@ -121,6 +121,8 @@ export interface ProviderRunnerConfig {
    * plain text. Applied after auth-pattern checks on the raw output.
    */
   transformOutput?: (stdout: string) => string;
+  /** Restrict output transformation to the documented stream transport. */
+  transformOutputOnlyForStream?: boolean;
   /**
    * Optional structured-output validation applied to raw stdout after a clean
    * exit. Return a failure descriptor to reject a run that the process exited
@@ -128,6 +130,8 @@ export interface ProviderRunnerConfig {
    * CLI's stream-json `result.status`).
    */
   validateOutput?: (stdout: string) => { code: string; message: string } | undefined;
+  /** Restrict structured validation to the documented stream transport. */
+  validateOutputOnlyForStream?: boolean;
 }
 
 /** Returns the last `count` non-empty stderr lines, joined, for use as diagnostic detail. */
@@ -166,6 +170,17 @@ function summarizeJsonActivity(line: string): string | null {
     ].filter((value): value is string => Boolean(value));
     if (pieces.length > 0) return pieces.join(" ");
 
+    // Antigravity CLI result events carry a terminal status that is useful in
+    // timeout/activity diagnostics. Handle them before the generic event name.
+    const result = typeof event.result === "object" && event.result !== null
+      ? event.result as Record<string, unknown>
+      : null;
+    const resultPieces = [
+      typeof event.event === "string" ? event.event : null,
+      typeof result?.status === "string" ? `status=${result.status}` : null
+    ].filter((value): value is string => Boolean(value));
+    if (event.event === "result" && resultPieces.length > 0) return resultPieces.join(" ");
+
     // Antigravity CLI (agy) stream-json events: step_update / result.
     const stepUpdate = typeof event.step_update === "object" && event.step_update !== null
       ? event.step_update as Record<string, unknown>
@@ -178,13 +193,6 @@ function summarizeJsonActivity(line: string): string | null {
     ].filter((value): value is string => Boolean(value));
     if (agyPieces.length > 0) return agyPieces.join(" ");
 
-    const result = typeof event.result === "object" && event.result !== null
-      ? event.result as Record<string, unknown>
-      : null;
-    const resultPieces = [
-      typeof event.event === "string" ? event.event : null,
-      typeof result?.status === "string" ? `status=${result.status}` : null
-    ].filter((value): value is string => Boolean(value));
     if (resultPieces.length > 0) return resultPieces.join(" ");
 
     return null;
@@ -282,10 +290,12 @@ async function runProviderRequestUnlocked(
 
   let stdout: string;
   let stderr: string;
+  let structuredTransport = false;
 
   try {
     if (useFlagPairStdin) {
       const useStreamStdin = config.stdinStreamArgs !== undefined && config.stdinStreamPrompt !== undefined;
+      structuredTransport = useStreamStdin;
       const stdinArgs = useStreamStdin
         ? [
             ...prefix,
@@ -467,7 +477,7 @@ async function runProviderRequestUnlocked(
 
   // Validate structured output before transforming, so the validator can
   // inspect the CLI's raw envelope/NDJSON.
-  if (config.validateOutput) {
+  if (config.validateOutput && (!config.validateOutputOnlyForStream || structuredTransport)) {
     const failure = config.validateOutput(stdout);
     if (failure) {
       logger.warn({ stdout: stdout.slice(0, 1000), stderr }, `${config.logLabel} structured output reported failure`);
@@ -476,7 +486,7 @@ async function runProviderRequestUnlocked(
   }
 
   // Apply optional output transformation (e.g. JSON parsing for Claude)
-  if (config.transformOutput) {
+  if (config.transformOutput && (!config.transformOutputOnlyForStream || structuredTransport)) {
     stdout = config.transformOutput(stdout);
   }
 

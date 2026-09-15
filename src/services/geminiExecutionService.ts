@@ -78,12 +78,13 @@ export async function runGeminiRequest(input: GeminiExecutionInput, logger: Logg
       supportsStdinFallback: true,
       stdinStreamArgs: ["--input-format", "stream-json", "--output-format", "stream-json"],
       stdinStreamPrompt: buildAntigravityStreamPrompt,
-      transformOutput: extractAntigravityStreamResponse,
+      transformOutput: (stdout) => extractAntigravityStreamResponse(stdout, true),
+      transformOutputOnlyForStream: true,
       // agy can exit 0 while its terminal stream-json result reports a non-SUCCESS
       // status (ERROR/CANCELED/INTERRUPTED/INVALID/WAITING/RUNNING); surface
       // those as provider failures rather than returning a partial response.
       validateOutput: (stdout) => {
-        const failure = detectAntigravityResultFailure(stdout);
+        const failure = detectAntigravityResultFailure(stdout, true);
         if (!failure) return undefined;
         const detail = failure.error ? `: ${failure.error}` : "";
         return {
@@ -91,6 +92,7 @@ export async function runGeminiRequest(input: GeminiExecutionInput, logger: Logg
           message: `Antigravity CLI run ended with status ${failure.status}${detail}`
         };
       },
+      validateOutputOnlyForStream: true,
       logLabel: "Antigravity",
       makeError: (code, message, details) => {
         const err = new GeminiExecutionError(code as GeminiExecutionError["code"], message);
