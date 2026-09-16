@@ -35,8 +35,8 @@ const AUTH_SUCCESS_PATTERN =
 
 // agy reaches first-run rendering setup after Google sign-in. It does not
 // print one of the explicit success messages above on this path.
-const AUTH_ONBOARDING_PATTERN =
-  /Welcome to Antigravity CLI![\s\S]*Choose your color scheme:/i;
+const AUTH_ONBOARDING_WELCOME_PATTERN = /Welcome to Antigravity CLI!/i;
+const AUTH_ONBOARDING_PROMPT_PATTERN = /Choose your color scheme:/i;
 const AUTH_CODE_FAILURE_PATTERN =
   /Got an error:\s*token exchange failed:|oauth2:\s*"invalid_grant"/i;
 
@@ -159,6 +159,7 @@ export async function startAntigravityGoogleAuth(
   let codeSubmitted = false;
   let loginMethodSelected = false;
   let authenticated = false;
+  let onboardingWelcomeSeen = false;
   let closed = false;
   let outputTail = "";
   let postCodeOutput = "";
@@ -335,9 +336,10 @@ export async function startAntigravityGoogleAuth(
     const combinedOutput = outputTail + chunk.toString();
     const plainOutput = stripVTControlCharacters(combinedOutput);
     outputTail = combinedOutput.slice(-OUTPUT_TAIL_LIMIT);
-    // Check before trimming: a wide TUI redraw can exceed the retained tail
-    // and put its first-run heading outside the final 64 KiB.
-    if (AUTH_ONBOARDING_PATTERN.test(plainOutput)) {
+    // Retain the recognized heading independently of terminal output: redraw
+    // chunks between it and the prompt can exceed the bounded output tail.
+    onboardingWelcomeSeen ||= AUTH_ONBOARDING_WELCOME_PATTERN.test(plainOutput);
+    if (onboardingWelcomeSeen && AUTH_ONBOARDING_PROMPT_PATTERN.test(plainOutput)) {
       void succeed();
       return;
     }

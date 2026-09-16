@@ -226,15 +226,22 @@ describe("startAntigravityGoogleAuth", () => {
     }
   });
 
-  it("recognizes authenticated first-run setup after code submission in a wide redraw", async () => {
+  it.each(["after", "between"])("recognizes authenticated first-run setup with wide output %s the markers", async (wideOutputPosition) => {
     const child = createMockChild();
     vi.mocked(spawn).mockReturnValue(child as never);
-    const pending = startAntigravityGoogleAuth({ cwd: "/workspace", logger });
+    const pending = startAntigravityGoogleAuth({ cwd: "/workspace", logger, completionTimeoutMs: 1_000 });
     child.stdout.write("https://accounts.google.com/oauth?state=first-run\n");
     const session = await pending;
     const completion = session.complete("4/valid-code");
-    child.stdout.write("\u001b[1;1HWelcome to Antigravity CLI!");
-    child.stdout.write("\u001b[2;1HChoose your color scheme:" + "─".repeat(70_000));
+    child.stdout.write("\u001b[1;1HWelcome to Antigr");
+    child.stdout.write("avity CLI!");
+    if (wideOutputPosition === "between") {
+      for (let index = 0; index < 5; index++) child.stdout.write("─".repeat(16_384));
+    }
+    expect(setAntigravityAccountAuthPreference).not.toHaveBeenCalled();
+    child.stdout.write("\u001b[2;1HChoose your color ");
+    child.stdout.write("scheme:");
+    if (wideOutputPosition === "after") child.stdout.write("─".repeat(70_000));
     await completion;
 
     expect(session.alreadyAuthenticated).toBe(false);
@@ -244,9 +251,12 @@ describe("startAntigravityGoogleAuth", () => {
   it("returns an authenticated account when cached login reaches first-run setup without an OAuth URL", async () => {
     const child = createMockChild();
     vi.mocked(spawn).mockReturnValue(child as never);
-    const pending = startAntigravityGoogleAuth({ cwd: "/workspace", logger });
+    const pending = startAntigravityGoogleAuth({ cwd: "/workspace", logger, urlTimeoutMs: 1_000 });
     child.stdout.write("Welcome to the Antigravity CLI. You are currently not signed in.\nSigning in...\n");
-    child.stdout.write("Welcome to Antigravity CLI!\nChoose your color scheme:\n");
+    child.stdout.write("Welcome to Antigravity CLI!\n");
+    for (let index = 0; index < 5; index++) child.stdout.write("─".repeat(16_384));
+    expect(setAntigravityAccountAuthPreference).not.toHaveBeenCalled();
+    child.stdout.write("Choose your color scheme:\n");
     const session = await pending;
 
     expect(session.alreadyAuthenticated).toBe(true);
