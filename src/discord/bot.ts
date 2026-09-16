@@ -2424,6 +2424,20 @@ export class ActuariusBot {
         await session.cancel();
         return;
       }
+      if (session.alreadyAuthenticated) {
+        this.logger.info({ guildId }, "Google account already connected to Antigravity");
+        try {
+          await interaction.editReply({
+            content: "Google account connected to Antigravity. Account authentication now takes precedence over any configured `GEMINI_API_KEY`."
+          });
+        } catch (replyError) {
+          this.logger.warn(
+            { err: replyError, guildId },
+            "Google account connected, but the Antigravity success reply could not be sent"
+          );
+        }
+        return;
+      }
       this.pendingAntigravityAuth.set(guildId, session);
       await interaction.editReply({
         content: [
