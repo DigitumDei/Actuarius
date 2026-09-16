@@ -19,6 +19,23 @@ export interface CoordinationHooks {
     gate(entry: Entry, dependency: Entry, kind: "merged" | "release" | "stacked"): Promise<boolean>;
 }
 const terminal = new Set(["completed", "cancelled", "failed", "expired"]);
+const actionLabels: Record<string, string> = {
+    revise: "revision planning",
+    implement: "implementation",
+    deliver: "adversarial review and draft PR delivery",
+    "verify-result": "acceptance verification",
+    "plan-implement": "planned task implementation",
+    "plan-verify": "planned task verification",
+    plan: "implementation planning",
+    "plan-oc": "OpenCode implementation planning",
+    review: "adversarial review",
+    pr: "draft PR delivery",
+    ask: "answering the request",
+    report: "report generation"
+};
+function actionLabel(action: string): string {
+    return actionLabels[action] ?? action.replaceAll("-", " ");
+}
 export class CoordinationSupervisor {
     public readonly worker: string;
     private timer: NodeJS.Timeout | null = null;
@@ -435,18 +452,22 @@ export class CoordinationSupervisor {
                 abort.signal.throwIfAborted();
                 if (e.work_id)
                     this.store.setMeta(`workspace-owner:${e.work_id}`, e.id);
+                const currentAction = e.checkpoint ? e.action : e.spec!.action;
+                const currentLabel = actionLabel(currentAction);
                 e.phase = "running";
                 this.store.save(e);
-                this.notice(e, `Task ${e.task!.task_id}: ${e.checkpoint ? "continuing" : e.spec!.action} started.`, `start:${e.step}`);
+                this.notice(e, `Task ${e.task!.task_id} · step ${e.step + 1}: ${currentLabel} started.`, `start:${e.step}`);
                 const output = await this.hooks.execute(e, e.work_id ? this.store.work(e.work_id) : null, abort.signal);
                 abort.signal.throwIfAborted();
                 if (output.next) {
+                    const completedStep = e.step;
                     e.checkpoint = output.checkpoint ?? output.result;
                     e.action = output.next;
                     e.phase = "execute";
                     e.step++;
                     this.store.save(e);
                     this.store.moveToTail(e);
+                    this.notice(e, `Task ${e.task!.task_id} · step ${completedStep + 1}: ${currentLabel} completed.\n${output.result}\nNext: ${actionLabel(output.next)} queued.`, `step-result:${completedStep}`);
                     await transition("pending", { reason: "step complete; continuation queued" });
                     return;
                 }

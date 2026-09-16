@@ -21,6 +21,7 @@ import { getGitHubCommandEnvironment } from "../services/githubAuthService.js";
 import { buildPlanPrompt, buildIterativeTaskImplementationPrompt, buildIterativeTaskVerificationPrompt } from "../services/llmPromptBuilders.js";
 import { buildIssueCreationPrompt, buildIssueSummaryPrompt } from "../services/llmPromptBuilders.js";
 import { listOpenIssues } from "../services/githubService.js";
+import type { ReviewProgressEvent } from "../services/adversarialReviewService.js";
 export interface BridgeRunners {
     parsePlan(text: string): {
         overview: string;
@@ -40,7 +41,7 @@ export interface BridgeRunners {
         threadId?: string;
         opencodePlan?: boolean;
     }): Promise<string>;
-    review(work: Work, repo: RepoRow, signal: AbortSignal, existingOnly?: boolean): Promise<{
+    review(work: Work, repo: RepoRow, signal: AbortSignal, existingOnly?: boolean, onProgress?: (event: ReviewProgressEvent) => Promise<void>): Promise<{
         ready: boolean;
         text: string;
         sha: string;
@@ -370,6 +371,41 @@ export class CoordinationBridge {
         const msg = await target.send({ content: `${body}\n${marker}`.slice(0, 2000), allowedMentions: { parse: [] }, ...(content.length > 1700 ? { files: [{ attachment: Buffer.from(content), name: "task-result.txt" }] } : {}) });
         return msg.id;
     }
+    private queueReviewProgress(e: Entry, event: ReviewProgressEvent): Promise<void> {
+        let detail: string;
+        let eventKey: string;
+        switch (event.type) {
+            case "analyzer-start":
+                detail = "analyzing the change intent";
+                eventKey = event.type;
+                break;
+            case "analyzer-complete":
+                detail = "change analysis complete";
+                eventKey = event.type;
+                break;
+            case "round-start":
+                detail = `review round ${event.round}/${event.maxRounds} started`;
+                eventKey = `${event.type}:${event.round}`;
+                break;
+            case "round-complete":
+                detail = event.consensusReached
+                    ? `review round ${event.round}/${event.maxRounds} completed with consensus`
+                    : `review round ${event.round}/${event.maxRounds} completed without consensus`;
+                eventKey = `${event.type}:${event.round}`;
+                break;
+            case "summarizer-start":
+                detail = "synthesizing the final review verdict";
+                eventKey = event.type;
+                break;
+        }
+        this.store.enqueue({
+            key: `${e.id}:review-progress:${e.step}:${eventKey}`,
+            kind: "notice",
+            entry: e.id,
+            payload: { content: `Task ${e.task!.task_id} · step ${e.step + 1}: ${detail}.` }
+        });
+        return Promise.resolve();
+    }
     private async execute(e: Entry, work: Work | null, signal: AbortSignal): Promise<{
         result: string;
         next?: string;
@@ -441,7 +477,7 @@ export class CoordinationBridge {
         if (action === "review" || action === "pr" || (spec.deliverable === "draft_pr" && e.action === "deliver")) {
             if (action !== "pr")
                 await autoCommitAll(work.path!, "Checkpoint work before review", ["docs/reviews/"]);
-            const review = await this.runners.review(work, repo, signal, action === "pr");
+            const review = await this.runners.review(work, repo, signal, action === "pr", event => this.queueReviewProgress(e, event));
             signal.throwIfAborted();
             if (action === "review" && spec.deliverable !== "draft_pr") {
                 this.store.setMeta(`output-sha:${e.id}`, review.sha);
