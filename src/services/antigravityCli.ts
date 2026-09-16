@@ -18,8 +18,8 @@ import { spawnCollect } from "../utils/spawnCollect.js";
  *   `gemini` but the key is missing. Actuarius therefore writes the settings
  *   marker only when the key is present, preserving unrelated keys.
  * - Without a key, `agy` uses the operator's signed-in account session
- *   (keyring or SSH OAuth). No settings marker is needed for that path, and
- *   Actuarius never demands a key.
+ *   (keyring or SSH OAuth). A successful Discord-assisted login persists an
+ *   Actuarius preference marker so account auth wins over a deployed fallback key.
  */
 
 export const AGY_BINARY = "agy";
@@ -28,6 +28,13 @@ export const AGY_INSTALL_KILL_GRACE_MS = 5_000;
 
 /** Relative home path of agy's dedicated settings file. */
 const AGY_SETTINGS_REL = [".gemini", "antigravity-cli", "settings.json"] as const;
+
+/** Actuarius-owned marker recording that Google account auth should win over an injected API key. */
+const AGY_ACCOUNT_AUTH_PREFERENCE_REL = [
+  ".gemini",
+  "antigravity-cli",
+  ".actuarius-account-auth"
+] as const;
 
 /** Relative home path of agy's dedicated MCP config file (global servers). */
 const AGY_MCP_CONFIG_REL = [".gemini", "config", "mcp_config.json"] as const;
@@ -38,6 +45,34 @@ export function antigravitySettingsPath(home: string): string {
 
 export function antigravityMcpConfigPath(home: string): string {
   return join(home, ...AGY_MCP_CONFIG_REL);
+}
+
+export function antigravityAccountAuthPreferencePath(home: string): string {
+  return join(home, ...AGY_ACCOUNT_AUTH_PREFERENCE_REL);
+}
+
+export async function prefersAntigravityAccountAuth(home: string = homedir()): Promise<boolean> {
+  try {
+    await readFile(antigravityAccountAuthPreferencePath(home), "utf8");
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+export async function setAntigravityAccountAuthPreference(
+  enabled: boolean,
+  home: string = homedir()
+): Promise<void> {
+  const preferencePath = antigravityAccountAuthPreferencePath(home);
+  if (!enabled) {
+    await rm(preferencePath, { force: true });
+    return;
+  }
+  await mkdir(dirname(preferencePath), { recursive: true });
+  await writeFile(preferencePath, "google-account\n", { mode: 0o600 });
+  await chmod(preferencePath, 0o600).catch(() => undefined);
 }
 
 /**
@@ -108,7 +143,7 @@ export async function ensureAntigravityApiKeyConfig(
   } catch {
     // Best effort — the file was just written with 0600.
   }
-  logger.info({ settingsPath }, "Merged modelProvider into existing agy settings");
+  logger.info({ settingsPath }, "Updated agy authentication settings");
 }
 
 /**

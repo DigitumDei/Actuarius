@@ -20,7 +20,11 @@ vi.mock("../src/services/antigravityCli.js", async () => {
   const actual = await vi.importActual<typeof import("../src/services/antigravityCli.js")>(
     "../src/services/antigravityCli.js"
   );
-  return { ...actual, ensureAntigravityApiKeyConfig: vi.fn().mockResolvedValue(undefined) };
+  return {
+    ...actual,
+    ensureAntigravityApiKeyConfig: vi.fn().mockResolvedValue(undefined),
+    prefersAntigravityAccountAuth: vi.fn().mockResolvedValue(false)
+  };
 });
 
 vi.mock("../src/services/gitWorkspaceService.js", async () => {

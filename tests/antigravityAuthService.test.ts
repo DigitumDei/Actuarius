@@ -1,0 +1,262 @@
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import pino from "pino";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: vi.fn() };
+});
+
+vi.mock("../src/services/antigravityCli.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/services/antigravityCli.js")>();
+  return {
+    ...actual,
+    ensureAntigravityApiKeyConfig: vi.fn().mockResolvedValue(undefined),
+    prefersAntigravityAccountAuth: vi.fn().mockResolvedValue(false),
+    setAntigravityAccountAuthPreference: vi.fn().mockResolvedValue(undefined)
+  };
+});
+
+vi.mock("../src/utils/spawnCollect.js", () => ({
+  signalChildTree: vi.fn((child: { killed: boolean }) => {
+    child.killed = true;
+  })
+}));
+
+const { spawn } = await import("node:child_process");
+const {
+  ensureAntigravityApiKeyConfig,
+  prefersAntigravityAccountAuth,
+  setAntigravityAccountAuthPreference
+} = await import("../src/services/antigravityCli.js");
+const { signalChildTree } = await import("../src/utils/spawnCollect.js");
+const {
+  parseAntigravityGoogleAuthUrl,
+  startAntigravityGoogleAuth
+} = await import("../src/services/antigravityAuthService.js");
+
+const logger = pino({ level: "silent" });
+
+function createMockChild() {
+  const child = new EventEmitter() as EventEmitter & {
+    stdin: PassThrough;
+    stdout: PassThrough;
+    stderr: PassThrough;
+    pid: number;
+    killed: boolean;
+    kill: ReturnType<typeof vi.fn>;
+  };
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.pid = 321;
+  child.killed = false;
+  child.kill = vi.fn();
+  return child;
+}
+
+describe("parseAntigravityGoogleAuthUrl", () => {
+  it("extracts an ANSI-decorated Google sign-in URL", () => {
+    const output = "\u001b[36mOpen https://accounts.google.com/o/oauth2/auth?client_id=abc&state=xyz\u001b[0m";
+
+    expect(parseAntigravityGoogleAuthUrl(output)).toBe(
+      "https://accounts.google.com/o/oauth2/auth?client_id=abc&state=xyz"
+    );
+  });
+
+  it("does not accept a lookalike host", () => {
+    expect(
+      parseAntigravityGoogleAuthUrl("https://accounts.google.com.evil.example/oauth")
+    ).toBeUndefined();
+  });
+});
+
+describe("startAntigravityGoogleAuth", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(prefersAntigravityAccountAuth).mockResolvedValue(false);
+    vi.mocked(ensureAntigravityApiKeyConfig).mockResolvedValue(undefined);
+    vi.mocked(setAntigravityAccountAuthPreference).mockResolvedValue(undefined);
+  });
+
+  it("relays the Google code through the same PTY session and persists account preference", async () => {
+    const child = createMockChild();
+    vi.mocked(spawn).mockReturnValue(child as never);
+
+    const pending = startAntigravityGoogleAuth({
+      cwd: "/workspace",
+      logger,
+      env: {
+        HOME: "/data/home/appuser",
+        PATH: "/bin",
+        GEMINI_API_KEY: "fallback-key",
+        DISCORD_TOKEN: "discord-secret",
+        GITHUB_APP_PRIVATE_KEY: "github-secret",
+        OPENAI_API_KEY: "openai-secret",
+        MEMPALACE_REMOTE_TOKEN: "palace-secret",
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/bus",
+        GNOME_KEYRING_CONTROL: "/run/user/keyring",
+        XDG_DATA_HOME: "/data/home/appuser/.local/share",
+        HTTPS_PROXY: "https://proxy.example:443"
+      }
+    });
+    child.stdout.write(
+      "Visit https://accounts.google.com/o/oauth2/auth?client_id=abc&state=xyz\r\n"
+    );
+    const session = await pending;
+
+    const written: string[] = [];
+    child.stdin.on("data", (chunk) => written.push(chunk.toString()));
+    const completion = session.complete("4/authorization-code");
+    await new Promise((resolve) => setImmediate(resolve));
+    child.stdout.write("Authentication successful\r\n");
+    await completion;
+
+    expect(session.url).toContain("https://accounts.google.com/");
+    expect(written.join("")).toBe("4/authorization-code\n");
+    expect(setAntigravityAccountAuthPreference).toHaveBeenCalledWith(
+      true,
+      "/data/home/appuser"
+    );
+    expect(ensureAntigravityApiKeyConfig).toHaveBeenLastCalledWith(
+      logger,
+      "/data/home/appuser",
+      false
+    );
+    expect(signalChildTree).toHaveBeenCalledWith(child, "SIGTERM");
+
+    const [file, args, spawnOptions] = vi.mocked(spawn).mock.calls[0]!;
+    expect(file).toBe("script");
+    expect(args).toEqual([
+      "-qefc",
+      "stty -echo -echonl cols 4096 && exec agy",
+      "/dev/null"
+    ]);
+    expect(spawnOptions?.env?.GEMINI_API_KEY).toBeUndefined();
+    expect(spawnOptions?.env?.SSH_CONNECTION).toBeDefined();
+    expect(spawnOptions?.env?.DBUS_SESSION_BUS_ADDRESS).toBe("unix:path=/run/user/bus");
+    expect(spawnOptions?.env?.GNOME_KEYRING_CONTROL).toBe("/run/user/keyring");
+    expect(spawnOptions?.env?.HTTPS_PROXY).toBe("https://proxy.example:443");
+    for (const key of [
+      "DISCORD_TOKEN", "GITHUB_APP_PRIVATE_KEY", "OPENAI_API_KEY", "MEMPALACE_REMOTE_TOKEN"
+    ]) {
+      expect(spawnOptions?.env).not.toHaveProperty(key);
+    }
+  });
+
+  it.each(["signed in", "\u001b[?1049h", "code\tvalue"])(
+    "rejects input that could impersonate successful output: %j",
+    async (code) => {
+      const child = createMockChild();
+      vi.mocked(spawn).mockReturnValue(child as never);
+      const pending = startAntigravityGoogleAuth({ cwd: "/workspace", logger });
+      child.stdout.write("https://accounts.google.com/oauth?state=invalid-input\n");
+      const session = await pending;
+      const write = vi.spyOn(child.stdin, "write");
+
+      await expect(session.complete(code)).rejects.toThrow("authorization code is invalid");
+
+      expect(write).not.toHaveBeenCalled();
+      expect(setAntigravityAccountAuthPreference).not.toHaveBeenCalled();
+      await session.cancel();
+    }
+  );
+
+  it("terminates and restores a login cancelled before its URL arrives", async () => {
+    const child = createMockChild();
+    vi.mocked(spawn).mockReturnValue(child as never);
+    const controller = new AbortController();
+    const pending = startAntigravityGoogleAuth({
+      cwd: "/workspace",
+      logger,
+      env: { HOME: "/data/home/appuser", GEMINI_API_KEY: "fallback-key" },
+      signal: controller.signal
+    });
+    const failure = expect(pending).rejects.toMatchObject({ code: "SESSION_EXPIRED" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    controller.abort();
+    await failure;
+
+    expect(signalChildTree).toHaveBeenCalledWith(child, "SIGTERM");
+    expect(ensureAntigravityApiKeyConfig).toHaveBeenLastCalledWith(
+      logger, "/data/home/appuser", true
+    );
+    expect(setAntigravityAccountAuthPreference).not.toHaveBeenCalled();
+  });
+
+  it("does not spawn when shutdown has already cancelled the login", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(startAntigravityGoogleAuth({
+      cwd: "/workspace", logger, signal: controller.signal
+    })).rejects.toMatchObject({ code: "SESSION_EXPIRED" });
+
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === "win32")("keeps submitted input out of a real PTY's output", async () => {
+    const { spawn: realSpawn } = await vi.importActual<typeof import("node:child_process")>(
+      "node:child_process"
+    );
+    const child = realSpawn("script", [
+      "-qefc",
+      "stty -echo -echonl cols 4096 && printf 'ready\n' && IFS= read -r code && printf 'validated\n'",
+      "/dev/null"
+    ], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    let output = "";
+    let submitted = false;
+    const result = await new Promise<string>((resolve, reject) => {
+      const deadline = setTimeout(() => {
+        if (child.pid !== undefined) {
+          try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+        }
+        reject(new Error("PTY echo test timed out"));
+      }, 5_000);
+      child.stdout.on("data", (chunk) => {
+        output += chunk.toString();
+        if (!submitted && output.includes("ready")) {
+          submitted = true;
+          child.stdin.write("signed in\n");
+        }
+      });
+      child.stderr.on("data", (chunk) => { output += chunk.toString(); });
+      child.once("error", (error) => { clearTimeout(deadline); reject(error); });
+      child.once("close", (code) => {
+        clearTimeout(deadline);
+        if (code === 0) resolve(output);
+        else reject(new Error("PTY echo test exited with code " + String(code)));
+      });
+    });
+
+    expect(result).toContain("validated");
+    expect(result).not.toContain("signed in");
+  });
+
+  it("restores API-key mode when an unfinished login is cancelled", async () => {
+    const child = createMockChild();
+    vi.mocked(spawn).mockReturnValue(child as never);
+
+    const pending = startAntigravityGoogleAuth({
+      cwd: "/workspace",
+      logger,
+      env: {
+        HOME: "/data/home/appuser",
+        GEMINI_API_KEY: "fallback-key"
+      }
+    });
+    child.stderr.write("https://accounts.google.com/o/oauth2/auth?state=abc\n");
+    const session = await pending;
+
+    await session.cancel();
+
+    expect(ensureAntigravityApiKeyConfig).toHaveBeenLastCalledWith(
+      logger,
+      "/data/home/appuser",
+      true
+    );
+    expect(setAntigravityAccountAuthPreference).not.toHaveBeenCalled();
+  });
+});

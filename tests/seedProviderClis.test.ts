@@ -349,6 +349,14 @@ describe("seed-provider-clis.sh", () => {
   // (returns 127 "command not found" on a Windows shell). Covered by the Linux
   // `test` job in .github/workflows/ci.yml; skipped on win32 so local `npm test`
   // reports it skipped, not failed.
+  it("keeps account auth from being replaced by the API-key boot marker", () => {
+    const entrypoint = readFileSync(entrypointPath, "utf8");
+
+    expect(entrypoint).toContain(
+      '[ ! -f "$HOME/.gemini/antigravity-cli/.actuarius-account-auth" ]'
+    );
+  });
+
   it.skipIf(process.platform === "win32")("continues container startup when provider seeding fails", () => {
     const result = runEntrypointWithFailingSeed();
 

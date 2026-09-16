@@ -508,7 +508,7 @@ export interface SpawnLastOutput {
   text: string;
 }
 
-function signalChildTree(child: ChildProcess, signal: NodeJS.Signals): void {
+export function signalChildTree(child: ChildProcess, signal: NodeJS.Signals): void {
   if (child.pid === undefined) {
     child.kill(signal);
     return;

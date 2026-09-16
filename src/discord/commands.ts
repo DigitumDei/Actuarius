@@ -279,6 +279,18 @@ export const commandBuilders = [
     .setName("auth-openai-opencode")
     .setDescription("Connect a ChatGPT Pro/Plus subscription to OpenCode. Requires Manage Server permission."),
   new SlashCommandBuilder()
+    .setName("auth-antigravity")
+    .setDescription("Connect a Google account to Antigravity. Requires Manage Server permission."),
+  new SlashCommandBuilder()
+    .setName("auth-antigravity-complete")
+    .setDescription("Complete Antigravity Google login with the browser authorization code.")
+    .addStringOption((option) =>
+      option
+        .setName("code")
+        .setDescription("Authorization code shown by Google after sign-in")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
     .setName("opencode-auth-remove")
     .setDescription("Remove a stored OpenCode credential. Requires Manage Server permission.")
     .addStringOption((option) =>
@@ -375,6 +387,8 @@ export type CommandName =
   | "codex-auth"
   | "opencode-auth"
   | "auth-openai-opencode"
+  | "auth-antigravity"
+  | "auth-antigravity-complete"
   | "opencode-auth-remove"
   | "gh-auth-refresh"
   | "delete"

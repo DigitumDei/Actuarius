@@ -14,6 +14,7 @@ vi.mock("../src/services/antigravityCli.js", async (importOriginal) => {
   return {
     ...actual,
     ensureAntigravityApiKeyConfig: vi.fn().mockResolvedValue(undefined),
+    prefersAntigravityAccountAuth: vi.fn().mockResolvedValue(false),
   };
 });
 

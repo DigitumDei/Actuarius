@@ -7,12 +7,15 @@ RUN apt-get update \
     build-essential \
     clang \
     curl \
+    dbus-x11 \
     git \
+    gnome-keyring \
     gh \
     ca-certificates \
     pkg-config \
     python3 \
     sudo \
+    util-linux \
   && rm -rf /var/lib/apt/lists/*
 
 FROM base AS deps
