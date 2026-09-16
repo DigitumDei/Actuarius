@@ -87,6 +87,10 @@ vi.mock("../src/services/opencodeExecutionService.js", async () => {
   };
 });
 
+vi.mock("../src/services/antigravityAuthService.js", () => ({
+  startAntigravityGoogleAuth: vi.fn()
+}));
+
 vi.mock("../src/services/opencodePlanAgentService.js", async () => {
   const actual = await vi.importActual<typeof import("../src/services/opencodePlanAgentService.js")>(
     "../src/services/opencodePlanAgentService.js"
@@ -145,6 +149,7 @@ const {
   OpencodeExecutionError,
   runOpencodeAgentRequest
 } = await import("../src/services/opencodeExecutionService.js");
+const { startAntigravityGoogleAuth } = await import("../src/services/antigravityAuthService.js");
 const {
   createOpencodePlanAgentSnapshot,
   ensureOpencodePlanAgentFiles,
@@ -418,6 +423,117 @@ describe("ActuariusBot auth-openai-opencode command", () => {
     } finally {
       errorLog.mockRestore();
     }
+  });
+});
+
+describe("ActuariusBot Antigravity Google auth commands", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("sends the Google login link privately and relays the browser code", async () => {
+    const session = {
+      url: "https://accounts.google.com/o/oauth2/auth?state=discord-test",
+      isActive: vi.fn().mockReturnValue(true),
+      complete: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn().mockResolvedValue(undefined)
+    };
+    vi.mocked(startAntigravityGoogleAuth).mockResolvedValue(session);
+    const bot = createBot();
+    (bot as any).config.enableGeminiExecution = true;
+
+    const startInteraction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleAuthAntigravity(startInteraction);
+
+    expect(startInteraction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(startInteraction.editReply).toHaveBeenCalledWith({
+      content: expect.stringContaining(session.url)
+    });
+
+    const completeInteraction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: {
+        getString: vi.fn().mockReturnValue("4/google-code")
+      }
+    });
+    await (bot as any).handleAuthAntigravityComplete(completeInteraction);
+
+    expect(session.complete).toHaveBeenCalledWith("4/google-code");
+    expect(completeInteraction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(completeInteraction.editReply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Account authentication now takes precedence")
+    });
+  });
+
+  it("keeps a completed login successful when the Discord success reply fails", async () => {
+    const session = {
+      url: "https://accounts.google.com/o/oauth2/auth?state=reply-failure",
+      isActive: vi.fn().mockReturnValue(true),
+      complete: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn().mockResolvedValue(undefined)
+    };
+    vi.mocked(startAntigravityGoogleAuth).mockResolvedValue(session);
+    const bot = createBot();
+    (bot as any).config.enableGeminiExecution = true;
+    const startInteraction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    await (bot as any).handleAuthAntigravity(startInteraction);
+
+    const completeInteraction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      options: { getString: vi.fn().mockReturnValue("4/google-code") },
+      editReply: vi.fn().mockRejectedValue(new Error("Interaction expired"))
+    });
+
+    await expect(
+      (bot as any).handleAuthAntigravityComplete(completeInteraction)
+    ).resolves.toBeUndefined();
+    expect(session.complete).toHaveBeenCalledOnce();
+    expect(completeInteraction.editReply).toHaveBeenCalledOnce();
+  });
+
+  it("requires Manage Server permission before starting login", async () => {
+    const bot = createBot();
+    (bot as any).config.enableGeminiExecution = true;
+    const interaction = createInteraction();
+
+    await (bot as any).handleAuthAntigravity(interaction);
+
+    expect(startAntigravityGoogleAuth).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Manage Server"),
+      ephemeral: true
+    });
+  });
+
+  it("does not start a second login while one is active", async () => {
+    const session = {
+      url: "https://accounts.google.com/o/oauth2/auth?state=active",
+      isActive: vi.fn().mockReturnValue(true),
+      complete: vi.fn(),
+      cancel: vi.fn().mockResolvedValue(undefined)
+    };
+    vi.mocked(startAntigravityGoogleAuth).mockResolvedValue(session);
+    const bot = createBot();
+    (bot as any).config.enableGeminiExecution = true;
+    const first = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    const second = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+
+    await (bot as any).handleAuthAntigravity(first);
+    await (bot as any).handleAuthAntigravity(second);
+
+    expect(startAntigravityGoogleAuth).toHaveBeenCalledOnce();
+    expect(second.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining("already in progress"),
+      ephemeral: true
+    });
   });
 });
 

@@ -6,13 +6,16 @@ import pino from "pino";
 import {
   AGY_INSTALL_URL,
   AGY_INSTALL_KILL_GRACE_MS,
+  antigravityAccountAuthPreferencePath,
   antigravityMcpConfigPath,
   antigravitySettingsPath,
   buildAntigravityStreamPrompt,
   detectAntigravityResultFailure,
   ensureAntigravityApiKeyConfig,
   extractAntigravityStreamResponse,
-  installOrUpdateAgy
+  installOrUpdateAgy,
+  prefersAntigravityAccountAuth,
+  setAntigravityAccountAuthPreference
 } from "../src/services/antigravityCli.js";
 import { spawnCollect } from "../src/utils/spawnCollect.js";
 
@@ -185,6 +188,20 @@ describe("ensureAntigravityApiKeyConfig", () => {
   });
 });
 
+describe("Antigravity account-auth preference", () => {
+  it("persists and removes the account preference marker", async () => {
+    const home = makeHome();
+
+    expect(await prefersAntigravityAccountAuth(home)).toBe(false);
+    await setAntigravityAccountAuthPreference(true, home);
+    expect(await prefersAntigravityAccountAuth(home)).toBe(true);
+    expect(readFileSync(antigravityAccountAuthPreferencePath(home), "utf8")).toBe("google-account\n");
+
+    await setAntigravityAccountAuthPreference(false, home);
+    expect(await prefersAntigravityAccountAuth(home)).toBe(false);
+  });
+});
+
 describe("installOrUpdateAgy", () => {
   it("downloads the official installer and runs it with the documented skip flags", async () => {
     const home = makeHome();
@@ -236,6 +253,7 @@ describe("path helpers", () => {
   it("points at the dedicated settings and MCP config files", () => {
     const home = "/data/home/appuser";
     expect(antigravitySettingsPath(home)).toBe(join(home, ".gemini", "antigravity-cli", "settings.json"));
+    expect(antigravityAccountAuthPreferencePath(home)).toBe(join(home, ".gemini", "antigravity-cli", ".actuarius-account-auth"));
     expect(antigravityMcpConfigPath(home)).toBe(join(home, ".gemini", "config", "mcp_config.json"));
   });
 });

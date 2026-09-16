@@ -26,6 +26,20 @@ describe("command registration", () => {
     });
   });
 
+  it("registers the two-step Antigravity Google login commands", () => {
+    const start = commandBuilders.find((builder) => builder.name === "auth-antigravity");
+    const complete = commandBuilders.find((builder) => builder.name === "auth-antigravity-complete");
+
+    expect(start?.toJSON()).toMatchObject({
+      name: "auth-antigravity",
+      description: "Connect a Google account to Antigravity. Requires Manage Server permission."
+    });
+    expect(complete?.toJSON()).toMatchObject({
+      name: "auth-antigravity-complete",
+      options: [expect.objectContaining({ name: "code", required: true })]
+    });
+  });
+
   it("registers /model-select with role choices", () => {
     const command = commandBuilders.find((builder) => builder.name === "model-select");
     expect(command).toBeDefined();

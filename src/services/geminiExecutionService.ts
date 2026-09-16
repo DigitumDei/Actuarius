@@ -1,11 +1,13 @@
 import type { Logger } from "pino";
+import { homedir } from "node:os";
 import { runProviderRequest, type ProviderErrorDetails, type ProviderRequestInput, type ProviderTimeoutKind } from "../utils/runProviderRequest.js";
 import {
   AGY_BINARY,
   buildAntigravityStreamPrompt,
   detectAntigravityResultFailure,
   ensureAntigravityApiKeyConfig,
-  extractAntigravityStreamResponse
+  extractAntigravityStreamResponse,
+  prefersAntigravityAccountAuth
 } from "./antigravityCli.js";
 
 export interface GeminiExecutionInput extends ProviderRequestInput {}
@@ -51,21 +53,31 @@ export class GeminiExecutionError extends Error {
  *   the key. Actuarius writes the marker (preserving unrelated keys) only when
  *   the key is present in the child environment.
  * - Without a key, `agy` runs under the operator's signed-in account session
- *   (keyring or SSH OAuth). Actuarius does not require a key.
+ *   (keyring or SSH OAuth). A completed Discord login records account auth as
+ *   preferred, which also suppresses a deployed fallback key for child runs.
  */
 export async function runGeminiRequest(input: GeminiExecutionInput, logger: Logger): Promise<GeminiExecutionResult> {
   // API-key auth needs the settings marker; account auth must NOT have it, or
   // agy refuses to start. Decide from the environment the child actually
   // receives, and merge the marker only when the key is visible to it.
   const effectiveEnv = input.env ?? process.env;
-  await ensureAntigravityApiKeyConfig(
-    logger,
-    effectiveEnv.HOME,
-    !!effectiveEnv.GEMINI_API_KEY?.trim()
-  );
+  const home = effectiveEnv.HOME ?? homedir();
+  const preferAccountAuth = await prefersAntigravityAccountAuth(home);
+  const useApiKey = !preferAccountAuth && !!effectiveEnv.GEMINI_API_KEY?.trim();
+  await ensureAntigravityApiKeyConfig(logger, home, useApiKey);
+
+  // Production may still inject GEMINI_API_KEY after an administrator signs
+  // in with Google. Remove it from agy's child environment while the persisted
+  // account preference is active so the CLI cannot silently switch modes.
+  let executionInput = input;
+  if (preferAccountAuth) {
+    const accountEnv: NodeJS.ProcessEnv = { ...effectiveEnv };
+    delete accountEnv.GEMINI_API_KEY;
+    executionInput = { ...input, env: accountEnv };
+  }
 
   const text = await runProviderRequest(
-    input,
+    executionInput,
     {
       binary: AGY_BINARY,
       // agy's own response deadline must not exceed Actuarius's total request
@@ -114,7 +126,7 @@ export async function runGeminiRequest(input: GeminiExecutionInput, logger: Logg
       // false-positive on arbitrary text the agent prints while working.
       authCheckOnlyStderr: true,
       authFailurePattern: /authentication required|not authenticated|Enter the authorization code:|GEMINI_API_KEY is not set|set an Auth method/i,
-      authHint: "Set `GEMINI_API_KEY` (with `modelProvider` in `~/.gemini/antigravity-cli/settings.json`) or sign in an `agy` account.",
+      authHint: "Run `/auth-antigravity` to connect a Google account, or set `GEMINI_API_KEY` for API-key auth.",
       timeoutCode: "TIMEOUT",
       failedCode: "FAILED",
       emptyOutputCode: "EMPTY_OUTPUT",

@@ -16,18 +16,20 @@ vi.mock("../src/services/antigravityCli.js", async (importOriginal) => {
   return {
     ...actual,
     ensureAntigravityApiKeyConfig: vi.fn().mockResolvedValue(undefined),
+    prefersAntigravityAccountAuth: vi.fn().mockResolvedValue(false),
   };
 });
 
 const logger = pino({ level: "silent" });
 
 const { GeminiExecutionError, runGeminiRequest } = await import("../src/services/geminiExecutionService.js");
-const { ensureAntigravityApiKeyConfig } = await import("../src/services/antigravityCli.js");
+const { ensureAntigravityApiKeyConfig, prefersAntigravityAccountAuth } = await import("../src/services/antigravityCli.js");
 const { spawn } = await import("node:child_process");
 const { DEFAULT_ARGV_TOTAL_LIMIT } = await import("../src/utils/spawnCollect.js");
 
 const mockSpawn = vi.mocked(spawn);
 const mockEnsureApiKeyConfig = vi.mocked(ensureAntigravityApiKeyConfig);
+const mockPrefersAccountAuth = vi.mocked(prefersAntigravityAccountAuth);
 
 function createMockChild(opts: {
   stdout?: string;
@@ -117,6 +119,7 @@ describe("GeminiExecutionError", () => {
 describe("runGeminiRequest — integration (real transport)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPrefersAccountAuth.mockResolvedValue(false);
     vi.stubEnv("GEMINI_API_KEY", "test-key");
   });
 
@@ -145,6 +148,24 @@ describe("runGeminiRequest — integration (real transport)", () => {
     expect(mockEnsureApiKeyConfig).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a completed account login ahead of an injected API key", async () => {
+    mockPrefersAccountAuth.mockResolvedValueOnce(true);
+    mockSpawn.mockImplementation(() =>
+      createMockChild({ stdout: "account result", exitCode: 0 }),
+    );
+
+    await runGeminiRequest({
+      prompt: "hello",
+      cwd: "/tmp",
+      timeoutMs: 5000,
+      env: { HOME: "/data/home/appuser", GEMINI_API_KEY: "deployed-key", PATH: "/bin" }
+    }, logger);
+
+    expect(mockEnsureApiKeyConfig).toHaveBeenCalledWith(logger, "/data/home/appuser", false);
+    const spawnOptions = mockSpawn.mock.calls[0]?.[2];
+    expect(spawnOptions?.env?.GEMINI_API_KEY).toBeUndefined();
+  });
+
   it("decides API-key auth from the child environment, not just process.env", async () => {
     mockSpawn.mockImplementation(() =>
       createMockChild({ stdout: "scoped result", exitCode: 0 }),
@@ -157,7 +178,7 @@ describe("runGeminiRequest — integration (real transport)", () => {
 
     // process.env has a key but the scoped child env does not, so the marker
     // must not be written (agy would otherwise refuse to start).
-    expect(mockEnsureApiKeyConfig).toHaveBeenCalledWith(logger, undefined, false);
+    expect(mockEnsureApiKeyConfig).toHaveBeenCalledWith(logger, expect.any(String), false);
   });
 
   it("uses argv transport for a small prompt (prompt stays in args, stdin not written)", async () => {

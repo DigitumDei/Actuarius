@@ -71,6 +71,10 @@ import { ClaudeExecutionError, runClaudeRequest } from "../services/claudeExecut
 import { CodexExecutionError, runCodexRequest } from "../services/codexExecutionService.js";
 import { GeminiExecutionError, runGeminiRequest } from "../services/geminiExecutionService.js";
 import {
+  startAntigravityGoogleAuth,
+  type AntigravityGoogleAuthSession
+} from "../services/antigravityAuthService.js";
+import {
   authenticateOpenAIOpencode,
   OpencodeExecutionError,
   parseOpencodeJsonEvents,
@@ -637,6 +641,8 @@ export class ActuariusBot {
   private readonly lastActivityWrite = new Map<number, number>();
   private stuckRequestTimer: NodeJS.Timeout | null = null;
   private opencodeOpenAIAuthInProgress = false;
+  private readonly pendingAntigravityAuth = new Map<string, AntigravityGoogleAuthSession>();
+  private readonly startingAntigravityAuth = new Set<string>();
   private coordination: CoordinationBridge | null = null;
 
   public constructor(
@@ -726,6 +732,11 @@ export class ActuariusBot {
 
   public async stop(): Promise<void> {
     await this.coordination?.stop();
+    await Promise.allSettled(
+      [...this.pendingAntigravityAuth.values()].map((session) => session.cancel())
+    );
+    this.pendingAntigravityAuth.clear();
+    this.startingAntigravityAuth.clear();
     if (this.stuckRequestTimer) {
       clearInterval(this.stuckRequestTimer);
       this.stuckRequestTimer = null;
@@ -1157,6 +1168,12 @@ export class ActuariusBot {
         return;
       case "auth-openai-opencode":
         await this.handleAuthOpenAIOpenCode(interaction);
+        return;
+      case "auth-antigravity":
+        await this.handleAuthAntigravity(interaction);
+        return;
+      case "auth-antigravity-complete":
+        await this.handleAuthAntigravityComplete(interaction);
         return;
       case "opencode-auth-remove":
         await this.handleOpencodeAuthRemove(interaction);
@@ -2344,6 +2361,153 @@ export class ActuariusBot {
       }
     } finally {
       this.opencodeOpenAIAuthInProgress = false;
+    }
+  }
+
+  private async handleAuthAntigravity(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to connect a Google account to Antigravity.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (!this.config.enableGeminiExecution) {
+      await interaction.reply({
+        content: "Antigravity execution is not enabled on this instance. Set `ENABLE_GEMINI_EXECUTION=true` to enable it.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const existing = this.pendingAntigravityAuth.get(interaction.guildId);
+    if (this.startingAntigravityAuth.has(interaction.guildId) || existing?.isActive()) {
+      await interaction.reply({
+        content: "An Antigravity Google login is already in progress. Complete it with `/auth-antigravity-complete`, or wait five minutes for it to expire.",
+        ephemeral: true
+      });
+      return;
+    }
+    if (existing) this.pendingAntigravityAuth.delete(interaction.guildId);
+
+    const guildId = interaction.guildId;
+    this.startingAntigravityAuth.add(guildId);
+    let session: AntigravityGoogleAuthSession | undefined;
+    try {
+      await interaction.deferReply({ ephemeral: true });
+      session = await startAntigravityGoogleAuth({
+        cwd: process.cwd(),
+        logger: this.logger
+      });
+      this.pendingAntigravityAuth.set(guildId, session);
+      await interaction.editReply({
+        content: [
+          "Antigravity is waiting for Google account authorization.",
+          "",
+          `Google sign-in link: <${session.url}>`,
+          "",
+          "After Google shows the authorization code, run `/auth-antigravity-complete code:<paste code here>`.",
+          "This private login session expires after five minutes."
+        ].join("\n")
+      });
+    } catch (error) {
+      if (session) await session.cancel().catch(() => undefined);
+      this.pendingAntigravityAuth.delete(guildId);
+      const authError = error as Error & { code?: string };
+      this.logger.error(
+        {
+          guildId,
+          errorName: authError.name,
+          ...(authError.code ? { errorCode: authError.code } : {})
+        },
+        "Antigravity Google authentication failed to start"
+      );
+      const message = authError.message || "Unknown error";
+      try {
+        await interaction.editReply({
+          content: `Failed to start Antigravity Google login: ${message}`
+        });
+      } catch (replyError) {
+        this.logger.warn({ err: replyError, guildId }, "Failed to send Antigravity auth failure reply");
+      }
+    } finally {
+      this.startingAntigravityAuth.delete(guildId);
+    }
+  }
+
+  private async handleAuthAntigravityComplete(
+    interaction: ChatInputCommandInteraction
+  ): Promise<void> {
+    if (!interaction.guild || !interaction.guildId) {
+      await interaction.reply({ content: "This command can only run in a Discord server.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "You need the `Manage Server` permission to connect a Google account to Antigravity.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const session = this.pendingAntigravityAuth.get(interaction.guildId);
+    if (!session?.isActive()) {
+      if (session) this.pendingAntigravityAuth.delete(interaction.guildId);
+      await interaction.reply({
+        content: "No active Antigravity login session. Run `/auth-antigravity` first.",
+        ephemeral: true
+      });
+      return;
+    }
+
+    const code = interaction.options.getString("code", true);
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      await session.complete(code);
+    } catch (error) {
+      const authError = error as Error & { code?: string };
+      if (!session.isActive()) {
+        this.pendingAntigravityAuth.delete(interaction.guildId);
+      }
+      this.logger.error(
+        {
+          guildId: interaction.guildId,
+          errorName: authError.name,
+          ...(authError.code ? { errorCode: authError.code } : {})
+        },
+        "Antigravity Google authentication did not complete"
+      );
+      try {
+        await interaction.editReply({
+          content: `Antigravity Google login failed: ${authError.message || "Unknown error"}`
+        });
+      } catch (replyError) {
+        this.logger.warn(
+          { err: replyError, guildId: interaction.guildId },
+          "Failed to send Antigravity auth completion reply"
+        );
+      }
+      return;
+    }
+
+    this.pendingAntigravityAuth.delete(interaction.guildId);
+    this.logger.info({ guildId: interaction.guildId }, "Google account connected to Antigravity");
+    try {
+      await interaction.editReply({
+        content: "Google account connected to Antigravity. Account authentication now takes precedence over any configured `GEMINI_API_KEY`."
+      });
+    } catch (replyError) {
+      this.logger.warn(
+        { err: replyError, guildId: interaction.guildId },
+        "Google account connected, but the Antigravity success reply could not be sent"
+      );
     }
   }
 

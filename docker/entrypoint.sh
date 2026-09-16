@@ -8,6 +8,25 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STA
 mkdir -p "$NPM_CONFIG_PREFIX"
 mkdir -p "${MEMPALACE_PALACE_PATH:-/data/mempalace/palace}"
 
+# Antigravity stores Google account credentials through Linux Secret Service.
+# The production container has no desktop session, so provide a private D-Bus
+# session and an unlocked persistent keyring before either Discord auth or a
+# headless agy request starts.
+if command -v dbus-launch >/dev/null 2>&1 && command -v gnome-keyring-daemon >/dev/null 2>&1; then
+  DBUS_ENV="$(timeout 10s dbus-launch --sh-syntax 2>/dev/null || true)"
+  if [ -n "$DBUS_ENV" ]; then
+    eval "$DBUS_ENV"
+    KEYRING_ENV="$(printf '\n' | timeout 10s gnome-keyring-daemon --unlock --components=secrets 2>/dev/null || true)"
+    if [ -n "$KEYRING_ENV" ]; then
+      eval "$KEYRING_ENV"
+    else
+      echo "WARNING: gnome-keyring did not return session environment; Antigravity account auth may not persist" >&2
+    fi
+  else
+    echo "WARNING: failed to start a D-Bus session; Antigravity account auth may not persist" >&2
+  fi
+fi
+
 /app/install-llm-user-instructions.sh
 if ! /app/seed-provider-clis.sh; then
   echo "WARNING: provider CLI seeding failed; continuing startup with currently installed CLIs" >&2
@@ -23,7 +42,7 @@ mkdir -p "$HOME/.gemini/antigravity-cli" "$HOME/.gemini/config"
 # non-interactively only when the key is present, and only when the file does
 # not already exist so operator settings are preserved. The runtime
 # (runGeminiRequest) merges the marker idempotently for either case.
-if [ -n "${GEMINI_API_KEY:-}" ] && [ ! -f "$HOME/.gemini/antigravity-cli/settings.json" ]; then
+if [ -n "${GEMINI_API_KEY:-}" ] && [ ! -f "$HOME/.gemini/antigravity-cli/.actuarius-account-auth" ] && [ ! -f "$HOME/.gemini/antigravity-cli/settings.json" ]; then
   echo '{ "modelProvider": "gemini" }' > "$HOME/.gemini/antigravity-cli/settings.json"
   chmod 600 "$HOME/.gemini/antigravity-cli/settings.json"
 fi

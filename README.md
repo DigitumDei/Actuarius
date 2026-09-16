@@ -19,6 +19,7 @@ Discord bot container that links GitHub repos to Discord channels and creates re
 - Queues `/ask` jobs with bounded per-guild concurrency and support for `/review` (adversarial code review across multiple provider CLIs).
 - Stores guild/repo/request mappings in SQLite.
 - Supports `/auth-openai-opencode` for ChatGPT Pro/Plus subscription login and `/opencode-auth` for per-provider API key management when using OpenCode as the provider.
+- Supports Discord-assisted Google account login for Antigravity through `/auth-antigravity` and `/auth-antigravity-complete`.
 
 ## What v1 does not do
 
@@ -56,7 +57,7 @@ Copy `.env.example` to `.env` and set:
 - `ENABLE_CODEX_EXECUTION` (default `false`, enables Codex/OpenAI provider)
 - `ENABLE_GEMINI_EXECUTION` (default `false`, enables the Antigravity CLI `agy` provider for Gemini models)
 - `ENABLE_OPENCODE_EXECUTION` (default `false`, enables OpenCode/DeepSeek provider)
-- `GEMINI_API_KEY` (optional; API-key auth for the Antigravity CLI `agy`. Alternatively sign in an `agy` account. For API-key auth Actuarius sets `modelProvider: gemini` in `~/.gemini/antigravity-cli/settings.json` automatically — the key alone has no effect, and setting the marker without the key prevents `agy` from starting)
+- `GEMINI_API_KEY` (optional fallback API-key auth for the Antigravity CLI `agy`. Use `/auth-antigravity` to connect a Google account instead. A completed account login takes precedence over this environment variable. For API-key auth Actuarius sets `modelProvider: gemini` in `~/.gemini/antigravity-cli/settings.json` automatically.)
 - `DEEPSEEK_API_KEY` (required for OpenCode execution when not using stored OpenCode credentials)
 - `CLAUDE_CODE_OAUTH_TOKEN` (optional for local/manual runs, required by the production redeploy helper for non-interactive Claude auth)
 - `MEMPALACE_ENABLED` (default `false`, enables the bot memory client over shared HTTP MCP)
@@ -86,7 +87,7 @@ All timeout defaults live together in [`TIMEOUT_DEFAULTS_MS`](src/config.ts) and
 - `INSTALL_STEP_TIMEOUT_MS` — tool-install step cap (default `3600000`)
 - `MEMPALACE_REMOTE_TIMEOUT_MS` and `MEMPALACE_REMOTE_MINE_TIMEOUT_MS` — remote request and mine-operation caps (defaults `5000` and `2700000`)
 
-Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global` (npm packages) with the Antigravity CLI (`agy`) installed natively under `/data/home/appuser/.local/bin` — `docker/entrypoint.sh` seeds all of them on first boot. That keeps provider authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. For OpenCode, use `/auth-openai-opencode` to connect a ChatGPT Pro/Plus subscription with OpenAI's device flow, `/opencode-auth` to store per-provider API keys in `auth.json`, or set provider API keys such as `DEEPSEEK_API_KEY` in the environment. `/opencode-auth` supports DeepSeek, OpenAI, Anthropic, Google, xAI, Groq, OpenRouter, and Together.
+Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global` (npm packages) with the Antigravity CLI (`agy`) installed natively under `/data/home/appuser/.local/bin` — `docker/entrypoint.sh` seeds all of them on first boot. That keeps provider authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. For Antigravity, run `/auth-antigravity`, open the private Google link, then submit Google's browser code with `/auth-antigravity-complete`. Actuarius persists that account preference and starts a headless Secret Service keyring for `agy`. For OpenCode, use `/auth-openai-opencode` to connect a ChatGPT Pro/Plus subscription with OpenAI's device flow, `/opencode-auth` to store per-provider API keys in `auth.json`, or set provider API keys such as `DEEPSEEK_API_KEY` in the environment. `/opencode-auth` supports DeepSeek, OpenAI, Anthropic, Google, xAI, Groq, OpenRouter, and Together.
 
 ### Experimental OpenCode-native planning
 
@@ -265,7 +266,7 @@ docker run --rm \
   actuarius:latest
 ```
 
-If you authenticate Claude interactively once inside a container with the `/data` volume mounted, that persisted state is also reused on later starts. Codex CLI auth is stored under the same persisted home tree. The Antigravity CLI (`agy`) authenticates either with a signed-in `agy` account (keyring/SSH OAuth) or with `GEMINI_API_KEY` plus `modelProvider: gemini` in its settings file (which Actuarius sets automatically only when the key is present).
+If you authenticate Claude interactively once inside a container with the `/data` volume mounted, that persisted state is also reused on later starts. Codex CLI auth is stored under the same persisted home tree. The Antigravity CLI (`agy`) authenticates either with a Google account or with `GEMINI_API_KEY` plus `modelProvider: gemini` in its settings file. Run `/auth-antigravity`, open the Google link from the private Discord response, and submit the returned code with `/auth-antigravity-complete`. The account credentials live in the persisted headless keyring, and Actuarius records account auth as preferred so a deployed `GEMINI_API_KEY` does not override it.
 
 ### Updating provider CLIs without rebuilding
 

@@ -25,6 +25,8 @@ export function buildHelpText(): string {
     "- `/codex-auth credentials:<file>` Upload Codex credentials file from `~/.codex/auth.json` (admin only).",
     "- `/opencode-auth provider:<name> key:<your-key>` Configure an API key for OpenCode to use with a specific AI provider (admin only).",
     "- `/auth-openai-opencode` Connect a ChatGPT Pro/Plus subscription to OpenCode (admin only).",
+    "- `/auth-antigravity` Start Google account login for Antigravity (admin only).",
+    "- `/auth-antigravity-complete code:<code>` Finish the Antigravity login with Google's browser code (admin only).",
     "- `/opencode-auth-remove provider:<name>` Remove a stored API key for OpenCode (admin only).",
     "",
     "v1 notes:",
@@ -32,7 +34,7 @@ export function buildHelpText(): string {
     "- Private repos work when the configured GitHub identity can access them.",
     "- `/ask` uses queued AI execution with per-guild concurrency limits.",
     "- Codex and Antigravity (Gemini models via the `agy` CLI) require `ENABLE_CODEX_EXECUTION` / `ENABLE_GEMINI_EXECUTION` to be enabled.",
-    "- Antigravity authenticates with a signed-in `agy` account or with `GEMINI_API_KEY` (Actuarius wires `modelProvider` into `~/.gemini/antigravity-cli/settings.json` automatically when the key is present).",
+    "- Antigravity authenticates with a Google account connected through `/auth-antigravity`, or with `GEMINI_API_KEY`. A completed account login takes precedence over an injected API key.",
     "- OpenCode requires `ENABLE_OPENCODE_EXECUTION` and credentials. Use `/auth-openai-opencode` for ChatGPT Pro/Plus, `/opencode-auth` for per-provider API keys, or set the relevant env vars on the instance.",
     "- OpenCode supports any provider/model combination via `--model <provider>/<model>`, e.g. `deepseek/deepseek-v4-pro`, `openai/o4-mini`, `anthropic/claude-sonnet-4-6`."
   ].join("\n");
