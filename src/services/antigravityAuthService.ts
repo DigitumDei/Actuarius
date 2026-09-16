@@ -31,7 +31,7 @@ const AUTH_ENV_KEYS = [
   "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"
 ] as const;
 const AUTH_SUCCESS_PATTERN =
-  /loaded cached credentials|credentials saved|successfully authenticated|authentication (?:complete|successful)|successfully logged in|login successful|signed in|welcome to antigravity/i;
+  /loaded cached credentials|credentials saved|successfully authenticated|authentication (?:complete|successful)|successfully logged in|login successful/i;
 
 export type AntigravityAuthErrorCode =
   | "UNAVAILABLE"
@@ -67,8 +67,12 @@ export interface StartAntigravityGoogleAuthOptions {
 }
 
 export function parseAntigravityGoogleAuthUrl(output: string): string | undefined {
-  const plain = stripVTControlCharacters(output);
-  const candidates = plain.match(/https:\/\/accounts\.google\.com\/[^\s<>"']+/gu) ?? [];
+  // Read URLs before removing terminal controls: hyperlink targets and their
+  // visible labels can otherwise merge into one URI. A second Google URI
+  // also marks a new rendering rather than part of this URL's query string.
+  const candidates = output.match(
+    /https:\/\/accounts\.google\.com\/(?:(?!https:\/\/accounts\.google\.com\/)[^\s<>"'\u0000-\u001f\u007f])+/gu
+  ) ?? [];
   for (const candidate of candidates) {
     const cleaned = candidate.replace(/[),.;\]}]+$/u, "");
     try {
@@ -119,7 +123,7 @@ export async function startAntigravityGoogleAuth(
   try {
     child = spawn(
       "script",
-      ["-qefc", "stty -echo -echonl cols 4096 && exec " + AGY_BINARY, "/dev/null"],
+      ["-qefc", "stty -echo -echonl rows 40 cols 4096 && exec " + AGY_BINARY, "/dev/null"],
       {
         cwd: options.cwd,
         env: childEnv,
@@ -144,6 +148,7 @@ export async function startAntigravityGoogleAuth(
   let urlFound = false;
   let authUrl = "";
   let codeSubmitted = false;
+  let loginMethodSelected = false;
   let closed = false;
   let outputTail = "";
   let postCodeOutput = "";
@@ -290,7 +295,7 @@ export async function startAntigravityGoogleAuth(
           )
         );
       });
-      child.stdin.write(code + "\n", (error) => {
+      child.stdin.write(code + "\r", (error) => {
         if (error) {
           void fail(
             new AntigravityAuthError(
@@ -317,6 +322,19 @@ export async function startAntigravityGoogleAuth(
       postCodeOutput = (postCodeOutput + chunk.toString()).slice(-OUTPUT_TAIL_LIMIT);
     }
     if (!urlFound) {
+      // A pipe-backed script PTY has no real operator to press Enter. Current
+      // agy displays this menu before starting the documented SSH OAuth loop.
+      const plainOutput = stripVTControlCharacters(outputTail);
+      if (!loginMethodSelected
+        && /Select login method:/i.test(plainOutput)
+        && /(?:>|❯)\s*1\.\s*Google OAuth\b/i.test(plainOutput)) {
+        loginMethodSelected = true;
+        child.stdin.write("\r", (error) => {
+          if (error) void fail(new AntigravityAuthError(
+            "FAILED", "Could not select Google OAuth in Antigravity: " + error.message
+          ));
+        });
+      }
       const url = parseAntigravityGoogleAuthUrl(outputTail);
       if (url) {
         authUrl = url;
@@ -329,6 +347,11 @@ export async function startAntigravityGoogleAuth(
     }
   };
 
+  child.stdin.once("error", (error) => {
+    void fail(new AntigravityAuthError(
+      "FAILED", "Antigravity authentication input failed: " + error.message
+    ));
+  });
   child.stdout.on("data", acceptOutput);
   child.stderr.on("data", acceptOutput);
 

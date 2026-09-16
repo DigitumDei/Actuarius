@@ -65,6 +65,26 @@ describe("parseAntigravityGoogleAuthUrl", () => {
     );
   });
 
+  it("keeps cursor-separated OAuth URL redraws from merging their parameters", () => {
+    const url = "https://accounts.google.com/oauth?client_id=abc&state=xyz";
+    const output = url + "\u001b[1;1H\u001b[36m" + url + "\u001b[0m";
+
+    expect(parseAntigravityGoogleAuthUrl(output)).toBe(url);
+  });
+
+  it("reads an OSC hyperlink target without joining it to its visible label", () => {
+    const url = "https://accounts.google.com/oauth?client_id=abc&state=xyz";
+    const output = "\u001b]8;;" + url + "\u001b\\" + url + "\u001b]8;;\u001b\\";
+
+    expect(parseAntigravityGoogleAuthUrl(output)).toBe(url);
+  });
+
+  it("does not join adjacent copies of a rendered Google URI", () => {
+    const url = "https://accounts.google.com/oauth?client_id=abc&state=xyz";
+
+    expect(parseAntigravityGoogleAuthUrl(url + url)).toBe(url);
+  });
+
   it("does not accept a lookalike host", () => {
     expect(
       parseAntigravityGoogleAuthUrl("https://accounts.google.com.evil.example/oauth")
@@ -114,7 +134,7 @@ describe("startAntigravityGoogleAuth", () => {
     await completion;
 
     expect(session.url).toContain("https://accounts.google.com/");
-    expect(written.join("")).toBe("4/authorization-code\n");
+    expect(written.join("")).toBe("4/authorization-code\r");
     expect(setAntigravityAccountAuthPreference).toHaveBeenCalledWith(
       true,
       "/data/home/appuser"
@@ -130,7 +150,7 @@ describe("startAntigravityGoogleAuth", () => {
     expect(file).toBe("script");
     expect(args).toEqual([
       "-qefc",
-      "stty -echo -echonl cols 4096 && exec agy",
+      "stty -echo -echonl rows 40 cols 4096 && exec agy",
       "/dev/null"
     ]);
     expect(spawnOptions?.env?.GEMINI_API_KEY).toBeUndefined();
@@ -143,6 +163,83 @@ describe("startAntigravityGoogleAuth", () => {
     ]) {
       expect(spawnOptions?.env).not.toHaveProperty(key);
     }
+  });
+
+  it("selects the displayed Google OAuth method once before waiting for its URL", async () => {
+    const child = createMockChild();
+    vi.mocked(spawn).mockReturnValue(child as never);
+    const written: string[] = [];
+    child.stdin.on("data", (chunk) => written.push(chunk.toString()));
+    const pending = startAntigravityGoogleAuth({ cwd: "/workspace", logger });
+    child.stdout.write("Select login method:\r\n > 1. Goo");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(written).toEqual([]);
+    child.stdout.write("gle OAuth\r\n 2. Use a Google Cloud project\r\n");
+    await new Promise((resolve) => setImmediate(resolve));
+    child.stdout.write("Select login method:\r\n > 1. Google OAuth\r\n");
+    child.stdout.write("https://accounts.google.com/oauth?state=selected\r\n");
+    const session = await pending;
+
+    expect(written).toEqual(["\r"]);
+    expect(setAntigravityAccountAuthPreference).not.toHaveBeenCalled();
+    await session.cancel();
+  });
+
+  it.skipIf(process.platform === "win32")("uses a real PTY with rows and Enter to pass the OAuth menu and code prompt", async () => {
+    const { spawn: realSpawn } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const { signalChildTree: realSignal } = await vi.importActual<typeof import("../src/utils/spawnCollect.js")>("../src/utils/spawnCollect.js");
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const directory = await mkdtemp(join(tmpdir(), "actuarius-auth-pty-"));
+    let session: Awaited<ReturnType<typeof startAntigravityGoogleAuth>> | undefined;
+    try {
+      await writeFile(join(directory, "agy"), [
+        "#!/bin/sh",
+        "set -- $(stty size)",
+        'if [ "$1" -eq 0 ]; then echo "TTY has no rows"; exit 1; fi',
+        "stty raw -echo -echonl",
+        "printf 'Select login method:\\n > 1. Google OAuth\\n'",
+        "key=$(dd bs=1 count=1 2>/dev/null)",
+        '[ "$key" = "$(printf \'\\r\')" ] || exit 2',
+        "printf 'https://accounts.google.com/oauth?state=real-pty\\n'",
+        "code=$(dd bs=1 count=11 2>/dev/null)",
+        '[ "$code" = "$(printf \'valid-code\\r\')" ] || exit 3',
+        "printf 'Authentication successful\\n'"
+      ].join("\n"), { mode: 0o700 });
+      vi.mocked(spawn).mockImplementation(realSpawn as typeof spawn);
+      vi.mocked(signalChildTree).mockImplementation(realSignal);
+      session = await startAntigravityGoogleAuth({
+        cwd: directory, logger,
+        env: { HOME: directory, PATH: directory + ":" + process.env.PATH },
+        urlTimeoutMs: 2_000, completionTimeoutMs: 2_000
+      });
+      await session.complete("valid-code");
+
+      expect(session.url).toContain("state=real-pty");
+      expect(setAntigravityAccountAuthPreference).toHaveBeenCalledWith(true, directory);
+    } finally {
+      await session?.cancel();
+      vi.mocked(spawn).mockReset();
+      vi.mocked(signalChildTree).mockImplementation((child) => { child.killed = true; });
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not accept an unauthenticated welcome-screen redraw as login success", async () => {
+    const child = createMockChild();
+    vi.mocked(spawn).mockReturnValue(child as never);
+    const pending = startAntigravityGoogleAuth({ cwd: "/workspace", logger });
+    child.stdout.write("https://accounts.google.com/oauth?state=negative-redraw\n");
+    const session = await pending;
+    const completion = session.complete("valid-code");
+    const failure = expect(completion).rejects.toMatchObject({ code: "SESSION_EXPIRED" });
+    child.stdout.write("Welcome to the Antigravity CLI. You are currently not signed in.\n");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(setAntigravityAccountAuthPreference).not.toHaveBeenCalled();
+    await session.cancel();
+    await failure;
   });
 
   it.each(["signed in", "\u001b[?1049h", "code\tvalue"])(
