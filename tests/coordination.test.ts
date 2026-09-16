@@ -52,6 +52,7 @@ function harness() {
     const s = store();
     const tasks = new Map<string, PalaceTask>();
     const messages: unknown[] = [];
+    const notices: string[] = [];
     const executed: string[] = [];
     let count = 0;
     const fault = vi.fn<(name: string, args: Record<string, unknown>) => void | Promise<void>>();
@@ -105,10 +106,10 @@ function harness() {
             }
             throw new Error(name);
         } });
-    const hooks: CoordinationHooks = { clarify: async e => ({ action: e.spec!.action, requirements: e.spec!.requirements, acceptance_criteria: e.spec!.acceptance_criteria, deliverable: e.spec!.deliverable }), wings: () => [], check: async () => { }, validate: async () => ({ ready: true, questions: [] }), execute: async (e) => { executed.push(e.id); return { result: "done" }; }, notice: async () => "message", gate: async () => true };
+    const hooks: CoordinationHooks = { clarify: async e => ({ action: e.spec!.action, requirements: e.spec!.requirements, acceptance_criteria: e.spec!.acceptance_criteria, deliverable: e.spec!.deliverable }), wings: () => [], check: async () => { }, validate: async () => ({ ready: true, questions: [] }), execute: async (e) => { executed.push(e.id); return { result: "done" }; }, notice: async (_e, content) => { notices.push(content); return "message"; }, gate: async () => true };
     const sup = new CoordinationSupervisor(s, api, hooks, pino({ level: "silent" }));
     const tick = async () => { await sup.tick(); await new Promise(r => setTimeout(r, 10)); };
-    return { s, tasks, messages, executed, hooks, sup, tick, fault, inbox, discovery };
+    return { s, tasks, messages, notices, executed, hooks, sup, tick, fault, inbox, discovery };
 }
 describe("durable supervisor", () => {
     it("requires inspection when discovering an owned continuation without its checkpoint", async () => {
@@ -345,6 +346,9 @@ describe("durable supervisor", () => {
         for (let i = 0; i < 14; i++)
             await h.tick();
         expect(calls).toEqual(["first", "other", "first", "same"]);
+        expect(h.notices).toContain("Task t1 · step 0: implementation started.");
+        expect(h.notices).toContain("Task t1 · step 0: implementation completed.\ncheckpoint\nNext: verify queued.");
+        expect(h.notices).toContain("Task t1 · step 1: verify started.");
     });
     it("does not let an unavailable dependency authority stall unrelated tasks", async () => {
         const h = harness();

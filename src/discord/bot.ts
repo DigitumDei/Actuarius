@@ -680,7 +680,7 @@ export class ActuariusBot {
             ...(input.repo ? {memoryWing:buildRepoMemoryWing({owner:input.repo.owner,repo:input.repo.repo,fullName:input.repo.full_name})}:{}) });
         },
         prepare: async (repo, path) => { await this.prepareWorktreeMemoryConfig({ owner: repo.owner, repo: repo.repo, fullName: repo.full_name }, path); },
-        review: async (work, repo, signal, existingOnly) => {
+        review: async (work, repo, signal, existingOnly, onProgress) => {
           if(existingOnly) {
             const review=this.db.getLatestCompletedReviewRunForBranch(work.request_id!,work.branch);
             if(!review)throw new Error("Run /review first; /pr requires a completed review");
@@ -695,7 +695,8 @@ export class ActuariusBot {
             repoFullName: repo.full_name, branchName: work.branch, worktreePath: work.path!, artifactRootPath: work.path!, baseRef: `origin/${work.integration_target.replace(/^origin\//, "")}`,
             threadHistory: this.coordination?.store.list().filter(e => e.work_id === work.work_id).map(e => e.description).join("\n") ?? "",
             ...runners, stageTimeoutMs: this.config.askExecutionTimeoutMs, reviewerTimeoutMs: this.config.reviewerTimeoutMs,
-            totalTimeoutMs: this.config.askExecutionTimeoutMs * 2, reviewConcurrency: 1, maxConsensusRounds: this.getReviewRounds(repo.guild_id)
+            totalTimeoutMs: this.config.askExecutionTimeoutMs * 2, reviewConcurrency: 1, maxConsensusRounds: this.getReviewRounds(repo.guild_id),
+            ...(onProgress ? { onProgress } : {})
           }));
           return { ready: result.summary.verdict === "ready_for_pr", text: JSON.stringify(result.summary), sha: result.diffHeadSha };
         }

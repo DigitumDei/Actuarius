@@ -7,7 +7,7 @@ import type { RepoRow } from "../src/db/types.js";
 import type { MemPalaceClient } from "../src/services/memPalaceClient.js";
 import type { Entry, Work } from "../src/services/coordination/store.js";
 import type { CoordinationHooks } from "../src/services/coordination/supervisor.js";
-import { CoordinationBridge } from "../src/discord/coordinationBridge.js";
+import { CoordinationBridge, type BridgeRunners } from "../src/discord/coordinationBridge.js";
 import { git, prepareValidationWorkspace, resolveRef } from "../src/services/coordination/workspace.js";
 import { spawnCollect } from "../src/utils/spawnCollect.js";
 import { MAX_TASK_CONTEXT_BYTES } from "../src/services/coordination/context.js";
@@ -31,7 +31,8 @@ function fixture(){
   const client={channels:{fetch:async(id:string)=>id==="channel"?channel:(threads.get(id) ?? thread)}} as unknown as Client;
   const db={listAllRepos:()=>[repo],getRequestById:()=>({status:"queued"}),updateRequestStatus:vi.fn()} as unknown as AppDatabase;
   const text=vi.fn(async()=>"APPROVED\nAll checks passed.");
-  const bridge=new CoordinationBridge(client,{databasePath:":memory:",reposRootPath:"/repos",threadAutoArchiveMinutes:60} as AppConfig,db,{} as MemPalaceClient,pino({level:"silent"}),{text,parsePlan:()=>null,review:async()=>({ready:true,text:"review",sha:"output"}),prepare:async()=>{}});
+  const review=vi.fn<BridgeRunners["review"]>(async()=>({ready:true,text:"review",sha:"output"}));
+  const bridge=new CoordinationBridge(client,{databasePath:":memory:",reposRootPath:"/repos",threadAutoArchiveMinutes:60} as AppConfig,db,{} as MemPalaceClient,pino({level:"silent"}),{text,parsePlan:()=>null,review,prepare:async()=>{}});
   close.push(()=>bridge.store.close());
   const work=bridge.store.register({work_id:"consumer",repository:repo.full_name,base_ref:"main",integration_target:"main"});
   work.path="/consumer";work.thread_id="thread";work.request_id=1;bridge.store.saveWork(work);
@@ -42,7 +43,7 @@ function fixture(){
   bridge.store.setMeta(`output-sha:${dep.id}`,"dependency-sha");
   const hooks=(bridge.supervisor as unknown as {hooks:CoordinationHooks}).hooks;
   const internals=bridge as unknown as {thread(w:Work,r:RepoRow):Promise<AnyThreadChannel>;execute(e:Entry,w:Work|null,s:AbortSignal):Promise<{result:string;next?:string;checkpoint?:string}>};
-  return {bridge,work,other,repo,entry,dep,hooks,internals,text,create,db};
+  return {bridge,work,other,repo,entry,dep,hooks,internals,text,review,create,db};
 }
 
 it("requires merged dependencies in the retained branch, not just origin/main",async()=>{
@@ -106,6 +107,25 @@ it("synchronizes shared request rows for starts, completion, failure, and cancel
     f.entry.phase=phase;f.bridge.store.save(f.entry);f.hooks.syncRequests!();
     expect(f.db.updateRequestStatus).toHaveBeenLastCalledWith(1,phase==="completed"?"succeeded":"failed");
   }
+});
+
+it("queues coordinated adversarial review progress for the work thread",async()=>{
+  const f=fixture();f.entry.spec={...f.entry.spec!,action:"review"};f.entry.task={task_id:"task"} as Entry["task"];
+  f.review.mockImplementationOnce(async(_work,_repo,_signal,_existingOnly,onProgress)=>{
+    await onProgress?.({type:"analyzer-start"});
+    await onProgress?.({type:"round-start",round:1,maxRounds:2});
+    await onProgress?.({type:"round-complete",round:1,maxRounds:2,consensusReached:false});
+    await onProgress?.({type:"summarizer-start"});
+    return {ready:true,text:"review",sha:"output"};
+  });
+  await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  const progress=f.bridge.store.outbox().map(item=>String(item.payload.content));
+  expect(progress).toEqual([
+    "Task task · step 0: analyzing the change intent.",
+    "Task task · step 0: review round 1/2 started.",
+    "Task task · step 0: review round 1/2 completed without consensus.",
+    "Task task · step 0: synthesizing the final review verdict."
+  ]);
 });
 
 it("uses a Git validation workspace for validation and parent summaries",async()=>{
