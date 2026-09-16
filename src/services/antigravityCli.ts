@@ -24,6 +24,7 @@ import { spawnCollect } from "../utils/spawnCollect.js";
 
 export const AGY_BINARY = "agy";
 export const AGY_INSTALL_URL = "https://antigravity.google/cli/install.sh";
+export const AGY_INSTALL_KILL_GRACE_MS = 5_000;
 
 /** Relative home path of agy's dedicated settings file. */
 const AGY_SETTINGS_REL = [".gemini", "antigravity-cli", "settings.json"] as const;
@@ -138,6 +139,7 @@ export async function installOrUpdateAgy(options: {
       cwd: options.cwd ?? process.cwd(),
       timeoutMs,
       maxBuffer: 1024 * 1024,
+      killGraceMs: AGY_INSTALL_KILL_GRACE_MS,
       ...(options.env ? { env: options.env } : {}),
     });
     const install = await spawnCollect(
@@ -147,6 +149,7 @@ export async function installOrUpdateAgy(options: {
         cwd: options.cwd ?? process.cwd(),
         timeoutMs,
         maxBuffer: 4 * 1024 * 1024,
+        killGraceMs: AGY_INSTALL_KILL_GRACE_MS,
         ...(options.env ? { env: options.env } : {}),
       }
     );
@@ -158,6 +161,7 @@ export async function installOrUpdateAgy(options: {
       cwd: options.cwd ?? process.cwd(),
       timeoutMs: Math.min(timeoutMs, 15_000),
       maxBuffer: 64 * 1024,
+      killGraceMs: AGY_INSTALL_KILL_GRACE_MS,
       ...(options.env ? { env: options.env } : {}),
     });
     await rename(stagedPath, targetPath);
@@ -246,7 +250,12 @@ export function detectAntigravityResultFailure(
     return requireTerminalResult ? { status: "MISSING_RESULT" } : undefined;
   }
   const lastStatus = terminalResult.status;
-  if (lastStatus.toUpperCase() === "SUCCESS") return undefined;
+  if (lastStatus.toUpperCase() === "SUCCESS") {
+    if (typeof terminalResult.response !== "string") {
+      return { status: lastStatus, error: "terminal result response is missing or not a string" };
+    }
+    return undefined;
+  }
   return typeof terminalResult.error === "string"
     ? { status: lastStatus, error: terminalResult.error }
     : { status: lastStatus };

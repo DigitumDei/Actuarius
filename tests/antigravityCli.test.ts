@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import pino from "pino";
 import {
   AGY_INSTALL_URL,
+  AGY_INSTALL_KILL_GRACE_MS,
   antigravityMcpConfigPath,
   antigravitySettingsPath,
   buildAntigravityStreamPrompt,
@@ -102,7 +103,15 @@ describe("detectAntigravityResultFailure", () => {
       '{"event":"result","result":{"status":"SUCCESS"}}'
     ].join("\n");
     expect(() => extractAntigravityStreamResponse(stdout, true)).toThrow("terminal result response");
-    expect(detectAntigravityResultFailure(stdout, true)).toBeUndefined();
+    expect(detectAntigravityResultFailure(stdout, true)).toEqual({
+      status: "SUCCESS",
+      error: "terminal result response is missing or not a string"
+    });
+  });
+
+  it.each([null, 42, {}, ["not a response"]])("classifies non-string SUCCESS response %j as malformed", (response) => {
+    const stdout = JSON.stringify({ event: "result", result: { status: "SUCCESS", response } });
+    expect(detectAntigravityResultFailure(stdout, true)).toMatchObject({ status: "SUCCESS" });
   });
 });
 
@@ -203,6 +212,9 @@ describe("installOrUpdateAgy", () => {
     expect(runnerFile).toBe("bash");
     expect(runnerArgs).toEqual([expect.stringContaining("install.sh"), "--dir", expect.stringContaining(".agy-staging-")]);
     expect(vi.mocked(spawnCollect)).toHaveBeenCalledTimes(3);
+    for (const [, , options] of vi.mocked(spawnCollect).mock.calls) {
+      expect(options).toMatchObject({ killGraceMs: AGY_INSTALL_KILL_GRACE_MS });
+    }
     expect(result.stdout).toContain("installed");
   });
 

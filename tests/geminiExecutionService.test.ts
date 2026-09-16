@@ -265,6 +265,21 @@ describe("runGeminiRequest — integration (real transport)", () => {
       .rejects.toMatchObject({ code: "EMPTY_OUTPUT" });
   });
 
+  it("classifies a SUCCESS response with a non-string response as FAILED", async () => {
+    const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
+    mockSpawn.mockImplementation(() => createMockChild({
+      stdout: '{"event":"result","result":{"status":"SUCCESS","response":42}}\n',
+      exitCode: 0,
+    }));
+
+    await expect(runGeminiRequest({ prompt: hugePrompt, cwd: "/tmp", timeoutMs: 5000 }, logger))
+      .rejects.toMatchObject({
+        code: "FAILED",
+        name: "GeminiExecutionError",
+        message: expect.stringContaining("terminal result response is missing or not a string"),
+      });
+  });
+
   it("preserves --model flag in correct position for oversized prompt with stdin transport", async () => {
     const hugePrompt = "y".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
 
