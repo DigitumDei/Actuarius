@@ -18,7 +18,7 @@ export function buildHelpText(): string {
     "- `/revise [findings:<text>]` Re-run planner-verified implementation on the current request thread. Findings can be provided explicitly or will be pulled from the latest review summary (request owner or Manage Server).",
     "- `/pr` Open a draft pull request for the current request thread after changes are committed and `/review` returns `ready_for_pr` for the current HEAD.",
     "- `/review-rounds [rounds:<number>]` Show or set the max `/review` consensus rounds for this server (admin only to set).",
-    "- `/update-clis [provider:<claude|codex|gemini>]` Update provider CLIs to latest. Omit provider to update all (admin only).",
+    "- `/update-clis [provider:<claude|codex|gemini>]` Update provider CLIs (Claude, Codex, Antigravity CLI `agy`, OpenCode) to latest. Omit provider to update all (admin only).",
     "- `/model-select [provider:<claude|codex|gemini|opencode>] [model:<name>] [role:<default|planner|implementer|reviewer-1–reviewer-4|reviewer-analyzer|reviewer-judge|reviewer-summarizer>] [clear:true]` Set or clear provider/model roles for /ask, /plan, and adversarial review (admin only).",
     "- `/model-select-oc role:<planner|implementer> [model:<provider/model>] [clear:true]` Set or clear an experimental managed OpenCode agent model (admin only).",
     "- `/model-current` Show the active AI provider, model, reviewer slots, and review role overrides for this server.",
@@ -31,8 +31,8 @@ export function buildHelpText(): string {
     "- With coordination enabled, Discord work has priority over background tasks. Commands in a work thread reuse its branch; ordinary follow-ups queue separately. Reply directly to a clarification question to answer it.",
     "- Private repos work when the configured GitHub identity can access them.",
     "- `/ask` uses queued AI execution with per-guild concurrency limits.",
-    "- Codex and Gemini require `ENABLE_CODEX_EXECUTION` / `ENABLE_GEMINI_EXECUTION` to be enabled.",
-    "- Gemini additionally requires `GEMINI_API_KEY`.",
+    "- Codex and Antigravity (Gemini models via the `agy` CLI) require `ENABLE_CODEX_EXECUTION` / `ENABLE_GEMINI_EXECUTION` to be enabled.",
+    "- Antigravity authenticates with a signed-in `agy` account or with `GEMINI_API_KEY` (Actuarius wires `modelProvider` into `~/.gemini/antigravity-cli/settings.json` automatically when the key is present).",
     "- OpenCode requires `ENABLE_OPENCODE_EXECUTION` and credentials. Use `/auth-openai-opencode` for ChatGPT Pro/Plus, `/opencode-auth` for per-provider API keys, or set the relevant env vars on the instance.",
     "- OpenCode supports any provider/model combination via `--model <provider>/<model>`, e.g. `deepseek/deepseek-v4-pro`, `openai/o4-mini`, `anthropic/claude-sonnet-4-6`."
   ].join("\n");

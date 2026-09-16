@@ -1,5 +1,12 @@
 import type { Logger } from "pino";
 import { runProviderRequest, type ProviderErrorDetails, type ProviderRequestInput, type ProviderTimeoutKind } from "../utils/runProviderRequest.js";
+import {
+  AGY_BINARY,
+  buildAntigravityStreamPrompt,
+  detectAntigravityResultFailure,
+  ensureAntigravityApiKeyConfig,
+  extractAntigravityStreamResponse
+} from "./antigravityCli.js";
 
 export interface GeminiExecutionInput extends ProviderRequestInput {}
 
@@ -23,21 +30,76 @@ export class GeminiExecutionError extends Error {
   }
 }
 
+/**
+ * Run a request through Google's Antigravity CLI (`agy`), the successor to the
+ * Gemini CLI. The provider identity stays `gemini` (persisted model config and
+ * `GEMINI_API_KEY` are unchanged), but the executing binary is `agy`.
+ *
+ * Verified Antigravity CLI contract (`https://www.antigravity.google/docs/cli/headless/`):
+ * - `agy -p "<prompt>"` runs headlessly; response text on stdout, diagnostics
+ *   on stderr. Exit code 0 on success, non-zero on failure.
+ * - Tool approval uses `--dangerously-skip-permissions` (the documented
+ *   headless analogue of the legacy Gemini `--yolo`; there is no `--yolo` and
+ *   no raw-stdin prompt fallback).
+ * - Oversized prompts are transported via the documented streaming stdin
+ *   protocol: `--input-format stream-json` + a `user` event line on stdin,
+ *   with `--output-format stream-json` events on stdout (terminal `result`
+ *   event carries `response`).
+ * - API-key auth requires `modelProvider: "gemini"` in
+ *   `~/.gemini/antigravity-cli/settings.json` AND `GEMINI_API_KEY`; the key
+ *   alone has no effect, and `agy` will not start if the marker is set without
+ *   the key. Actuarius writes the marker (preserving unrelated keys) only when
+ *   the key is present in the child environment.
+ * - Without a key, `agy` runs under the operator's signed-in account session
+ *   (keyring or SSH OAuth). Actuarius does not require a key.
+ */
 export async function runGeminiRequest(input: GeminiExecutionInput, logger: Logger): Promise<GeminiExecutionResult> {
-  if (!process.env.GEMINI_API_KEY?.trim()) {
-    throw new GeminiExecutionError("NOT_AUTHENTICATED", "Gemini requires `GEMINI_API_KEY` to be set for API-key-based authentication.");
-  }
+  // API-key auth needs the settings marker; account auth must NOT have it, or
+  // agy refuses to start. Decide from the environment the child actually
+  // receives, and merge the marker only when the key is visible to it.
+  const effectiveEnv = input.env ?? process.env;
+  await ensureAntigravityApiKeyConfig(
+    logger,
+    effectiveEnv.HOME,
+    !!effectiveEnv.GEMINI_API_KEY?.trim()
+  );
 
   const text = await runProviderRequest(
     input,
     {
-      binary: "gemini",
-      extraArgs: ["--yolo"],
-      // Verified contract (`gemini --help`): "-p/--prompt … Appended to input on
-      // stdin (if any)." The oversized path keeps `-p ""` and pipes the prompt
-      // via stdin, so the empty -p value plus stdin yields exactly the prompt.
+      binary: AGY_BINARY,
+      // agy's own response deadline must not exceed Actuarius's total request
+      // deadline. It accepts human-readable durations (for example "15m").
+      extraArgs: [
+        "--dangerously-skip-permissions",
+        "--print-timeout",
+        `${Math.max(1, Math.ceil(input.timeoutMs / 1000))}s`
+      ],
+      // Gemini's `-p ""` + raw-stdin fallback does NOT transfer to agy. The
+      // documented input contract is a JSON streaming protocol on stdin, so
+      // oversized prompts switch to `--input-format stream-json` and write a
+      // `user` event; stdout (stream-json NDJSON) is decoded by
+      // `extractAntigravityStreamResponse`, which also passes the plain `text`
+      // output of the small-prompt argv path through untouched.
       supportsStdinFallback: true,
-      logLabel: "Gemini",
+      stdinStreamArgs: ["--input-format", "stream-json", "--output-format", "stream-json"],
+      stdinStreamPrompt: buildAntigravityStreamPrompt,
+      transformOutput: (stdout) => extractAntigravityStreamResponse(stdout, true),
+      transformOutputOnlyForStream: true,
+      // agy can exit 0 while its terminal stream-json result reports a non-SUCCESS
+      // status (ERROR/CANCELED/INTERRUPTED/INVALID/WAITING/RUNNING); surface
+      // those as provider failures rather than returning a partial response.
+      validateOutput: (stdout) => {
+        const failure = detectAntigravityResultFailure(stdout, true);
+        if (!failure) return undefined;
+        const detail = failure.error ? `: ${failure.error}` : "";
+        return {
+          code: "FAILED",
+          message: `Antigravity CLI run ended with status ${failure.status}${detail}`
+        };
+      },
+      validateOutputOnlyForStream: true,
+      logLabel: "Antigravity",
       makeError: (code, message, details) => {
         const err = new GeminiExecutionError(code as GeminiExecutionError["code"], message);
         if (details) {
@@ -47,8 +109,12 @@ export async function runGeminiRequest(input: GeminiExecutionInput, logger: Logg
       },
       unavailableCode: "GEMINI_UNAVAILABLE",
       notAuthenticatedCode: "NOT_AUTHENTICATED",
-      authFailurePattern: /set an Auth method|authentication required|not authenticated|Enter the authorization code:/i,
-      authHint: "Set `GEMINI_API_KEY` to a valid Gemini API key.",
+      // agy writes diagnostics and auth prompts to stderr and the task
+      // response to stdout, so only stderr is inspected. Matching stdout would
+      // false-positive on arbitrary text the agent prints while working.
+      authCheckOnlyStderr: true,
+      authFailurePattern: /authentication required|not authenticated|Enter the authorization code:|GEMINI_API_KEY is not set|set an Auth method/i,
+      authHint: "Set `GEMINI_API_KEY` (with `modelProvider` in `~/.gemini/antigravity-cli/settings.json`) or sign in an `agy` account.",
       timeoutCode: "TIMEOUT",
       failedCode: "FAILED",
       emptyOutputCode: "EMPTY_OUTPUT",

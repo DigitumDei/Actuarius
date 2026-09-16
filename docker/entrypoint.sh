@@ -14,9 +14,18 @@ if ! /app/seed-provider-clis.sh; then
 fi
 
 # HTTP MCP registrations are written by the bot after resolving its server token.
-mkdir -p "$HOME/.gemini"
-if [ ! -f "$HOME/.gemini/settings.json" ]; then
-  echo '{"security":{"auth":{"selectedType":"oauth-personal"}}}' > "$HOME/.gemini/settings.json"
+# The Antigravity CLI (agy) keeps settings in ~/.gemini/antigravity-cli/ and
+# reads server config from ~/.gemini/config/mcp_config.json (the legacy
+# ~/.gemini/settings.json held the retired Gemini CLI's config and MCP block).
+mkdir -p "$HOME/.gemini/antigravity-cli" "$HOME/.gemini/config"
+# API-key auth for agy needs modelProvider=gemini in its settings file AND
+# GEMINI_API_KEY — a key alone has no effect. Write the provider marker
+# non-interactively only when the key is present, and only when the file does
+# not already exist so operator settings are preserved. The runtime
+# (runGeminiRequest) merges the marker idempotently for either case.
+if [ -n "${GEMINI_API_KEY:-}" ] && [ ! -f "$HOME/.gemini/antigravity-cli/settings.json" ]; then
+  echo '{ "modelProvider": "gemini" }' > "$HOME/.gemini/antigravity-cli/settings.json"
+  chmod 600 "$HOME/.gemini/antigravity-cli/settings.json"
 fi
 
 # Preserve the existing model download across the product rename.

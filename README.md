@@ -9,12 +9,13 @@ Discord bot container that links GitHub repos to Discord channels and creates re
 - Runs as a Docker container.
 - Includes these CLIs in-container:
   - `git`, `gh`, `node`, `npm`
-  - `claude`, `codex`, `gemini`, `opencode` (seeded into `/data/home/appuser/.npm-global/bin` on first boot)
+  - `claude`, `codex`, `opencode` (seeded into `/data/home/appuser/.npm-global/bin` on first boot)
+  - `agy` (the Antigravity CLI, Google's successor to the Gemini CLI; installed natively into `/data/home/appuser/.local/bin`)
 - Waits for Discord server invite if not yet in any server.
 - Registers slash commands for repo management, AI execution, and server administration (20+ commands — see `src/discord/commands.ts` for the full list).
 - Creates one dedicated channel per connected repo (per Discord server).
 - Creates one thread per `/ask` request to preserve request-specific history.
-- Runs the configured AI provider (Claude, Codex, Gemini, or OpenCode) for each `/ask` request in an isolated git worktree.
+- Runs the configured AI provider (Claude, Codex, Antigravity CLI `agy` driving Gemini models, or OpenCode) for each `/ask` request in an isolated git worktree.
 - Queues `/ask` jobs with bounded per-guild concurrency and support for `/review` (adversarial code review across multiple provider CLIs).
 - Stores guild/repo/request mappings in SQLite.
 - Supports `/auth-openai-opencode` for ChatGPT Pro/Plus subscription login and `/opencode-auth` for per-provider API key management when using OpenCode as the provider.
@@ -53,9 +54,9 @@ Copy `.env.example` to `.env` and set:
 - `ASK_CONCURRENCY_PER_GUILD` (default `3`)
 - `REVIEW_CONCURRENCY` (default `1`, serialize reviewers on memory-constrained hosts)
 - `ENABLE_CODEX_EXECUTION` (default `false`, enables Codex/OpenAI provider)
-- `ENABLE_GEMINI_EXECUTION` (default `false`, enables Gemini provider)
+- `ENABLE_GEMINI_EXECUTION` (default `false`, enables the Antigravity CLI `agy` provider for Gemini models)
 - `ENABLE_OPENCODE_EXECUTION` (default `false`, enables OpenCode/DeepSeek provider)
-- `GEMINI_API_KEY` (required for Gemini execution)
+- `GEMINI_API_KEY` (optional; API-key auth for the Antigravity CLI `agy`. Alternatively sign in an `agy` account. For API-key auth Actuarius sets `modelProvider: gemini` in `~/.gemini/antigravity-cli/settings.json` automatically — the key alone has no effect, and setting the marker without the key prevents `agy` from starting)
 - `DEEPSEEK_API_KEY` (required for OpenCode execution when not using stored OpenCode credentials)
 - `CLAUDE_CODE_OAUTH_TOKEN` (optional for local/manual runs, required by the production redeploy helper for non-interactive Claude auth)
 - `MEMPALACE_ENABLED` (default `false`, enables the bot memory client over shared HTTP MCP)
@@ -85,7 +86,7 @@ All timeout defaults live together in [`TIMEOUT_DEFAULTS_MS`](src/config.ts) and
 - `INSTALL_STEP_TIMEOUT_MS` — tool-install step cap (default `3600000`)
 - `MEMPALACE_REMOTE_TIMEOUT_MS` and `MEMPALACE_REMOTE_MINE_TIMEOUT_MS` — remote request and mine-operation caps (defaults `5000` and `2700000`)
 
-Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global`, with `docker/entrypoint.sh` seeding them on first boot if missing. That keeps provider authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. For OpenCode, use `/auth-openai-opencode` to connect a ChatGPT Pro/Plus subscription with OpenAI's device flow, `/opencode-auth` to store per-provider API keys in `auth.json`, or set provider API keys such as `DEEPSEEK_API_KEY` in the environment. `/opencode-auth` supports DeepSeek, OpenAI, Anthropic, Google, xAI, Groq, OpenRouter, and Together.
+Provider CLI auth state is persisted under `/data/home/appuser` inside the container. The provider CLIs themselves are also installed under `/data/home/appuser/.npm-global` (npm packages) with the Antigravity CLI (`agy`) installed natively under `/data/home/appuser/.local/bin` — `docker/entrypoint.sh` seeds all of them on first boot. That keeps provider authentication and CLI updates across container replacement, because production mounts `/data` from the persistent disk. For OpenCode, use `/auth-openai-opencode` to connect a ChatGPT Pro/Plus subscription with OpenAI's device flow, `/opencode-auth` to store per-provider API keys in `auth.json`, or set provider API keys such as `DEEPSEEK_API_KEY` in the environment. `/opencode-auth` supports DeepSeek, OpenAI, Anthropic, Google, xAI, Groq, OpenRouter, and Together.
 
 ### Experimental OpenCode-native planning
 
@@ -128,7 +129,7 @@ record but intentionally does not remove the system package.
 
 ### AgentPalace shared HTTP MCP
 
-Actuarius pins AgentPalace 0.1.48. A single `agentpalace serve` process exposes federation REST and Streamable HTTP MCP at `http://127.0.0.1:8765/mcp`. Claude, Codex, Gemini, OpenCode (including planning snapshots), and the bot's own memory client use authenticated HTTP; they do not launch embedding-model subprocesses.
+Actuarius pins AgentPalace 0.1.48. A single `agentpalace serve` process exposes federation REST and Streamable HTTP MCP at `http://127.0.0.1:8765/mcp`. Claude, Codex, the Antigravity CLI (`agy`, which reads servers from `~/.gemini/config/mcp_config.json`), OpenCode (including planning snapshots), and the bot's own memory client use authenticated HTTP; they do not launch embedding-model subprocesses.
 
 The existing `MEMPALACE_REMOTE_PALACE_PATH` (default `/data/mempalace/remote-palace`) remains authoritative. No database copy or merge is performed. The former local palace remains an archive, and its historical local-only diaries are not automatically included in shared-server searches. New diaries use the shared server's palace.
 
@@ -222,9 +223,9 @@ Or without rebuilding (uses cached image):
 docker-compose up
 ```
 
-The first container start after a fresh volume mount is slower than normal because it seeds `claude`, `codex`, `gemini`, and `opencode` into `/data/home/appuser/.npm-global`. Later restarts skip installs for CLIs that are already present and only repair the specific provider binaries that are missing.
+The first container start after a fresh volume mount is slower than normal because it seeds `claude`, `codex`, `opencode` into `/data/home/appuser/.npm-global` and installs the Antigravity CLI (`agy`) into `/data/home/appuser/.local/bin`. Later restarts reapply the latest provider versions; the Antigravity installer runs against a staging directory and atomically replaces `agy` only after validation.
 
-If the npm registry is unavailable during first boot or a later repair of a missing CLI, the bot still starts and logs a warning instead of crash-looping. Requests that need a missing provider CLI will continue to fail until network access is restored and the container is restarted or the CLI is reinstalled manually.
+If the npm registry or the Antigravity installer is unavailable during first boot or a later repair of a missing CLI, the bot still starts and logs a warning instead of crash-looping. Requests that need a missing provider CLI will continue to fail until network access is restored and the container is restarted or the CLI is reinstalled manually.
 
 ### PowerShell helper
 
@@ -264,16 +265,16 @@ docker run --rm \
   actuarius:latest
 ```
 
-If you authenticate Claude interactively once inside a container with the `/data` volume mounted, that persisted state is also reused on later starts. Codex CLI auth is stored under the same persisted home tree. Gemini requires `GEMINI_API_KEY`.
+If you authenticate Claude interactively once inside a container with the `/data` volume mounted, that persisted state is also reused on later starts. Codex CLI auth is stored under the same persisted home tree. The Antigravity CLI (`agy`) authenticates either with a signed-in `agy` account (keyring/SSH OAuth) or with `GEMINI_API_KEY` plus `modelProvider: gemini` in its settings file (which Actuarius sets automatically only when the key is present).
 
 ### Updating provider CLIs without rebuilding
 
-Because the provider CLIs live under `/data/home/appuser/.npm-global`, you can update them directly inside the running container without rebuilding the image:
+The npm-based provider CLIs live under `/data/home/appuser/.npm-global`; the Antigravity CLI is a native binary under `/data/home/appuser/.local/bin`. You can update them directly inside the running container without rebuilding the image:
 
 ```bash
 docker exec -u appuser actuarius npm install -g @anthropic-ai/claude-code@latest
 docker exec -u appuser actuarius npm install -g @openai/codex@latest
-docker exec -u appuser actuarius npm install -g @google/gemini-cli@latest
+docker exec -u appuser actuarius bash -c "staging=\$(mktemp -d ~/.local/bin/.agy-staging-XXXXXX) && curl -fsSL https://antigravity.google/cli/install.sh -o /tmp/agy-install.sh && bash /tmp/agy-install.sh --dir \"\$staging\" && test -x \"\$staging/agy\" && \"\$staging/agy\" --version && mv -f \"\$staging/agy\" ~/.local/bin/agy"
 docker exec -u appuser actuarius npm install -g opencode-ai@latest
 ```
 
@@ -367,7 +368,7 @@ SQLite tables:
 
 ## Security considerations
 
-Actuarius executes AI agents (Claude, Codex, Gemini, OpenCode) with full shell access inside the container. User-supplied prompts from `/ask`, `/bug`, and `/issue` are passed directly to these agents, which run with unrestricted permissions (e.g. `--dangerously-auto-approve`, `--yolo`). This is by design — the bot's purpose is to let AI agents work freely on code.
+Actuarius executes AI agents (Claude, Codex, Antigravity `agy`, OpenCode) with full shell access inside the container. User-supplied prompts from `/ask`, `/bug`, and `/issue` are passed directly to these agents, which run with unrestricted permissions (e.g. `--dangerously-auto-approve`, `agy --dangerously-skip-permissions`). This is by design — the bot's purpose is to let AI agents work freely on code.
 
 **This means any Discord user who can run slash commands in your server can instruct the AI to execute arbitrary shell commands inside the container.** There is no prompt sanitization or sandboxing beyond the container boundary itself.
 

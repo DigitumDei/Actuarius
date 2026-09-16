@@ -8,6 +8,15 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, spawn: vi.fn() };
 });
 
+// Keep the agy settings-file fixup off the test runner's real $HOME.
+vi.mock("../src/services/antigravityCli.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/services/antigravityCli.js")>();
+  return {
+    ...actual,
+    ensureAntigravityApiKeyConfig: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
 function createMockChild(opts: {
   stdout?: string;
   stderr?: string;
@@ -122,21 +131,21 @@ describe("Transport behavior acceptance", () => {
     delete process.env.DEEPSEEK_API_KEY;
   });
 
-  // ── Gemini: flag-pair stdin fallback ──────────────────────────────────
+  // ── Antigravity (agy): stream-json stdin fallback ─────────────────────
 
-  it("Gemini small prompt uses argv transport and logs no transport warning", async () => {
+  it("Antigravity small prompt uses argv transport and logs no transport warning", async () => {
     const { writer, records } = createLogCapture();
     const logger = pino(writer);
 
     mockSpawn.mockImplementation(() =>
-      createMockChild({ stdout: "gemini output", exitCode: 0 }),
+      createMockChild({ stdout: "agy output", exitCode: 0 }),
     );
 
     await runGeminiRequest({ prompt: "hello", cwd: "/tmp", timeoutMs: 5000 }, logger);
 
     const [file, args] = mockSpawn.mock.calls[0]!;
-    expect(file).toBe("gemini");
-    expect(args).toEqual(["-p", "hello", "--yolo"]);
+    expect(file).toBe("agy");
+    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions", "--print-timeout", "5s"]);
 
     const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
     expect(stdinWrite).not.toHaveBeenCalled();
@@ -145,24 +154,36 @@ describe("Transport behavior acceptance", () => {
     expect(transportLogs).toHaveLength(0);
   });
 
-  it("Gemini oversized prompt uses -p '' + stdin fallback with structured log", async () => {
+  it("Antigravity oversized prompt uses stream-json stdin fallback with structured log", async () => {
     const { writer, records } = createLogCapture();
     const logger = pino(writer);
     const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
 
     mockSpawn.mockImplementation(() =>
-      createMockChild({ stdout: "gemini result", exitCode: 0 }),
+      createMockChild({
+        stdout: [
+          '{"event":"init","conversation_id":"055a398f","init":{"cwd":"/tmp"}}',
+          '{"event":"result","result":{"conversation_id":"055a398f","status":"SUCCESS","response":"agy result\\n","num_turns":1}}'
+        ].join("\n"),
+        exitCode: 0,
+      }),
     );
 
     await runGeminiRequest({ prompt: hugePrompt, cwd: "/tmp", timeoutMs: 5000 }, logger);
 
     const [file, args] = mockSpawn.mock.calls[0]!;
-    expect(file).toBe("gemini");
-    expect(args).toEqual(["-p", "", "--yolo"]);
+    expect(file).toBe("agy");
+    expect(args).toEqual([
+      "--input-format", "stream-json", "--output-format", "stream-json",
+      "--dangerously-skip-permissions", "--print-timeout", "5s"
+    ]);
 
     const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
     expect(stdinWrite).toHaveBeenCalled();
-    expect(stdinWrite.mock.calls[0]?.[0]).toBe(hugePrompt);
+    const written = stdinWrite.mock.calls[0]?.[0] as string;
+    const message = JSON.parse(written) as { event: string; message: { content: string } };
+    expect(message.event).toBe("user");
+    expect(message.message.content).toBe(hugePrompt);
 
     const transportLog = records.find(
       (r) => (r as Record<string, unknown>).transportReason === "oversized_flag_pair_stdin",
@@ -172,32 +193,39 @@ describe("Transport behavior acceptance", () => {
       transport: "stdin",
       transportReason: "oversized_flag_pair_stdin",
       useFlagPairStdin: true,
-      logLabel: "Gemini",
+      stdinKind: "stream-json",
+      logLabel: "Antigravity",
       totalBytes: expect.any(Number),
       limitBytes: DEFAULT_ARGV_TOTAL_LIMIT,
     });
     expect(typeof (transportLog as Record<string, unknown>).stdinLength).toBe("number");
   });
 
-  it("Gemini oversized prompt preserves --model in correct position with -p '' + stdin", async () => {
+  it("Antigravity oversized prompt preserves --model in correct position with stream-json stdin", async () => {
     const { writer, records } = createLogCapture();
     const logger = pino(writer);
     const hugePrompt = "y".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
 
     mockSpawn.mockImplementation(() =>
-      createMockChild({ stdout: "ok", exitCode: 0 }),
+      createMockChild({
+        stdout: '{"event":"result","result":{"conversation_id":"abc","status":"SUCCESS","response":"ok\\n","num_turns":1}}\n',
+        exitCode: 0,
+      }),
     );
 
     await runGeminiRequest({ prompt: hugePrompt, cwd: "/tmp", timeoutMs: 5000, model: "gemini-2.5-pro" }, logger);
 
     const [, args] = mockSpawn.mock.calls[0]!;
-    expect(args).toEqual(["-p", "", "--yolo", "--model", "gemini-2.5-pro"]);
+    expect(args).toEqual([
+      "--input-format", "stream-json", "--output-format", "stream-json",
+      "--dangerously-skip-permissions", "--print-timeout", "5s", "--model", "gemini-2.5-pro"
+    ]);
 
     const transportLog = records.find(
       (r) => (r as Record<string, unknown>).transportReason === "oversized_flag_pair_stdin",
     );
     expect(transportLog).toBeDefined();
-    expect(transportLog).toMatchObject({ logLabel: "Gemini" });
+    expect(transportLog).toMatchObject({ logLabel: "Antigravity", stdinKind: "stream-json" });
   });
 
   // ── OpenCode: tempfile transport ──────────────────────────────────────
