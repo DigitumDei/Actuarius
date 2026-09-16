@@ -33,6 +33,13 @@ const AUTH_ENV_KEYS = [
 const AUTH_SUCCESS_PATTERN =
   /loaded cached credentials|credentials saved|successfully authenticated|authentication (?:complete|successful)|successfully logged in|login successful/i;
 
+// agy reaches first-run rendering setup after Google sign-in. It does not
+// print one of the explicit success messages above on this path.
+const AUTH_ONBOARDING_PATTERN =
+  /Welcome to Antigravity CLI![\s\S]*Choose your color scheme:/i;
+const AUTH_CODE_FAILURE_PATTERN =
+  /Got an error:\s*token exchange failed:|oauth2:\s*"invalid_grant"/i;
+
 export type AntigravityAuthErrorCode =
   | "UNAVAILABLE"
   | "URL_TIMEOUT"
@@ -50,7 +57,9 @@ export class AntigravityAuthError extends Error {
 }
 
 export interface AntigravityGoogleAuthSession {
+  /** Empty when the CLI resumed an authenticated account without needing OAuth. */
   readonly url: string;
+  readonly alreadyAuthenticated?: boolean;
   isActive(): boolean;
   complete(code: string): Promise<void>;
   cancel(): Promise<void>;
@@ -149,6 +158,7 @@ export async function startAntigravityGoogleAuth(
   let authUrl = "";
   let codeSubmitted = false;
   let loginMethodSelected = false;
+  let authenticated = false;
   let closed = false;
   let outputTail = "";
   let postCodeOutput = "";
@@ -220,8 +230,10 @@ export async function startAntigravityGoogleAuth(
     try {
       await setAntigravityAccountAuthPreference(true, home);
       await ensureAntigravityApiKeyConfig(options.logger, home, false);
+      authenticated = true;
       active = false;
       terminate();
+      if (!urlFound) resolveUrl(session);
       const resolve = completionResolve;
       completionResolve = undefined;
       completionReject = undefined;
@@ -255,6 +267,9 @@ export async function startAntigravityGoogleAuth(
   const session: AntigravityGoogleAuthSession = {
     get url(): string {
       return authUrl;
+    },
+    get alreadyAuthenticated(): boolean {
+      return authenticated && !urlFound;
     },
     isActive: () => active && !closed,
     complete: async (rawCode: string): Promise<void> => {
@@ -317,14 +332,21 @@ export async function startAntigravityGoogleAuth(
 
   const acceptOutput = (chunk: Buffer | string): void => {
     if (!active || transitionInProgress) return;
-    outputTail = (outputTail + chunk.toString()).slice(-OUTPUT_TAIL_LIMIT);
+    const combinedOutput = outputTail + chunk.toString();
+    const plainOutput = stripVTControlCharacters(combinedOutput);
+    outputTail = combinedOutput.slice(-OUTPUT_TAIL_LIMIT);
+    // Check before trimming: a wide TUI redraw can exceed the retained tail
+    // and put its first-run heading outside the final 64 KiB.
+    if (AUTH_ONBOARDING_PATTERN.test(plainOutput)) {
+      void succeed();
+      return;
+    }
     if (codeSubmitted) {
       postCodeOutput = (postCodeOutput + chunk.toString()).slice(-OUTPUT_TAIL_LIMIT);
     }
     if (!urlFound) {
       // A pipe-backed script PTY has no real operator to press Enter. Current
       // agy displays this menu before starting the documented SSH OAuth loop.
-      const plainOutput = stripVTControlCharacters(outputTail);
       if (!loginMethodSelected
         && /Select login method:/i.test(plainOutput)
         && /(?:>|❯)\s*1\.\s*Google OAuth\b/i.test(plainOutput)) {
@@ -342,8 +364,16 @@ export async function startAntigravityGoogleAuth(
         resolveUrl(session);
       }
     }
-    if (codeSubmitted && AUTH_SUCCESS_PATTERN.test(stripVTControlCharacters(postCodeOutput))) {
-      void succeed();
+    if (codeSubmitted) {
+      const plainPostCodeOutput = stripVTControlCharacters(postCodeOutput);
+      if (AUTH_CODE_FAILURE_PATTERN.test(plainPostCodeOutput)) {
+        void fail(new AntigravityAuthError(
+          "FAILED",
+          "Antigravity could not exchange the Google authorization code. Run /auth-antigravity again and use the new code."
+        ));
+      } else if (AUTH_SUCCESS_PATTERN.test(plainPostCodeOutput)) {
+        void succeed();
+      }
     }
   };
 

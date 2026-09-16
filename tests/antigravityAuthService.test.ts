@@ -205,7 +205,7 @@ describe("startAntigravityGoogleAuth", () => {
         "printf 'https://accounts.google.com/oauth?state=real-pty\\n'",
         "code=$(dd bs=1 count=11 2>/dev/null)",
         '[ "$code" = "$(printf \'valid-code\\r\')" ] || exit 3',
-        "printf 'Authentication successful\\n'"
+        "printf 'Welcome to Antigravity CLI!\\nChoose your color scheme:\\n'"
       ].join("\n"), { mode: 0o700 });
       vi.mocked(spawn).mockImplementation(realSpawn as typeof spawn);
       vi.mocked(signalChildTree).mockImplementation(realSignal);
@@ -224,6 +224,52 @@ describe("startAntigravityGoogleAuth", () => {
       vi.mocked(signalChildTree).mockImplementation((child) => { child.killed = true; });
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it("recognizes authenticated first-run setup after code submission in a wide redraw", async () => {
+    const child = createMockChild();
+    vi.mocked(spawn).mockReturnValue(child as never);
+    const pending = startAntigravityGoogleAuth({ cwd: "/workspace", logger });
+    child.stdout.write("https://accounts.google.com/oauth?state=first-run\n");
+    const session = await pending;
+    const completion = session.complete("4/valid-code");
+    child.stdout.write("\u001b[1;1HWelcome to Antigravity CLI!");
+    child.stdout.write("\u001b[2;1HChoose your color scheme:" + "─".repeat(70_000));
+    await completion;
+
+    expect(session.alreadyAuthenticated).toBe(false);
+    expect(setAntigravityAccountAuthPreference).toHaveBeenCalledWith(true, expect.any(String));
+  });
+
+  it("returns an authenticated account when cached login reaches first-run setup without an OAuth URL", async () => {
+    const child = createMockChild();
+    vi.mocked(spawn).mockReturnValue(child as never);
+    const pending = startAntigravityGoogleAuth({ cwd: "/workspace", logger });
+    child.stdout.write("Welcome to the Antigravity CLI. You are currently not signed in.\nSigning in...\n");
+    child.stdout.write("Welcome to Antigravity CLI!\nChoose your color scheme:\n");
+    const session = await pending;
+
+    expect(session.alreadyAuthenticated).toBe(true);
+    expect(session.url).toBe("");
+    expect(session.isActive()).toBe(false);
+    expect(setAntigravityAccountAuthPreference).toHaveBeenCalledWith(true, expect.any(String));
+    expect(signalChildTree).toHaveBeenCalledWith(child, "SIGTERM");
+  });
+
+  it("reports a failed Google code exchange immediately without persisting account preference", async () => {
+    const child = createMockChild();
+    vi.mocked(spawn).mockReturnValue(child as never);
+    const pending = startAntigravityGoogleAuth({ cwd: "/workspace", logger });
+    child.stdout.write("https://accounts.google.com/oauth?state=rejected-code\n");
+    const session = await pending;
+    const completion = session.complete("4/invalid-code");
+    const failure = expect(completion).rejects.toMatchObject({ code: "FAILED" });
+    child.stdout.write('Got an error: token exchange failed: oauth2: "invalid_grant" "Malformed auth code."\nPress any key to go back.');
+    await failure;
+
+    expect(session.isActive()).toBe(false);
+    expect(setAntigravityAccountAuthPreference).not.toHaveBeenCalled();
+    expect(signalChildTree).toHaveBeenCalledWith(child, "SIGTERM");
   });
 
   it("does not accept an unauthenticated welcome-screen redraw as login success", async () => {

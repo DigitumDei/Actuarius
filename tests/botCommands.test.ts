@@ -467,6 +467,33 @@ describe("ActuariusBot Antigravity Google auth commands", () => {
     });
   });
 
+  it.each([false, true])("reports an already authenticated account without a pending code session (reply failure: %s)", async (replyFails) => {
+    const session = {
+      url: "",
+      alreadyAuthenticated: true,
+      isActive: vi.fn().mockReturnValue(false),
+      complete: vi.fn(),
+      cancel: vi.fn().mockResolvedValue(undefined)
+    };
+    vi.mocked(startAntigravityGoogleAuth).mockResolvedValue(session);
+    const bot = createBot();
+    (bot as any).config.enableGeminiExecution = true;
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      ...(replyFails ? { editReply: vi.fn().mockRejectedValue(new Error("Interaction expired")) } : {})
+    });
+
+    await expect((bot as any).handleAuthAntigravity(interaction)).resolves.toBeUndefined();
+
+    expect(interaction.editReply).toHaveBeenCalledOnce();
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Google account connected to Antigravity")
+    });
+    expect((bot as any).pendingAntigravityAuth.size).toBe(0);
+    expect((bot as any).startingAntigravityAuth.size).toBe(0);
+    expect(session.complete).not.toHaveBeenCalled();
+  });
+
   it("keeps a completed login successful when the Discord success reply fails", async () => {
     const session = {
       url: "https://accounts.google.com/o/oauth2/auth?state=reply-failure",
