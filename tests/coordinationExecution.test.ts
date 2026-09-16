@@ -121,10 +121,10 @@ it("queues coordinated adversarial review progress for the work thread",async()=
   await f.internals.execute(f.entry,f.work,new AbortController().signal);
   const progress=f.bridge.store.outbox().map(item=>String(item.payload.content));
   expect(progress).toEqual([
-    "Task task · step 0: analyzing the change intent.",
-    "Task task · step 0: review round 1/2 started.",
-    "Task task · step 0: review round 1/2 completed without consensus.",
-    "Task task · step 0: synthesizing the final review verdict."
+    "Task task · step 1: analyzing the change intent.",
+    "Task task · step 1: review round 1/2 started.",
+    "Task task · step 1: review round 1/2 completed without consensus.",
+    "Task task · step 1: synthesizing the final review verdict."
   ]);
 });
 

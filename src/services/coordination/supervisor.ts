@@ -456,17 +456,18 @@ export class CoordinationSupervisor {
                 const currentLabel = actionLabel(currentAction);
                 e.phase = "running";
                 this.store.save(e);
-                this.notice(e, `Task ${e.task!.task_id} · step ${e.step}: ${currentLabel} started.`, `start:${e.step}`);
+                this.notice(e, `Task ${e.task!.task_id} · step ${e.step + 1}: ${currentLabel} started.`, `start:${e.step}`);
                 const output = await this.hooks.execute(e, e.work_id ? this.store.work(e.work_id) : null, abort.signal);
                 abort.signal.throwIfAborted();
                 if (output.next) {
-                    this.notice(e, `Task ${e.task!.task_id} · step ${e.step}: ${currentLabel} completed.\n${output.result}\nNext: ${actionLabel(output.next)} queued.`, `step-result:${e.step}`);
+                    const completedStep = e.step;
                     e.checkpoint = output.checkpoint ?? output.result;
                     e.action = output.next;
                     e.phase = "execute";
                     e.step++;
                     this.store.save(e);
                     this.store.moveToTail(e);
+                    this.notice(e, `Task ${e.task!.task_id} · step ${completedStep + 1}: ${currentLabel} completed.\n${output.result}\nNext: ${actionLabel(output.next)} queued.`, `step-result:${completedStep}`);
                     await transition("pending", { reason: "step complete; continuation queued" });
                     return;
                 }

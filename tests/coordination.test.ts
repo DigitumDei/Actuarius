@@ -338,7 +338,23 @@ describe("durable supervisor", () => {
     it("retains a workspace between continuation steps while other repos can run", async () => {
         const h = harness();
         const calls: string[] = [];
-        h.hooks.execute = async (e) => { calls.push(e.id); return e.id === "first" && e.step === 0 ? { result: "checkpoint", next: "verify", checkpoint: "saved" } : { result: "done" }; };
+        h.hooks.execute = async (e) => {
+            calls.push(e.id);
+            return e.id === "first" && e.step === 0 ? { result: "checkpoint", next: "verify", checkpoint: "saved" } : { result: "done" };
+        };
+        let continuationPersisted = false;
+        const save = h.s.save.bind(h.s);
+        vi.spyOn(h.s, "save").mockImplementation(e => {
+            save(e);
+            if (e.id === "first" && e.phase === "execute" && e.action === "verify" && e.step === 1 && e.checkpoint === "saved")
+                continuationPersisted = true;
+        });
+        const enqueue = h.s.enqueue.bind(h.s);
+        vi.spyOn(h.s, "enqueue").mockImplementation(item => {
+            if (item.key === "first:step-result:0")
+                expect(continuationPersisted).toBe(true);
+            enqueue(item);
+        });
         for (const id of ["first", "same", "other"]) {
             const own = { ...spec, workspace: { ...spec.workspace!, work_id: id === "other" ? "other" : "shared" } };
             h.s.add({ id, source: "discord", description: encodeSpec(own), sender: "sender", wing: "wing_repo", spec: own });
@@ -346,9 +362,9 @@ describe("durable supervisor", () => {
         for (let i = 0; i < 14; i++)
             await h.tick();
         expect(calls).toEqual(["first", "other", "first", "same"]);
-        expect(h.notices).toContain("Task t1 · step 0: implementation started.");
-        expect(h.notices).toContain("Task t1 · step 0: implementation completed.\ncheckpoint\nNext: verify queued.");
-        expect(h.notices).toContain("Task t1 · step 1: verify started.");
+        expect(h.notices).toContain("Task t1 · step 1: implementation started.");
+        expect(h.notices).toContain("Task t1 · step 1: implementation completed.\ncheckpoint\nNext: verify queued.");
+        expect(h.notices).toContain("Task t1 · step 2: verify started.");
     });
     it("does not let an unavailable dependency authority stall unrelated tasks", async () => {
         const h = harness();

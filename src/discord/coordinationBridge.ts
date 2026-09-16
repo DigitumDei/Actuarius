@@ -402,7 +402,7 @@ export class CoordinationBridge {
             key: `${e.id}:review-progress:${e.step}:${eventKey}`,
             kind: "notice",
             entry: e.id,
-            payload: { content: `Task ${e.task!.task_id} · step ${e.step}: ${detail}.` }
+            payload: { content: `Task ${e.task!.task_id} · step ${e.step + 1}: ${detail}.` }
         });
         return Promise.resolve();
     }
