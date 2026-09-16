@@ -495,6 +495,38 @@ describe("ActuariusBot Antigravity Google auth commands", () => {
     expect(completeInteraction.editReply).toHaveBeenCalledOnce();
   });
 
+  it("aborts starting login on shutdown and cancels a session that arrives late", async () => {
+    const session = {
+      url: "https://accounts.google.com/oauth?state=late",
+      isActive: vi.fn().mockReturnValue(true),
+      complete: vi.fn(),
+      cancel: vi.fn().mockResolvedValue(undefined)
+    };
+    let resolveStart!: (value: typeof session) => void;
+    let signal: AbortSignal | undefined;
+    vi.mocked(startAntigravityGoogleAuth).mockImplementation((options) => {
+      signal = options.signal;
+      return new Promise((resolve) => { resolveStart = resolve; });
+    });
+    const bot = createBot();
+    (bot as any).config.enableGeminiExecution = true;
+    const interaction = createInteraction({
+      memberPermissions: { has: vi.fn().mockReturnValue(true) }
+    });
+    const handler = (bot as any).handleAuthAntigravity(interaction);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await bot.stop();
+    expect(signal?.aborted).toBe(true);
+    resolveStart(session);
+    await handler;
+
+    expect(session.cancel).toHaveBeenCalledOnce();
+    expect((bot as any).pendingAntigravityAuth.size).toBe(0);
+    expect((bot as any).startingAntigravityAuth.size).toBe(0);
+    expect(interaction.editReply).not.toHaveBeenCalled();
+  });
+
   it("requires Manage Server permission before starting login", async () => {
     const bot = createBot();
     (bot as any).config.enableGeminiExecution = true;

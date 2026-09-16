@@ -699,7 +699,7 @@ describe("InstallService", () => {
     const originalEnv: Record<string, string | undefined> = {};
 
     beforeAll(() => {
-      for (const key of ["HOME", "USER", "SHELL", "LANG", "PATH", "GEMINI_API_KEY", "GOOGLE_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "XAI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "TOGETHER_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN", "GH_PROMPT_DISABLED", "NON_ESSENTIAL_VAR"]) {
+      for (const key of ["HOME", "USER", "SHELL", "LANG", "PATH", "GEMINI_API_KEY", "GOOGLE_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "XAI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "TOGETHER_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN", "GH_PROMPT_DISABLED", "NON_ESSENTIAL_VAR", "DBUS_SESSION_BUS_ADDRESS", "GNOME_KEYRING_CONTROL", "XDG_RUNTIME_DIR"]) {
         originalEnv[key] = process.env[key];
       }
     });
@@ -757,6 +757,18 @@ describe("InstallService", () => {
 
       expect(result.env.GH_TOKEN).toBe("gh-test-token");
       expect(result.env.GH_PROMPT_DISABLED).toBe("1");
+    });
+
+    it("preserves the Linux keyring locators required by Antigravity account auth", () => {
+      process.env.DBUS_SESSION_BUS_ADDRESS = "unix:path=/run/user/bus";
+      process.env.GNOME_KEYRING_CONTROL = "/run/user/keyring";
+      process.env.XDG_RUNTIME_DIR = "/run/user/1001";
+
+      const result = service.buildMinimalExecutionEnvironment({ repoId: 1, threadId: "thread-1" });
+
+      expect(result.env.DBUS_SESSION_BUS_ADDRESS).toBe("unix:path=/run/user/bus");
+      expect(result.env.GNOME_KEYRING_CONTROL).toBe("/run/user/keyring");
+      expect(result.env.XDG_RUNTIME_DIR).toBe("/run/user/1001");
     });
 
     it("merges install env vars on top of the minimal base", () => {

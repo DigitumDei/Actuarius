@@ -642,7 +642,8 @@ export class ActuariusBot {
   private stuckRequestTimer: NodeJS.Timeout | null = null;
   private opencodeOpenAIAuthInProgress = false;
   private readonly pendingAntigravityAuth = new Map<string, AntigravityGoogleAuthSession>();
-  private readonly startingAntigravityAuth = new Set<string>();
+  private readonly startingAntigravityAuth = new Map<string, AbortController>();
+  private stopping = false;
   private coordination: CoordinationBridge | null = null;
 
   public constructor(
@@ -674,6 +675,7 @@ export class ActuariusBot {
   }
 
   public async start(): Promise<void> {
+    this.stopping = false;
     setProviderGateEnabled(!!this.config.coordinationEnabled && !!this.memPalace?.isReady());
     if (this.config.coordinationEnabled && !this.memPalace?.isReady()) this.logger.error("Coordination unavailable: AgentPalace is offline; continuing with legacy commands");
     if (this.config.coordinationEnabled && this.memPalace?.isReady()) {
@@ -731,12 +733,14 @@ export class ActuariusBot {
   }
 
   public async stop(): Promise<void> {
-    await this.coordination?.stop();
+    this.stopping = true;
+    for (const controller of this.startingAntigravityAuth.values()) controller.abort();
+    this.startingAntigravityAuth.clear();
     await Promise.allSettled(
       [...this.pendingAntigravityAuth.values()].map((session) => session.cancel())
     );
     this.pendingAntigravityAuth.clear();
-    this.startingAntigravityAuth.clear();
+    await this.coordination?.stop();
     if (this.stuckRequestTimer) {
       clearInterval(this.stuckRequestTimer);
       this.stuckRequestTimer = null;
@@ -2386,6 +2390,14 @@ export class ActuariusBot {
       return;
     }
 
+    if (this.stopping) {
+      await interaction.reply({
+        content: "Actuarius is shutting down. Start Antigravity login after it restarts.",
+        ephemeral: true
+      });
+      return;
+    }
+
     const existing = this.pendingAntigravityAuth.get(interaction.guildId);
     if (this.startingAntigravityAuth.has(interaction.guildId) || existing?.isActive()) {
       await interaction.reply({
@@ -2397,14 +2409,20 @@ export class ActuariusBot {
     if (existing) this.pendingAntigravityAuth.delete(interaction.guildId);
 
     const guildId = interaction.guildId;
-    this.startingAntigravityAuth.add(guildId);
+    const controller = new AbortController();
+    this.startingAntigravityAuth.set(guildId, controller);
     let session: AntigravityGoogleAuthSession | undefined;
     try {
       await interaction.deferReply({ ephemeral: true });
       session = await startAntigravityGoogleAuth({
         cwd: process.cwd(),
-        logger: this.logger
+        logger: this.logger,
+        signal: controller.signal
       });
+      if (this.stopping || controller.signal.aborted) {
+        await session.cancel();
+        return;
+      }
       this.pendingAntigravityAuth.set(guildId, session);
       await interaction.editReply({
         content: [
@@ -2419,6 +2437,7 @@ export class ActuariusBot {
     } catch (error) {
       if (session) await session.cancel().catch(() => undefined);
       this.pendingAntigravityAuth.delete(guildId);
+      if (this.stopping || controller.signal.aborted) return;
       const authError = error as Error & { code?: string };
       this.logger.error(
         {
@@ -2437,7 +2456,9 @@ export class ActuariusBot {
         this.logger.warn({ err: replyError, guildId }, "Failed to send Antigravity auth failure reply");
       }
     } finally {
-      this.startingAntigravityAuth.delete(guildId);
+      if (this.startingAntigravityAuth.get(guildId) === controller) {
+        this.startingAntigravityAuth.delete(guildId);
+      }
     }
   }
 

@@ -15,6 +15,21 @@ const DEFAULT_SESSION_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_COMPLETION_TIMEOUT_MS = 60_000;
 const AUTH_KILL_GRACE_MS = 2_000;
 const OUTPUT_TAIL_LIMIT = 64 * 1024;
+
+// Account login needs runtime locators and network configuration, never the
+// Discord/GitHub/provider secrets held by the parent bot.
+const AUTH_ENV_KEYS = [
+  "HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "LANGUAGE",
+  "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TMP", "TEMP",
+  "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+  "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "GNOME_KEYRING_CONTROL",
+  "TERM", "COLUMNS", "LINES", "SSH_CONNECTION",
+  "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+  "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+  "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+  "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
+  "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"
+] as const;
 const AUTH_SUCCESS_PATTERN =
   /loaded cached credentials|credentials saved|successfully authenticated|authentication (?:complete|successful)|successfully logged in|login successful|signed in|welcome to antigravity/i;
 
@@ -45,6 +60,7 @@ export interface StartAntigravityGoogleAuthOptions {
   cwd: string;
   logger: Logger;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
   urlTimeoutMs?: number;
   sessionTimeoutMs?: number;
   completionTimeoutMs?: number;
@@ -70,6 +86,9 @@ export function parseAntigravityGoogleAuthUrl(output: string): string | undefine
 export async function startAntigravityGoogleAuth(
   options: StartAntigravityGoogleAuthOptions
 ): Promise<AntigravityGoogleAuthSession> {
+  if (options.signal?.aborted) {
+    throw new AntigravityAuthError("SESSION_EXPIRED", "Antigravity login was cancelled.");
+  }
   const sourceEnv = options.env ?? process.env;
   const home = sourceEnv.HOME ?? homedir();
   const hadAccountPreference = await prefersAntigravityAccountAuth(home);
@@ -78,8 +97,18 @@ export async function startAntigravityGoogleAuth(
   // agy refuses account login while the API-key provider selector is present.
   await ensureAntigravityApiKeyConfig(options.logger, home, false);
 
-  const childEnv: NodeJS.ProcessEnv = { ...sourceEnv };
-  delete childEnv.GEMINI_API_KEY;
+  if (options.signal?.aborted) {
+    await ensureAntigravityApiKeyConfig(
+      options.logger, home, hadAccountPreference ? false : hadApiKey
+    );
+    throw new AntigravityAuthError("SESSION_EXPIRED", "Antigravity login was cancelled.");
+  }
+
+  const childEnv: NodeJS.ProcessEnv = {};
+  for (const key of AUTH_ENV_KEYS) {
+    if (sourceEnv[key] !== undefined) childEnv[key] = sourceEnv[key];
+  }
+  childEnv.HOME = home;
   childEnv.TERM ??= "xterm-256color";
   childEnv.COLUMNS ??= "4096";
   // Force the documented remote-login path: the container has no browser, and
@@ -90,7 +119,7 @@ export async function startAntigravityGoogleAuth(
   try {
     child = spawn(
       "script",
-      ["-qefc", "stty cols 4096 2>/dev/null || true; exec " + AGY_BINARY, "/dev/null"],
+      ["-qefc", "stty -echo -echonl cols 4096 && exec " + AGY_BINARY, "/dev/null"],
       {
         cwd: options.cwd,
         env: childEnv,
@@ -118,6 +147,7 @@ export async function startAntigravityGoogleAuth(
   let closed = false;
   let outputTail = "";
   let postCodeOutput = "";
+  let urlTimer: NodeJS.Timeout | undefined;
   let forceKillTimer: NodeJS.Timeout | undefined;
   let sessionTimer: NodeJS.Timeout | undefined;
   let completionTimer: NodeJS.Timeout | undefined;
@@ -136,7 +166,9 @@ export async function startAntigravityGoogleAuth(
   };
 
   const clearTimers = (): void => {
+    if (urlTimer) clearTimeout(urlTimer);
     if (sessionTimer) clearTimeout(sessionTimer);
+    options.signal?.removeEventListener("abort", abortLogin);
     if (completionTimer) clearTimeout(completionTimer);
     if (forceKillTimer && closed) clearTimeout(forceKillTimer);
   };
@@ -172,6 +204,7 @@ export async function startAntigravityGoogleAuth(
         );
       }
     }
+    if (!urlFound) rejectUrl(error);
     rejectCompletion(error);
   };
 
@@ -210,6 +243,10 @@ export async function startAntigravityGoogleAuth(
     rejectUrl = reject;
   });
 
+  const abortLogin = (): void => {
+    void fail(new AntigravityAuthError("SESSION_EXPIRED", "Antigravity login was cancelled."));
+  };
+
   const session: AntigravityGoogleAuthSession = {
     get url(): string {
       return authUrl;
@@ -217,7 +254,7 @@ export async function startAntigravityGoogleAuth(
     isActive: () => active && !closed,
     complete: async (rawCode: string): Promise<void> => {
       const code = rawCode.trim();
-      if (!code || code.length > 2_048 || /[\r\n]/u.test(code)) {
+      if (!code || code.length > 2_048 || /[\s\u0000-\u001f\u007f]/u.test(code)) {
         throw new AntigravityAuthError("FAILED", "The Google authorization code is invalid.");
       }
       if (!active || closed) {
@@ -274,6 +311,7 @@ export async function startAntigravityGoogleAuth(
   };
 
   const acceptOutput = (chunk: Buffer | string): void => {
+    if (!active || transitionInProgress) return;
     outputTail = (outputTail + chunk.toString()).slice(-OUTPUT_TAIL_LIMIT);
     if (codeSubmitted) {
       postCodeOutput = (postCodeOutput + chunk.toString()).slice(-OUTPUT_TAIL_LIMIT);
@@ -286,13 +324,7 @@ export async function startAntigravityGoogleAuth(
         resolveUrl(session);
       }
     }
-    if (
-      codeSubmitted
-      && (
-        AUTH_SUCCESS_PATTERN.test(stripVTControlCharacters(postCodeOutput))
-        || postCodeOutput.includes("\u001b[?1049h")
-      )
-    ) {
+    if (codeSubmitted && AUTH_SUCCESS_PATTERN.test(stripVTControlCharacters(postCodeOutput))) {
       void succeed();
     }
   };
@@ -305,7 +337,6 @@ export async function startAntigravityGoogleAuth(
       (error as NodeJS.ErrnoException).code === "ENOENT" ? "UNAVAILABLE" : "FAILED",
       "Antigravity authentication could not start: " + error.message
     );
-    if (!urlFound) rejectUrl(authError);
     void fail(authError);
   });
 
@@ -313,14 +344,11 @@ export async function startAntigravityGoogleAuth(
     closed = true;
     clearTimers();
     if (!urlFound) {
-      active = false;
-      const error = new AntigravityAuthError(
+      void fail(new AntigravityAuthError(
         "FAILED",
         "Antigravity exited with code " + String(code)
           + " before producing a Google sign-in link."
-      );
-      rejectUrl(error);
-      void restorePreviousMode();
+      ));
       return;
     }
     if (codeSubmitted && code === 0) {
@@ -338,17 +366,18 @@ export async function startAntigravityGoogleAuth(
     }
   });
 
-  const urlTimer = setTimeout(() => {
+  urlTimer = setTimeout(() => {
     if (urlFound) return;
     const error = new AntigravityAuthError(
       "URL_TIMEOUT",
       "Timed out waiting for Antigravity to produce a Google sign-in link."
     );
-    rejectUrl(error);
     void fail(error);
   }, options.urlTimeoutMs ?? DEFAULT_URL_TIMEOUT_MS);
   urlTimer.unref();
-  void urlPromise.finally(() => clearTimeout(urlTimer)).catch(() => undefined);
+  void urlPromise.finally(() => {
+    if (urlTimer) clearTimeout(urlTimer);
+  }).catch(() => undefined);
 
   sessionTimer = setTimeout(() => {
     if (!active) return;
@@ -361,6 +390,9 @@ export async function startAntigravityGoogleAuth(
     );
   }, options.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS);
   sessionTimer.unref();
+
+  options.signal?.addEventListener("abort", abortLogin, { once: true });
+  if (options.signal?.aborted) abortLogin();
 
   return urlPromise;
 }

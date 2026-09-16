@@ -90,7 +90,15 @@ describe("startAntigravityGoogleAuth", () => {
       env: {
         HOME: "/data/home/appuser",
         PATH: "/bin",
-        GEMINI_API_KEY: "fallback-key"
+        GEMINI_API_KEY: "fallback-key",
+        DISCORD_TOKEN: "discord-secret",
+        GITHUB_APP_PRIVATE_KEY: "github-secret",
+        OPENAI_API_KEY: "openai-secret",
+        MEMPALACE_REMOTE_TOKEN: "palace-secret",
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/bus",
+        GNOME_KEYRING_CONTROL: "/run/user/keyring",
+        XDG_DATA_HOME: "/data/home/appuser/.local/share",
+        HTTPS_PROXY: "https://proxy.example:443"
       }
     });
     child.stdout.write(
@@ -122,11 +130,109 @@ describe("startAntigravityGoogleAuth", () => {
     expect(file).toBe("script");
     expect(args).toEqual([
       "-qefc",
-      "stty cols 4096 2>/dev/null || true; exec agy",
+      "stty -echo -echonl cols 4096 && exec agy",
       "/dev/null"
     ]);
     expect(spawnOptions?.env?.GEMINI_API_KEY).toBeUndefined();
     expect(spawnOptions?.env?.SSH_CONNECTION).toBeDefined();
+    expect(spawnOptions?.env?.DBUS_SESSION_BUS_ADDRESS).toBe("unix:path=/run/user/bus");
+    expect(spawnOptions?.env?.GNOME_KEYRING_CONTROL).toBe("/run/user/keyring");
+    expect(spawnOptions?.env?.HTTPS_PROXY).toBe("https://proxy.example:443");
+    for (const key of [
+      "DISCORD_TOKEN", "GITHUB_APP_PRIVATE_KEY", "OPENAI_API_KEY", "MEMPALACE_REMOTE_TOKEN"
+    ]) {
+      expect(spawnOptions?.env).not.toHaveProperty(key);
+    }
+  });
+
+  it.each(["signed in", "\u001b[?1049h", "code\tvalue"])(
+    "rejects input that could impersonate successful output: %j",
+    async (code) => {
+      const child = createMockChild();
+      vi.mocked(spawn).mockReturnValue(child as never);
+      const pending = startAntigravityGoogleAuth({ cwd: "/workspace", logger });
+      child.stdout.write("https://accounts.google.com/oauth?state=invalid-input\n");
+      const session = await pending;
+      const write = vi.spyOn(child.stdin, "write");
+
+      await expect(session.complete(code)).rejects.toThrow("authorization code is invalid");
+
+      expect(write).not.toHaveBeenCalled();
+      expect(setAntigravityAccountAuthPreference).not.toHaveBeenCalled();
+      await session.cancel();
+    }
+  );
+
+  it("terminates and restores a login cancelled before its URL arrives", async () => {
+    const child = createMockChild();
+    vi.mocked(spawn).mockReturnValue(child as never);
+    const controller = new AbortController();
+    const pending = startAntigravityGoogleAuth({
+      cwd: "/workspace",
+      logger,
+      env: { HOME: "/data/home/appuser", GEMINI_API_KEY: "fallback-key" },
+      signal: controller.signal
+    });
+    const failure = expect(pending).rejects.toMatchObject({ code: "SESSION_EXPIRED" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    controller.abort();
+    await failure;
+
+    expect(signalChildTree).toHaveBeenCalledWith(child, "SIGTERM");
+    expect(ensureAntigravityApiKeyConfig).toHaveBeenLastCalledWith(
+      logger, "/data/home/appuser", true
+    );
+    expect(setAntigravityAccountAuthPreference).not.toHaveBeenCalled();
+  });
+
+  it("does not spawn when shutdown has already cancelled the login", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(startAntigravityGoogleAuth({
+      cwd: "/workspace", logger, signal: controller.signal
+    })).rejects.toMatchObject({ code: "SESSION_EXPIRED" });
+
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === "win32")("keeps submitted input out of a real PTY's output", async () => {
+    const { spawn: realSpawn } = await vi.importActual<typeof import("node:child_process")>(
+      "node:child_process"
+    );
+    const child = realSpawn("script", [
+      "-qefc",
+      "stty -echo -echonl cols 4096 && printf 'ready\n' && IFS= read -r code && printf 'validated\n'",
+      "/dev/null"
+    ], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    let output = "";
+    let submitted = false;
+    const result = await new Promise<string>((resolve, reject) => {
+      const deadline = setTimeout(() => {
+        if (child.pid !== undefined) {
+          try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+        }
+        reject(new Error("PTY echo test timed out"));
+      }, 5_000);
+      child.stdout.on("data", (chunk) => {
+        output += chunk.toString();
+        if (!submitted && output.includes("ready")) {
+          submitted = true;
+          child.stdin.write("signed in\n");
+        }
+      });
+      child.stderr.on("data", (chunk) => { output += chunk.toString(); });
+      child.once("error", (error) => { clearTimeout(deadline); reject(error); });
+      child.once("close", (code) => {
+        clearTimeout(deadline);
+        if (code === 0) resolve(output);
+        else reject(new Error("PTY echo test exited with code " + String(code)));
+      });
+    });
+
+    expect(result).toContain("validated");
+    expect(result).not.toContain("signed in");
   });
 
   it("restores API-key mode when an unfinished login is cancelled", async () => {
