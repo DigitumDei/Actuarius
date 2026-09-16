@@ -101,7 +101,7 @@ variable "enable_codex_execution" {
 variable "enable_gemini_execution" {
   type        = bool
   default     = false
-  description = "Enable Gemini CLI execution for /ask requests"
+  description = "Enable the Antigravity CLI (agy) provider for /ask requests. Operates Gemini models; authenticates with a signed-in agy account or with GEMINI_API_KEY plus modelProvider=gemini in ~/.gemini/antigravity-cli/settings.json."
 }
 
 variable "enable_opencode_execution" {

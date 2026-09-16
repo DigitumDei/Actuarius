@@ -15,6 +15,14 @@ vi.mock("../src/services/requestWorktreeService.js", async () => {
   return { ...actual, createRequestWorktree: vi.fn(), deleteRequestBranch: vi.fn() };
 });
 
+// Keep the agy settings-file fixup off the test runner's real $HOME.
+vi.mock("../src/services/antigravityCli.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/antigravityCli.js")>(
+    "../src/services/antigravityCli.js"
+  );
+  return { ...actual, ensureAntigravityApiKeyConfig: vi.fn().mockResolvedValue(undefined) };
+});
+
 vi.mock("../src/services/gitWorkspaceService.js", async () => {
   const actual = await vi.importActual<typeof import("../src/services/gitWorkspaceService.js")>(
     "../src/services/gitWorkspaceService.js"
@@ -140,7 +148,7 @@ describe("Bot entrypoint transport acceptance", () => {
     ensureRepoCheckedOutToMaster = vi.mocked(gitMod.ensureRepoCheckedOutToMaster);
     const worktreeMod = await import("../src/services/requestWorktreeService.js");
     createRequestWorktreeMock = vi.mocked(worktreeMod.createRequestWorktree);
-  }, 30000);
+  }, 120000);
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -295,10 +303,16 @@ describe("Bot entrypoint transport acceptance", () => {
     expect(records.some((record) => record.msg === "Queued AI request succeeded")).toBe(false);
   });
 
-  it("queued ask with gemini oversized prompt through real bot dispatch uses stdin fallback with -p '' retained", async () => {
+  it("queued ask with gemini oversized prompt through real bot dispatch uses stream-json stdin fallback", async () => {
     const hugePrompt = "x".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
     mockSpawn.mockImplementation(() =>
-      createMockChild({ stdout: "gemini result", exitCode: 0 }),
+      createMockChild({
+        stdout: [
+          '{"event":"init","conversation_id":"055a398f","init":{"cwd":"/tmp"}}',
+          '{"event":"result","result":{"conversation_id":"055a398f","status":"SUCCESS","response":"gemini result\\n","num_turns":1}}'
+        ].join("\n"),
+        exitCode: 0,
+      }),
     );
     ensureRepoCheckedOutToMaster.mockResolvedValue({ localPath: "/tmp/repo" });
     createRequestWorktreeMock.mockResolvedValue({
@@ -331,8 +345,11 @@ describe("Bot entrypoint transport acceptance", () => {
     });
 
     const [, args] = mockSpawn.mock.calls[0]!;
-    expect(args).toContain("-p");
-    expect(args).toContain("");
+    expect(args).toEqual([
+      "--input-format", "stream-json", "--output-format", "stream-json",
+      "--dangerously-skip-permissions", "--print-timeout", "5s"
+    ]);
+    expect(args).not.toContain(hugePrompt);
 
     const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
     expect(stdinWrite).toHaveBeenCalled();
@@ -348,7 +365,8 @@ describe("Bot entrypoint transport acceptance", () => {
     expect(transportLog!).toMatchObject({
       transport: "stdin",
       useFlagPairStdin: true,
-      logLabel: "Gemini",
+      stdinKind: "stream-json",
+      logLabel: "Antigravity",
       totalBytes: expect.any(Number),
       limitBytes: DEFAULT_ARGV_TOTAL_LIMIT,
     });
@@ -358,7 +376,7 @@ describe("Bot entrypoint transport acceptance", () => {
   it("queued ask with gemini oversized prompt preserves --model and structured transport event through bot dispatch", async () => {
     const hugePrompt = "y".repeat(DEFAULT_ARGV_TOTAL_LIMIT);
     mockSpawn.mockImplementation(() =>
-      createMockChild({ stdout: "ok", exitCode: 0 }),
+      createMockChild({ stdout: '{"event":"result","result":{"conversation_id":"abc","status":"SUCCESS","response":"ok\\n","num_turns":1}}\n', exitCode: 0 }),
     );
     ensureRepoCheckedOutToMaster.mockResolvedValue({ localPath: "/tmp/repo" });
     createRequestWorktreeMock.mockResolvedValue({
@@ -392,13 +410,16 @@ describe("Bot entrypoint transport acceptance", () => {
     });
 
     const [, args] = mockSpawn.mock.calls[0]!;
-    expect(args).toEqual(["-p", "", "--yolo", "--model", "gemini-2.5-pro"]);
+    expect(args).toEqual([
+      "--input-format", "stream-json", "--output-format", "stream-json",
+      "--dangerously-skip-permissions", "--print-timeout", "5s", "--model", "gemini-2.5-pro"
+    ]);
 
     const transportLog = records.find(
       (r) => (r as Record<string, unknown>).transportReason === "oversized_flag_pair_stdin",
     ) as Record<string, unknown> | undefined;
     expect(transportLog).toBeDefined();
-    expect(transportLog!).toMatchObject({ logLabel: "Gemini" });
+    expect(transportLog!).toMatchObject({ logLabel: "Antigravity", stdinKind: "stream-json" });
   });
 
   it("queued ask with opencode oversized prompt through real bot dispatch uses --file tempfile transport", async () => {
@@ -627,7 +648,7 @@ describe("Bot entrypoint transport acceptance", () => {
     expect(result).toBe("gemini small");
 
     const [, args] = mockSpawn.mock.calls[0]!;
-    expect(args).toEqual(["-p", "hello", "--yolo"]);
+    expect(args).toEqual(["-p", "hello", "--dangerously-skip-permissions", "--print-timeout", "5s"]);
 
     const stdinWrite = mockSpawn.mock.results[0]?.value?.stdin?.write;
     expect(stdinWrite).not.toHaveBeenCalled();

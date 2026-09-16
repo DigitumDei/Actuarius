@@ -14,7 +14,7 @@ const checks: CapabilityCheck[] = [
   { capability: "npm", command: "npm", args: ["--version"] },
   { capability: "codex", command: "codex", args: ["--version"] },
   { capability: "claude", command: "claude", args: ["--version"] },
-  { capability: "gemini", command: "gemini", args: ["--version"] },
+  { capability: "antigravity", command: "agy", args: ["--version"] },
   { capability: "opencode", command: "opencode", args: ["--version"] }
 ];
 

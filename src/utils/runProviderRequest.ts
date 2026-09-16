@@ -55,6 +55,18 @@ export interface ProviderRunnerConfig {
   /** If true, pass the prompt as a positional arg instead of `-p <prompt>`. */
   positionalPrompt?: boolean;
   /**
+   * For providers whose oversized-prompt stdin transport is a documented JSON
+   * streaming protocol rather than the legacy `-p ""` flag-pair (e.g. the
+   * Antigravity CLI's `--input-format stream-json`), the args that switch the
+   * process into streaming input/output mode. When set alongside
+   * `stdinStreamPrompt`, an oversized payload is spawned with these args and
+   * `stdinStreamPrompt(prompt)` is written to stdin instead of `-p ""` + raw
+   * prompt text.
+   */
+  stdinStreamArgs?: string[];
+  /** Render the stdin payload for the `stdinStreamArgs` streaming transport. */
+  stdinStreamPrompt?: (prompt: string) => string;
+  /**
    * If set, inject `[cwdFlag, input.cwd]` immediately after prefixArgs.
    * Use for CLIs that don't honor the process cwd as their project root —
    * notably opencode, which resolves project context via `.git` and gets
@@ -109,6 +121,17 @@ export interface ProviderRunnerConfig {
    * plain text. Applied after auth-pattern checks on the raw output.
    */
   transformOutput?: (stdout: string) => string;
+  /** Restrict output transformation to the documented stream transport. */
+  transformOutputOnlyForStream?: boolean;
+  /**
+   * Optional structured-output validation applied to raw stdout after a clean
+   * exit. Return a failure descriptor to reject a run that the process exited
+   * `0` from but whose structured status reports an error (e.g. the Antigravity
+   * CLI's stream-json `result.status`).
+   */
+  validateOutput?: (stdout: string) => { code: string; message: string } | undefined;
+  /** Restrict structured validation to the documented stream transport. */
+  validateOutputOnlyForStream?: boolean;
 }
 
 /** Returns the last `count` non-empty stderr lines, joined, for use as diagnostic detail. */
@@ -119,8 +142,11 @@ function lastMeaningfulLines(text: string | undefined, count: number): string {
 
 function extractProviderSessionId(stdout: string | undefined): string | undefined {
   if (!stdout) return undefined;
-  const matches = [...stdout.matchAll(/"sessionID"\s*:\s*"([^"]+)"/gu)];
-  return matches.at(-1)?.[1];
+  const sessionMatches = [...stdout.matchAll(/"sessionID"\s*:\s*"([^"]+)"/gu)];
+  if (sessionMatches.length > 0) return sessionMatches.at(-1)?.[1];
+  // The Antigravity CLI (agy) identifies runs with `conversation_id`.
+  const conversationMatches = [...stdout.matchAll(/"conversation_id"\s*:\s*"([^"]+)"/gu)];
+  return conversationMatches.at(-1)?.[1];
 }
 
 function summarizeJsonActivity(line: string): string | null {
@@ -142,7 +168,34 @@ function summarizeJsonActivity(line: string): string | null {
       input && typeof input.subagent_type === "string" ? `subagent=${input.subagent_type}` : null,
       input && typeof input.description === "string" ? `description=${input.description}` : null
     ].filter((value): value is string => Boolean(value));
-    return pieces.length > 0 ? pieces.join(" ") : null;
+    if (pieces.length > 0) return pieces.join(" ");
+
+    // Antigravity CLI result events carry a terminal status that is useful in
+    // timeout/activity diagnostics. Handle them before the generic event name.
+    const result = typeof event.result === "object" && event.result !== null
+      ? event.result as Record<string, unknown>
+      : null;
+    const resultPieces = [
+      typeof event.event === "string" ? event.event : null,
+      typeof result?.status === "string" ? `status=${result.status}` : null
+    ].filter((value): value is string => Boolean(value));
+    if (event.event === "result" && resultPieces.length > 0) return resultPieces.join(" ");
+
+    // Antigravity CLI (agy) stream-json events: step_update / result.
+    const stepUpdate = typeof event.step_update === "object" && event.step_update !== null
+      ? event.step_update as Record<string, unknown>
+      : null;
+    const agyPieces = [
+      typeof event.event === "string" ? event.event : null,
+      typeof stepUpdate?.step_type === "string" ? `step=${stepUpdate.step_type}` : null,
+      typeof stepUpdate?.tool_name === "string" ? `tool=${stepUpdate.tool_name}` : null,
+      typeof stepUpdate?.state === "string" ? `state=${stepUpdate.state}` : null
+    ].filter((value): value is string => Boolean(value));
+    if (agyPieces.length > 0) return agyPieces.join(" ");
+
+    if (resultPieces.length > 0) return resultPieces.join(" ");
+
+    return null;
   } catch {
     return null;
   }
@@ -166,10 +219,10 @@ function summarizeLastActivity(
 }
 
 /**
- * Generic CLI runner shared by Codex and Gemini execution services.
- * Spawns the binary, handles timeout/ENOENT/empty-output errors, and returns
- * trimmed stdout.  Uses transport-aware spawning to move oversized prompts
- * from argv to stdin or a temp file when the payload exceeds
+ * Generic CLI runner shared by the Codex, Antigravity, and OpenCode execution
+ * services.  Spawns the binary, handles timeout/ENOENT/empty-output errors, and
+ * returns trimmed stdout.  Uses transport-aware spawning to move oversized
+ * prompts from argv to stdin or a temp file when the payload exceeds
  * `DEFAULT_ARGV_TOTAL_LIMIT`.
  */
 export async function runProviderRequest(
@@ -225,35 +278,52 @@ async function runProviderRequestUnlocked(
   // For providers using the -p <prompt> flag-pair pattern with stdin fallback,
   // keep the -p flag in args with an empty value and pipe the actual prompt via
   // stdin (the CLI appends stdin content to the -p value, e.g. Gemini).
-  // This bypasses spawnCollectWithTransport's prompt-removal behavior which
-  // would remove -p entirely, breaking headless mode. The trigger honors both
-  // the total payload limit and the per-argument MAX_ARG_STRLEN cap.
+  // Providers with a documented JSON streaming stdin protocol (the Antigravity
+  // CLI) instead switch to `--input-format stream-json` and write a payload
+  // rendered by `stdinStreamPrompt`. This bypasses spawnCollectWithTransport's
+  // prompt-removal behavior which would remove -p entirely, breaking headless
+  // mode. The trigger honors both the total payload limit and the per-argument
+  // MAX_ARG_STRLEN cap.
   const useFlagPairStdin = !config.positionalPrompt
     && config.supportsStdinFallback !== false
     && payloadExceedsLimits;
 
   let stdout: string;
   let stderr: string;
+  let structuredTransport = false;
 
   try {
     if (useFlagPairStdin) {
-      const stdinArgs = [
-        ...prefix,
-        ...cwdArgs,
-        "-p",
-        "",
-        ...config.extraArgs,
-      ];
+      const useStreamStdin = config.stdinStreamArgs !== undefined && config.stdinStreamPrompt !== undefined;
+      structuredTransport = useStreamStdin;
+      const stdinArgs = useStreamStdin
+        ? [
+            ...prefix,
+            ...cwdArgs,
+            ...config.stdinStreamArgs!,
+            ...config.extraArgs,
+          ]
+        : [
+            ...prefix,
+            ...cwdArgs,
+            "-p",
+            "",
+            ...config.extraArgs,
+          ];
       if (input.model) {
         stdinArgs.push("--model", input.model);
       }
+      const stdinPayload = useStreamStdin
+        ? config.stdinStreamPrompt!(input.prompt)
+        : input.prompt;
       logger.info(
         {
           ...input.diagnostics,
           args: stdinArgs,
-          stdinLength: input.prompt.length,
+          stdinLength: stdinPayload.length,
           transport: "stdin" as const,
           transportReason: "oversized_flag_pair_stdin" as const,
+          stdinKind: useStreamStdin ? "stream-json" as const : "legacy-flag-pair" as const,
           totalBytes,
           maxArgBytes,
           limitBytes: DEFAULT_ARGV_TOTAL_LIMIT,
@@ -261,7 +331,7 @@ async function runProviderRequestUnlocked(
           useFlagPairStdin: true,
           logLabel: config.logLabel,
         },
-        `${config.logLabel} oversized prompt via -p "" + stdin (${Math.round(totalBytes / 1024)} KB of ${Math.round(DEFAULT_ARGV_TOTAL_LIMIT / 1024)} KB threshold)`,
+        `${config.logLabel} oversized prompt via ${useStreamStdin ? "streaming stdin" : `-p "" + stdin`} (${Math.round(totalBytes / 1024)} KB of ${Math.round(DEFAULT_ARGV_TOTAL_LIMIT / 1024)} KB threshold)`,
       );
       const result = await spawnCollect(config.binary, stdinArgs, {
         cwd: input.cwd,
@@ -272,7 +342,7 @@ async function runProviderRequestUnlocked(
         ...(input.env ? { env: input.env } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
         ...(input.onActivity ? { onOutput: input.onActivity } : {}),
-        stdin: input.prompt,
+        stdin: stdinPayload,
       });
       ({ stdout, stderr } = result);
     } else {
@@ -405,8 +475,18 @@ async function runProviderRequestUnlocked(
     }
   }
 
+  // Validate structured output before transforming, so the validator can
+  // inspect the CLI's raw envelope/NDJSON.
+  if (config.validateOutput && (!config.validateOutputOnlyForStream || structuredTransport)) {
+    const failure = config.validateOutput(stdout);
+    if (failure) {
+      logger.warn({ stdout: stdout.slice(0, 1000), stderr }, `${config.logLabel} structured output reported failure`);
+      throw config.makeError(failure.code, failure.message);
+    }
+  }
+
   // Apply optional output transformation (e.g. JSON parsing for Claude)
-  if (config.transformOutput) {
+  if (config.transformOutput && (!config.transformOutputOnlyForStream || structuredTransport)) {
     stdout = config.transformOutput(stdout);
   }
 

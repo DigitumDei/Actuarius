@@ -99,7 +99,9 @@ gcloud secrets versions add actuarius-discord-token --data-file=-   # paste valu
 
 Secret names: `actuarius-discord-token`, `actuarius-claude-oauth-token`,
 `actuarius-github-app-private-key-b64` (or `actuarius-github-app-private-key`
-for a raw PEM — set only one), `actuarius-gh-token`, `actuarius-gemini-api-key`,
+for a raw PEM — set only one), `actuarius-gh-token`, `actuarius-gemini-api-key`
+(optional: feeds `GEMINI_API_KEY` for Antigravity CLI / `agy` API-key auth; the
+`agy` provider can instead use a signed-in account session),
 `actuarius-mempalace-remote-token`. `redeploy.sh` always reads
 `versions/latest`, so rotation is: add a new version, run redeploy. Never pass
 secrets as command-line arguments — they end up in shell history and `ps`.
@@ -241,14 +243,14 @@ This upgrade supersedes the shared-directory approach in PR #215. **Do not run i
 1. Record the deployed image and take the stopped-bot snapshot described below. It must include both palace directories, `$HOME/.mempalace`, tokens, provider configs and model cache.
 2. Deploy the pinned image. It uses one `agentpalace` executable. Existing `MEMPALACE_*` metadata values remain supported, so no Terraform resource changes are needed for this upgrade. Custom CLI paths must point at the new executable.
 3. The entrypoint retains the old model cache under the new cache name when the new directory is absent; both are preserved when both exist. The service uses `AGENTPALACE_CONFIG_DIR=$HOME/.mempalace` so identity and server settings are retained. Old tool prefixes in identity are updated without replacing operator text.
-4. Startup allows up to two minutes for a cold model load (with cancellable shutdown), removes self-federation routes, verifies the authenticated `/mcp` handshake, then writes HTTP registrations for Claude, Codex, Gemini, OpenCode, and OpenCode planning snapshots. A failed server startup aborts boot rather than launching LLMs against stale stdio registrations. All clients share the server's palace and embedding runtime.
+4. Startup allows up to two minutes for a cold model load (with cancellable shutdown), removes self-federation routes, verifies the authenticated `/mcp` handshake, then writes HTTP registrations for Claude, Codex, the Antigravity CLI (`agy` via `~/.gemini/config/mcp_config.json`), OpenCode, and OpenCode planning snapshots. A failed server startup aborts boot rather than launching LLMs against stale stdio registrations. All clients share the server's palace and embedding runtime.
 5. Verify `agentpalace --version` reports 0.1.48, `/v1/info` reports the expected version and `low_cpu`, all four providers discover `agentpalace_*` tools, and a drawer written via HTTP MCP is readable from a home PC through federation. Check simultaneous clients and server restart recovery. Home-PC stdio configurations are unchanged.
 
 **Local-only history:** the former `/data/mempalace/palace` is preserved untouched as an archive. Its old local-only diaries are not silently copied into the shared server and will not appear in new wake-ups. Keep that directory and the snapshot; if historical diary retrieval is needed, open a *snapshot copy* with an isolated matching-version server and explicit palace/config paths. New bot/LLM diaries live in the authoritative shared palace. Identity remains available through the retained config directory.
 
 Provider config files contain the local unrestricted bearer token, as required by HTTP MCP. They are mode 0600. Rotate it through the configured token source and restart the bot to converge registrations. Continue using loopback/IAP; this change does not expose a public port.
 
-Provider configuration references: [Claude](https://code.claude.com/docs/en/mcp), [Codex](https://developers.openai.com/codex/mcp), [Gemini](https://geminicli.com/docs/tools/mcp-server/), [OpenCode](https://opencode.ai/docs/mcp-servers/).
+Provider configuration references: [Claude](https://code.claude.com/docs/en/mcp), [Codex](https://developers.openai.com/codex/mcp), [Antigravity CLI (agy)](https://www.antigravity.google/docs/cli/mcp/), [OpenCode](https://opencode.ai/docs/mcp-servers/).
 
 ### AgentPalace performance harness
 

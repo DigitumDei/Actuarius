@@ -24,7 +24,8 @@ discord_guild_id = "replace_me"   # Optional: omit for global command registrati
 github_app_id              = "replace_me"
 github_app_installation_id = "replace_me"
 
-# Enable Codex/Gemini CLI providers for /ask
+# Enable Codex / Antigravity (agy) providers for /ask; the Gemini provider
+# value is kept for deployment compatibility.
 enable_codex_execution  = true
 enable_gemini_execution = true
 
@@ -42,7 +43,7 @@ enable_mempalace_remote = true
 #   gcloud secrets versions add actuarius-claude-oauth-token        --data-file=-   # required (claude setup-token)
 #   gcloud secrets versions add actuarius-github-app-private-key-b64 --data-file=-  # base64 of the App .pem
 #   gcloud secrets versions add actuarius-gh-token                  --data-file=-   # optional PAT fallback
-#   gcloud secrets versions add actuarius-gemini-api-key            --data-file=-   # if Gemini enabled
+#   gcloud secrets versions add actuarius-gemini-api-key            --data-file=-   # optional; for Antigravity (gemini) API-key auth
 #   gcloud secrets versions add actuarius-mempalace-remote-token    --data-file=-   # optional; omit to auto-generate
 #
 # Each command reads the value from stdin: paste it, then press Ctrl+D
