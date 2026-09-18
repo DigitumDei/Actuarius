@@ -336,10 +336,13 @@ export function buildAnalyzerPrompt(input: {
   repoFullName: string;
   branchName: string;
   threadHistory: string;
+  reviewContext?: string;
 }): string {
   return [
     `You are the analyzer for an adversarial code review of ${input.repoFullName}.`,
     `Review branch: ${input.branchName}`,
+    "Do not edit repository files, publish, merge, release, deploy or invoke other LLMs during review.",
+    ...(input.reviewContext ? [input.reviewContext, ""] : []),
     "Your job is to read the conversation history below and determine what this change is trying to accomplish.",
     "Do not look at code. Do not suggest where reviewers should focus. Just describe the intent.",
     "Return plain text with these headings: Intent, Success Criteria.",
@@ -365,10 +368,13 @@ export function buildReviewerPrompt(input: {
   previousReview?: string;
   critiqueFeedback?: string[];
   judgeSummary?: string;
+  reviewContext?: string;
 }): string {
   const lines = [
     `You are ${input.reviewerLabel}, an adversarial reviewer for ${input.repoFullName}.`,
     `Review branch: ${input.branchName}`,
+    "Do not edit repository files, publish, merge, release, deploy or invoke other LLMs during review.",
+    ...(input.reviewContext ? [input.reviewContext, ""] : []),
     `Diff base: ${input.baseBranch}`,
     `Review round: ${input.round}`,
     "Be skeptical. Do not assume the implementation is correct. Look for bugs, regressions, missing tests, and weak reasoning.",
@@ -415,10 +421,13 @@ export function buildCritiquePrompt(input: {
   round: number;
   ownReview: string;
   peerReviews: ReviewPromptOutput[];
+  reviewContext?: string;
 }): string {
   return [
     `You are ${input.reviewerLabel}, critically reviewing peer code reviews for ${input.repoFullName}.`,
     `Review branch: ${input.branchName}`,
+    "Do not edit repository files, publish, merge, release, deploy or invoke other LLMs during review.",
+    ...(input.reviewContext ? [input.reviewContext, ""] : []),
     `Diff base: ${input.baseBranch}`,
     `Critique round: ${input.round}`,
     "Assess whether each peer review comment is valid, overstated, unsupported, or missing evidence.",
@@ -449,10 +458,13 @@ export function buildJudgePrompt(input: {
   round: number;
   reviewerOutputs: ReviewPromptOutput[];
   critiqueOutputs: ReviewPromptCritiqueOutput[];
+  reviewContext?: string;
 }): string {
   return [
     `You are the judge for an adversarial code review of ${input.repoFullName}.`,
     `Review branch: ${input.branchName}`,
+    "Do not edit repository files, publish, merge, release, deploy or invoke other LLMs during review.",
+    ...(input.reviewContext ? [input.reviewContext, ""] : []),
     `Diff base: ${input.baseBranch}`,
     `Consensus round: ${input.round}`,
     "Decide whether the reviewers have reached practical consensus on the important issues.",
@@ -492,10 +504,13 @@ export function buildSummarizerPrompt(input: {
   reviewerOutputs: ReviewPromptOutput[];
   critiqueOutputs: ReviewPromptCritiqueOutput[];
   judgeRounds: ReviewPromptJudgeRound[];
+  reviewContext?: string;
 }): string {
   return [
     `You are the neutral summarizer for an adversarial code review of ${input.repoFullName}.`,
     `Review branch: ${input.branchName}`,
+    "Do not edit repository files, publish, merge, release, deploy or invoke other LLMs during review.",
+    ...(input.reviewContext ? [input.reviewContext, ""] : []),
     `Diff base: ${input.baseBranch}`,
     "Synthesize the analyzer and reviewer outputs into a final verdict.",
     "Return JSON only with this exact shape:",

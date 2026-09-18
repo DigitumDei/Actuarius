@@ -2,18 +2,23 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 import { CoordinationClient, CoordinationRevisionConflict } from "./client.js";
 import { CoordinationStore, type Entry, type Work } from "./store.js";
-import { TaskValidationError, clarifiedBriefSchema, correctionSchema, encodeSpec, executionSchema, humanQuestionSchema, isDraftPrApproval, parseSpec, type ClarifiedBrief, type ExecutionSpec, type PalaceTask, type Verdict } from "./contract.js";
+import { ExecutionStopError } from "../../utils/executionStop.js";
+import { TaskValidationError, clarifiedBriefSchema, correctionSchema, encodeSpec, executionSchema, fingerprint, humanQuestionSchema, isDraftPrApproval, parseSpec, type ClarifiedBrief, type ExecutionSpec, type PalaceTask, type Verdict } from "./contract.js";
 export interface CoordinationHooks {
     cleanupAttachments?(entryId:string):Promise<void>;
     syncRequests?(): void;
     wings(): string[];
     check(spec: ExecutionSpec): Promise<void>;
     validate(entry: Entry, signal: AbortSignal): Promise<Verdict>;
+    observePublication?(entry: Entry): Promise<boolean>;
+    reconcile?(entry: Entry, signal: AbortSignal): Promise<string | null>;
     clarify(entry: Entry, answer: string, signal: AbortSignal): Promise<ClarifiedBrief>;
     execute(entry: Entry, work: Work | null, signal: AbortSignal): Promise<{
         result: string;
         next?: string;
         checkpoint?: string;
+        retryAfterMs?: number;
+        pause?: string;
     }>;
     notice(entry: Entry, content: string, key: string): Promise<string | null>;
     gate(entry: Entry, dependency: Entry, kind: "merged" | "release" | "stacked"): Promise<boolean>;
@@ -23,6 +28,11 @@ const actionLabels: Record<string, string> = {
     revise: "revision planning",
     implement: "implementation",
     deliver: "adversarial review and draft PR delivery",
+    "publish-draft": "draft checkpoint publication",
+    "draft-ci": "draft CI verification",
+    "ci-fix": "CI failure correction",
+    handoff: "checkpoint publication and handoff",
+    "reconcile-publication": "external publication reconciliation",
     "verify-result": "acceptance verification",
     "plan-implement": "planned task implementation",
     "plan-verify": "planned task verification",
@@ -33,6 +43,9 @@ const actionLabels: Record<string, string> = {
     ask: "answering the request",
     report: "report generation"
 };
+function isResumeRequest(text: string): boolean {
+    return /^(?:retry|resume|continue|carry on)(?: (?:please|the (?:review|task|stage)))?[.!]?$/iu.test(text.trim());
+}
 function actionLabel(action: string): string {
     return actionLabels[action] ?? action.replaceAll("-", " ");
 }
@@ -61,7 +74,7 @@ export class CoordinationSupervisor {
         this.stopping = true;
         if (this.timer)
             clearInterval(this.timer);
-        this.controller?.abort();
+        this.controller?.abort(new ExecutionStopError("shutdown", "Actuarius is shutting down"));
         while (this.syncing)
             await new Promise(resolve => setTimeout(resolve, 10));
         await this.active;
@@ -190,6 +203,20 @@ export class CoordinationSupervisor {
             if (terminal.has(task.state))
                 latest.phase = task.state;
             this.store.save(latest);
+            if (!terminal.has(task.state) && this.hooks.observePublication && ["input_required", "interrupted", "execute"].includes(latest.phase) &&
+                Date.now() - Number(this.store.meta(`publication-refresh:${latest.id}`) ?? 0) >= 60000) {
+                this.store.setMeta(`publication-refresh:${latest.id}`, String(Date.now()));
+                try {
+                    const merged = await this.hooks.observePublication(latest);
+                    const current = this.store.get(latest.id);
+                    if (merged && current && current.phase === latest.phase && fingerprint(current.spec) === fingerprint(latest.spec)) {
+                        current.action="reconcile-publication";
+                        current.checkpoint ??= "Externally merged publication awaits leased reconciliation";
+                        current.phase="execute";current.next_at=0;
+                        this.store.save(current);
+                    }
+                } catch (error) { this.store.setMeta("source_error", `Publication reconciliation for ${latest.id}: ${String(error)}`); }
+            }
         }
         this.store.setMeta("reconcile-offset", String(offset + 20 >= entries.length ? 0 : offset + 20));
     }
@@ -251,6 +278,16 @@ export class CoordinationSupervisor {
     }
     private feedback(e: Entry, questions: string[]): void {
         const validation = e.validation_id!;
+        if (this.store.meta(`handoff-awaiting:${e.id}`)) {
+            this.store.enqueue({key:`${validation}:feedback`,kind:"message",entry:e.id,payload:{
+                task_id:e.task!.task_id,sender:this.worker,recipient:e.sender,kind:"checkpoint_handoff",
+                payload:{version:1,validation_id:validation,reason:e.reason,work_id:e.work_id,
+                    publication:e.work_id ? this.store.work(e.work_id)?.publication : null,
+                    instructions:"Checkpoint published; final review is not approved. Resume the retained stage or finish externally. A matching external merge will be reconciled under a task lease."}
+            }});
+            this.notice(e,`Task ${e.task!.task_id} checkpoint handed off.\n${e.reason}\nReply Resume to continue the retained stage.`,`question:${validation}`);
+            return;
+        }
         this.store.enqueue({ key: `${validation}:feedback`, kind: "message", entry: e.id, payload: {
                 task_id: e.task!.task_id, sender: this.worker, recipient: e.sender, kind: "validation_required",
                 payload: { version: 1, validation_id: validation, questions, instructions: "Reply with task_correction {version:1,validation_id,spec:<complete JSON>} or human_input_required {version:1,validation_id,question,reason}." }
@@ -268,7 +305,7 @@ export class CoordinationSupervisor {
         const watchLease = (): void => {
             if(leaseDeadline) clearTimeout(leaseDeadline);
             const deadline=lease?.lease_expires_at ? Date.parse(lease.lease_expires_at)-15000 : Date.now();
-            leaseDeadline=setTimeout(()=>abort.abort(new Error("Lease could not be confirmed before its safety margin")),Math.max(0,deadline-Date.now()));
+            leaseDeadline=setTimeout(()=>abort.abort(new ExecutionStopError("lease_loss", "Lease could not be confirmed before its safety margin")),Math.max(0,deadline-Date.now()));
             leaseDeadline.unref();
         };
         const transition = async (state: string, details: unknown): Promise<void> => {
@@ -347,10 +384,35 @@ export class CoordinationSupervisor {
             this.store.save(e);
             renewTimer = setInterval(() => {
                 renewing = renewing.then(async () => {
-                    try { lease = await this.api.mutate("renew", { task_id: lease!.task_id, worker: this.worker, expected_revision: lease!.revision, lease_seconds: 120 }); watchLease(); }
-                    catch (error) {
-                        this.logger.warn({error, task:e.id}, "Lease renewal failed; retrying within confirmed lease");
-                        if (!lease?.lease_expires_at || Date.now() >= Date.parse(lease.lease_expires_at) - 35000) abort.abort(error);
+                    for (let attempt = 0; attempt < 2 && !abort.signal.aborted; attempt++) {
+                        try {
+                            lease = await this.api.mutate("renew", { task_id: lease!.task_id, worker: this.worker, expected_revision: lease!.revision, lease_seconds: 120 });
+                            if (!abort.signal.aborted) watchLease();
+                            return;
+                        } catch (error) {
+                            this.logger.warn({error, task:e.id}, "Lease renewal failed; refreshing authoritative ownership");
+                            try {
+                                const fresh = await this.api.get(lease!.task_id);
+                                if (abort.signal.aborted) return;
+                                if (!fresh || fresh.state !== "running" || fresh.owner !== this.worker ||
+                                    (fresh.executor_affinity && fresh.executor_affinity !== this.worker) ||
+                                    !fresh.lease_expires_at || !Number.isFinite(Date.parse(fresh.lease_expires_at)) ||
+                                    Date.parse(fresh.lease_expires_at) <= Date.now() + 15000) {
+                                    abort.abort(new ExecutionStopError("lease_loss", "Task lease was lost or expired during renewal", { cause: error }));
+                                    return;
+                                }
+                                // A lost response may have committed. Only an authoritative,
+                                // still-owned lease can advance the revision or safety deadline.
+                                if (fresh.revision < lease!.revision) break;
+                                const advanced = fresh.revision > lease!.revision;
+                                lease = fresh;
+                                watchLease();
+                                if (!advanced) break;
+                            } catch (refreshError) {
+                                this.logger.warn({error:refreshError, task:e.id}, "Lease refresh unavailable; retaining confirmed deadline");
+                                break;
+                            }
+                        }
                     }
                 });
             }, 30000);
@@ -454,17 +516,38 @@ export class CoordinationSupervisor {
                     this.store.setMeta(`workspace-owner:${e.work_id}`, e.id);
                 const currentAction = e.checkpoint ? e.action : e.spec!.action;
                 const currentLabel = actionLabel(currentAction);
+                e.action = currentAction;
                 e.phase = "running";
                 this.store.save(e);
                 this.notice(e, `Task ${e.task!.task_id} · step ${e.step + 1}: ${currentLabel} started.`, `start:${e.step}`);
-                const output = await this.hooks.execute(e, e.work_id ? this.store.work(e.work_id) : null, abort.signal);
+                const reconciled = currentAction === "reconcile-publication" ? await this.hooks.reconcile?.(e, abort.signal) : null;
+                if (currentAction === "reconcile-publication" && !reconciled) throw new Error("External completion could not be confirmed; retained workspace needs inspection");
+                const output = reconciled ? {result:reconciled} : await this.hooks.execute(e, e.work_id ? this.store.work(e.work_id) : null, abort.signal);
                 abort.signal.throwIfAborted();
+                if (output.pause) {
+                    e.checkpoint = output.checkpoint ?? output.result;
+                    e.action = output.next ?? e.action;
+                    e.reason = output.pause;
+                    this.store.setMeta(`handoff-awaiting:${e.id}`,"1");
+                    e.validation_id = randomUUID();
+                    e.human_answered = false; e.question_message = null;
+                    e.phase = "input_transition";
+                    this.store.save(e);
+                    await transition("input_required", {reason:output.pause});
+                    e.phase = "input_required";
+                    this.store.save(e);
+                    this.notice(e, output.result, `handoff:${e.step}`);
+                    this.feedback(e, [output.pause]);
+                    return;
+                }
                 if (output.next) {
                     const completedStep = e.step;
                     e.checkpoint = output.checkpoint ?? output.result;
                     e.action = output.next;
                     e.phase = "execute";
                     e.step++;
+                    e.next_at = output.retryAfterMs ? Date.now() + output.retryAfterMs : 0;
+                    e.attempts = 0;
                     this.store.save(e);
                     this.store.moveToTail(e);
                     this.notice(e, `Task ${e.task!.task_id} · step ${completedStep + 1}: ${currentLabel} completed.\n${output.result}\nNext: ${actionLabel(output.next)} queued.`, `step-result:${completedStep}`);
@@ -484,6 +567,23 @@ export class CoordinationSupervisor {
             }
         }
         catch (error) {
+            if (e.phase === "running") {
+                const detail = error && typeof error === "object" ? error as Record<string,unknown> : {};
+                const reason = abort.signal.aborted ? abort.signal.reason : error;
+                const stop = {
+                    action:e.action, step:e.step, time:new Date().toISOString(),
+                    message:reason instanceof Error ? reason.message : String(reason),
+                    stopKind: reason instanceof ExecutionStopError ? reason.stopKind : detail.stopKind,
+                    stage:detail.reviewStage ?? (detail.diagnostics as {stage?:string}|undefined)?.stage ?? e.action,
+                    provider:detail.provider, providerSessionId:detail.providerSessionId,
+                    timeoutKind:detail.timeoutKind, timeoutMs:detail.timeoutMs, lastActivity:detail.lastActivity,
+                    partialStdout:typeof (detail.partialStdout ?? detail.stdout) === "string" ? String(detail.partialStdout ?? detail.stdout).slice(-60000) : undefined,
+                    partialStderr:typeof (detail.partialStderr ?? detail.stderr) === "string" ? String(detail.partialStderr ?? detail.stderr).slice(-10000) : undefined,
+                    checkpointRetained:e.checkpoint !== null
+                };
+                this.store.setMeta(`last-stop:${e.id}`,JSON.stringify(stop));
+                if (abort.signal.aborted) error = reason;
+            }
             if (e.phase !== "input_transition") e.reason = error instanceof Error ? `${error.message}${"stderr" in error ? `: ${String(error.stderr).slice(-3000)}` : ""}` : String(error);
             if (e.phase === "running") {
                 e.phase = "interrupted";
@@ -532,10 +632,11 @@ export class CoordinationSupervisor {
                             }
                             this.store.deleteMeta(`clarification:${e.id}`);
                             this.store.deleteMeta(`publication-approval:${e.id}`);
+                            this.store.deleteMeta(`handoff-awaiting:${e.id}`);
+                            const sameIntent = fingerprint(e.spec) === fingerprint(correction.data.spec);
                             e.spec = correction.data.spec;
                             e.description = encodeSpec(e.spec);
-                            e.checkpoint = null;
-                            e.action = e.spec.action;
+                            if (!sameIntent) { e.checkpoint = null; e.action = e.spec.action; }
                             e.phase = "validate";
                             e.validation_id = null;
                             e.question_message = null;
@@ -572,6 +673,11 @@ export class CoordinationSupervisor {
         if (!e) return false;
         const validation=this.store.meta(`question-validation:${messageId}`);
         if (e.phase!=="input_required" || e.human_answered || (validation && validation!==e.validation_id)) throw new Error("This question is no longer open. Reply to the current task question.");
+        if (isResumeRequest(answer) && e.checkpoint && (this.store.meta(`last-stop:${e.id}`) || this.store.meta(`handoff-awaiting:${e.id}`))) {
+            this.resume(e.id);
+            return true;
+        }
+        this.store.deleteMeta(`handoff-awaiting:${e.id}`);
         e.checkpoint = null;
         e.action = e.spec?.action ?? "ask";
         e.human_answered = true;
@@ -615,10 +721,33 @@ export class CoordinationSupervisor {
         this.store.deleteMeta(`publication-approval:${id}`);
         if (isDraftPrApproval(answer)) this.store.setMeta(`publication-approval:${id}`, answer);
     }
-    public repair(id: string, clarification: string): Entry {
+    public resume(id: string): Entry {
         const e = this.store.get(id);
         if (!e?.spec || !["input_required", "interrupted"].includes(e.phase) || this.activeEntryId === e.id)
             throw new Error("Task is not awaiting recovery");
+        this.store.deleteMeta(`handoff-awaiting:${e.id}`);
+        if (e.action === "draft-ci" && e.checkpoint) {
+            try {
+                const checkpoint = JSON.parse(e.checkpoint) as { version?: number; polls?: number };
+                if (checkpoint.version === 1 && typeof checkpoint.polls === "number") {
+                    checkpoint.polls = 0;
+                    e.checkpoint = JSON.stringify(checkpoint);
+                }
+            } catch { /* the execution stage reports malformed retained data */ }
+        }
+        e.phase = e.checkpoint ? "execute" : "validate";
+        e.validation_id = null; e.question_message = null; e.human_answered = false;
+        e.next_at = 0; e.attempts = 0; e.reason = "Operator resumed the retained stage";
+        this.store.save(e);
+        this.store.moveToTail(e);
+        return e;
+    }
+    public repair(id: string, clarification: string): Entry {
+        if (isResumeRequest(clarification)) return this.resume(id);
+        const e = this.store.get(id);
+        if (!e?.spec || !["input_required", "interrupted"].includes(e.phase) || this.activeEntryId === e.id)
+            throw new Error("Task is not awaiting recovery");
+        this.store.deleteMeta(`handoff-awaiting:${e.id}`);
         e.spec = executionSchema.parse({ ...e.spec, action: "revise", requirements: [...e.spec.requirements, ...(e.reason ? [`Recovery context: ${e.reason.slice(0, 15000)}`] : []), clarification] });
         this.recordPublicationApproval(e.id, clarification);
         this.store.setMeta(`clarification:${e.id}`, clarification);
@@ -663,7 +792,7 @@ export class CoordinationSupervisor {
             }
         }
         if (e.id === this.activeEntryId)
-            this.controller?.abort();
+            this.controller?.abort(new ExecutionStopError("operator", "Task cancelled by the operator"));
         e.phase = "cancelled";
         this.store.save(e);
         this.hooks.syncRequests?.();

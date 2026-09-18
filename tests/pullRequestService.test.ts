@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFile, access } from "node:fs/promises";
 
 vi.mock("../src/utils/spawnCollect.js");
 vi.mock("../src/services/githubAuthService.js", () => ({
@@ -7,7 +8,7 @@ vi.mock("../src/services/githubAuthService.js", () => ({
 
 const { spawnCollect } = await import("../src/utils/spawnCollect.js");
 const mockSpawnCollect = vi.mocked(spawnCollect);
-const { createDraftPullRequest } = await import("../src/services/pullRequestService.js");
+const { createDraftPullRequest, updateDraftPullRequest } = await import("../src/services/pullRequestService.js");
 
 describe("pullRequestService", () => {
   beforeEach(() => {
@@ -39,8 +40,8 @@ describe("pullRequestService", () => {
         "main",
         "--title",
         "Add feature",
-        "--body",
-        "Request body"
+        "--body-file",
+        expect.stringMatching(/body\.md$/u)
       ],
       expect.objectContaining({
         cwd: "/tmp/worktree",
@@ -73,4 +74,29 @@ describe("pullRequestService", () => {
       expect.any(Object)
     );
   });
+});
+
+
+it("preserves multiline large bodies in a temporary file and removes it after publication",async()=>{
+  mockSpawnCollect.mockReset();
+  const body="Review "+"x".repeat(70000)+"\nSecond paragraph with `code`, $variable and "+String.fromCodePoint(0x1f680);
+  let bodyFile="";
+  mockSpawnCollect.mockImplementationOnce(async(_file,args)=>{
+    bodyFile=String(args[args.indexOf("--body-file")+1]);
+    expect(await readFile(bodyFile,"utf8")).toBe(body);
+    return {stdout:"https://github.com/owner/repo/pull/12",stderr:""};
+  });
+  await createDraftPullRequest({worktreePath:"/tmp/worktree",head:"work",base:"main",title:"Checkpoint",body});
+  await expect(access(bodyFile)).rejects.toThrow();
+});
+it("passes cancellation to publication subprocesses and preserves the original abort without retrying PR lookup",async()=>{
+  mockSpawnCollect.mockReset();const controller=new AbortController();
+  const stopped=Object.assign(new Error("Lease lost"),{code:"ABORT_ERR",stopKind:"lease_loss",stdout:"partial push"});
+  mockSpawnCollect.mockImplementationOnce(async(_file,_args,options)=>{
+    expect(options.signal).toBe(controller.signal);controller.abort(stopped);throw stopped;
+  });
+  await expect(createDraftPullRequest({worktreePath:"/tmp/worktree",head:"work",base:"main",title:"Checkpoint",body:"report",signal:controller.signal})).rejects.toBe(stopped);
+  expect(mockSpawnCollect).toHaveBeenCalledOnce();
+  await expect(updateDraftPullRequest("/tmp/worktree","https://github.com/owner/repo/pull/12","report",controller.signal)).rejects.toBe(stopped);
+  expect(mockSpawnCollect).toHaveBeenCalledOnce();
 });

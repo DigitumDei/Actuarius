@@ -10,17 +10,31 @@ import type { CoordinationHooks } from "../src/services/coordination/supervisor.
 import { CoordinationBridge, type BridgeRunners } from "../src/discord/coordinationBridge.js";
 import { git, prepareValidationWorkspace, resolveRef } from "../src/services/coordination/workspace.js";
 import { spawnCollect } from "../src/utils/spawnCollect.js";
+import { publishDraft, readCi, refreshDraftHead, reconcileMergedDraft } from "../src/services/coordination/publication.js";
+import { getHeadSha } from "../src/services/gitWorkspaceService.js";
 import { MAX_TASK_CONTEXT_BYTES } from "../src/services/coordination/context.js";
-import { executionSchema } from "../src/services/coordination/contract.js";
+import { executionSchema, fingerprint } from "../src/services/coordination/contract.js";
 
 vi.mock("../src/services/coordination/workspace.js",()=>({git:vi.fn(),resolveRef:vi.fn(),provisionWork:vi.fn(async()=>{}),prepareValidationWorkspace:vi.fn(async()=>"/validator")}));
 vi.mock("../src/utils/spawnCollect.js",()=>({spawnCollect:vi.fn()}));
-vi.mock("../src/services/gitWorkspaceService.js",()=>({buildRepoCheckoutPath:()=>"/checkout",detectDefaultBranch:vi.fn(),autoCommitAll:vi.fn(),getHeadSha:async()=>"output",pushBranch:vi.fn()}));
+vi.mock("../src/services/gitWorkspaceService.js",()=>({buildRepoCheckoutPath:()=>"/checkout",detectDefaultBranch:vi.fn(),autoCommitAll:vi.fn(),getHeadSha:vi.fn(async()=>"output"),hasUncommittedChangesExcluding:vi.fn(async()=>false),pushBranch:vi.fn()}));
 vi.mock("../src/services/githubAuthService.js",()=>({getGitHubCommandEnvironment:()=>({})}));
 vi.mock("../src/services/githubService.js",()=>({listOpenIssues:async()=>[{number:1,title:"Large issue",body:"x".repeat(20000)}]}));
 
+
+vi.mock("../src/services/pullRequestService.js",()=>({updateDraftPullRequest:vi.fn()}));
+vi.mock("../src/services/coordination/publication.js",()=>({
+  findLegacyPublication:vi.fn(async()=>null),
+  publishDraft:vi.fn(async(store:unknown,entry:Entry,work:Work)=>{
+    const {getHeadSha}=await import("../src/services/gitWorkspaceService.js");
+    work.publication={entryId:entry.id,specHash:fingerprint(entry.spec),sha:await getHeadSha(work.path!),url:"https://github.com/owner/repo/pull/12",ci:null,review:"pending"};
+    (store as {saveWork(w:Work):void}).saveWork(work);return work.publication;
+  }),
+  readCi:vi.fn(),readPublishedPr:vi.fn(async(w:Work)=>({state:"OPEN",isDraft:true,headRefOid:w.publication?.sha,headRefName:w.branch,baseRefName:w.integration_target.replace(/^origin\//u,"")})),refreshDraftHead:vi.fn(),reconcileMergedDraft:vi.fn(async()=>null)
+}));
+
 const close:Array<()=>void>=[];
-beforeEach(()=>{vi.clearAllMocks();vi.mocked(git).mockResolvedValue("");vi.mocked(resolveRef).mockResolvedValue("merged-base");});
+beforeEach(()=>{vi.clearAllMocks();vi.mocked(getHeadSha).mockResolvedValue("output");vi.mocked(readCi).mockResolvedValue({sha:"output",state:"passed",checks:[],detail:"tests: success",observedAt:"now"});vi.mocked(git).mockResolvedValue("");vi.mocked(resolveRef).mockResolvedValue("merged-base");});
 afterEach(()=>{for(const fn of close.splice(0))fn();});
 function fixture(){
   const repo={id:1,full_name:"owner/repo",owner:"owner",repo:"repo",channel_id:"channel",guild_id:"guild"} as RepoRow;
@@ -42,7 +56,7 @@ function fixture(){
   const dep=bridge.store.add({id:"dependency",source:"background",description:"",sender:"sender",wing:"wing_coordination",work_id:other.work_id});
   bridge.store.setMeta(`output-sha:${dep.id}`,"dependency-sha");
   const hooks=(bridge.supervisor as unknown as {hooks:CoordinationHooks}).hooks;
-  const internals=bridge as unknown as {thread(w:Work,r:RepoRow):Promise<AnyThreadChannel>;execute(e:Entry,w:Work|null,s:AbortSignal):Promise<{result:string;next?:string;checkpoint?:string}>};
+  const internals=bridge as unknown as {thread(w:Work,r:RepoRow):Promise<AnyThreadChannel>;execute(e:Entry,w:Work|null,s:AbortSignal):Promise<{result:string;next?:string;checkpoint?:string;retryAfterMs?:number;pause?:string}>};
   return {bridge,work,other,repo,entry,dep,hooks,internals,text,review,create,db};
 }
 
@@ -252,4 +266,99 @@ it("includes failed retained owners but excludes unrelated failed history", asyn
   const context=JSON.parse(f.text.mock.calls[0]![0].prompt.split("Work context:\n").at(-1)!);
   expect(context.tasks.map((task:{id:string})=>task.id)).toContain("failed-owner");
   expect(context.tasks.map((task:{id:string})=>task.id)).not.toContain("old-failure");
+});
+
+it("publishes an authorized implementation before final review and binds completion to current CI",async()=>{
+  const f=fixture();f.entry.spec={...f.entry.spec!,action:"implement",deliverable:"draft_pr"};f.text.mockResolvedValueOnce("implemented");
+  const checkpoint=await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  expect(checkpoint.next).toBe("draft-ci");expect(publishDraft).toHaveBeenCalledOnce();expect(f.review).not.toHaveBeenCalled();
+  f.entry.action=checkpoint.next!;f.entry.checkpoint=checkpoint.checkpoint!;
+  const ci=await f.internals.execute(f.entry,f.work,new AbortController().signal);expect(ci.next).toBe("deliver");
+  f.entry.action=ci.next!;f.entry.checkpoint=ci.checkpoint!;
+  const result=await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  expect(result.next).toBeUndefined();expect(result.result).toContain("CI for output: passed");expect(f.work.publication?.review).toBe("ready");
+});
+it("publishes a planner substep while later implementation steps are unfinished",async()=>{
+  const f=fixture();f.entry.spec={...f.entry.spec!,deliverable:"draft_pr"};f.entry.action="plan-implement";
+  f.entry.checkpoint=JSON.stringify({overview:"Plan",tasks:[{title:"Foundation",description:"Types"},{title:"Later",description:"Still unfinished"}],index:0,attempts:0,baseline:"",output:"",feedback:"",results:[]});
+  const output=await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  expect(output.next).toBe("draft-ci");expect(JSON.parse(JSON.parse(output.checkpoint!).resumeCheckpoint).index).toBe(0);expect(f.review).not.toHaveBeenCalled();
+});
+it("repairs real CI failures, republishes a corrective SHA and accepts only that SHA's green checks",async()=>{
+  const f=fixture();f.entry.spec={...f.entry.spec!,action:"implement",deliverable:"draft_pr"};
+  const implemented=await f.internals.execute(f.entry,f.work,new AbortController().signal);f.entry.action=implemented.next!;f.entry.checkpoint=implemented.checkpoint!;
+  vi.mocked(readCi).mockResolvedValueOnce({sha:"output",state:"failed",checks:[],detail:"server tests: failure; wrong wire contract",observedAt:"now"});
+  const failed=await f.internals.execute(f.entry,f.work,new AbortController().signal);expect(failed.next).toBe("ci-fix");
+  f.entry.action=failed.next!;f.entry.checkpoint=failed.checkpoint!;
+  f.text.mockImplementationOnce(async()=>{vi.mocked(getHeadSha).mockResolvedValue("fixed");return "Corrected wire contract";});
+  const fixed=await f.internals.execute(f.entry,f.work,new AbortController().signal);expect(fixed.next).toBe("draft-ci");expect(f.work.publication?.sha).toBe("fixed");
+  expect(f.text.mock.calls.at(-1)![0].prompt).toContain("wrong wire contract");
+  f.entry.action=fixed.next!;f.entry.checkpoint=fixed.checkpoint!;
+  vi.mocked(readCi).mockResolvedValue({sha:"fixed",state:"passed",checks:[],detail:"server tests: success",observedAt:"now"});
+  const passed=await f.internals.execute(f.entry,f.work,new AbortController().signal);expect(readCi).toHaveBeenLastCalledWith(f.work,"fixed",expect.any(AbortSignal));
+  f.entry.action=passed.next!;f.entry.checkpoint=passed.checkpoint!;f.review.mockResolvedValueOnce({ready:true,text:"reviewed fix",sha:"fixed"});
+  expect((await f.internals.execute(f.entry,f.work,new AbortController().signal)).result).toContain("CI for fixed: passed");
+});
+it("retains publication as the interrupted stage instead of rerunning the implementer",async()=>{
+  const f=fixture();f.entry.spec={...f.entry.spec!,action:"implement",deliverable:"draft_pr"};
+  vi.mocked(publishDraft).mockRejectedValueOnce(new Error("network unavailable"));
+  await expect(f.internals.execute(f.entry,f.work,new AbortController().signal)).rejects.toThrow("network unavailable");
+  expect(f.entry.action).toBe("publish-draft");expect(f.entry.checkpoint).toBeTruthy();
+  const recovered=await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  expect(recovered.next).toBe("draft-ci");expect(f.text).toHaveBeenCalledOnce();
+});
+it("keeps pending CI deferred and handoff publication unreviewed",async()=>{
+  const f=fixture();f.entry.spec={...f.entry.spec!,action:"handoff",deliverable:"draft_pr"};
+  const handoff=await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  expect(handoff.pause).toContain("awaiting external completion");expect(f.work.publication?.handedOff).toBe(true);expect(f.review).not.toHaveBeenCalled();
+  f.entry.action=handoff.next!;f.entry.checkpoint=handoff.checkpoint!;
+  vi.mocked(readCi).mockResolvedValueOnce({sha:"output",state:"pending",checks:[],detail:"tests: pending",observedAt:"now"});
+  const pending=await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  expect(pending).toMatchObject({next:"draft-ci",retryAfterMs:60000});expect(f.work.publication?.review).toBe("pending");
+});
+it("passes only the active task scope to review and still refuses a changed reviewed head",async()=>{
+  const f=fixture();f.entry.spec={...f.entry.spec!,action:"implement",requirements:["Foundation only; OAuth deferred"],deliverable:"draft_pr"};
+  f.bridge.store.add({id:"sibling",source:"background",sender:"sender",wing:"wing_repo",description:"Implement all OAuth and storage",work_id:f.work.work_id,spec:{...f.entry.spec,requirements:["Implement all OAuth and storage"]}});
+  const implementation=await f.internals.execute(f.entry,f.work,new AbortController().signal);f.entry.action=implementation.next!;f.entry.checkpoint=implementation.checkpoint!;
+  const ci=await f.internals.execute(f.entry,f.work,new AbortController().signal);f.entry.action=ci.next!;f.entry.checkpoint=ci.checkpoint!;
+  f.review.mockImplementationOnce(async()=>{vi.mocked(getHeadSha).mockResolvedValue("external-change");return {ready:true,text:"ok",sha:"output"};});
+  await expect(f.internals.execute(f.entry,f.work,new AbortController().signal)).rejects.toThrow("Branch changed after review");
+  const context=f.review.mock.calls[0]![5];expect(context?.spec.requirements).toEqual(["Foundation only; OAuth deferred"]);expect(JSON.stringify(context)).not.toContain("Implement all OAuth and storage");
+});
+
+
+it("starts a fresh CI polling window on resume without resetting corrective attempts",async()=>{
+  const f=fixture();f.entry.spec={...f.entry.spec!,action:"implement",deliverable:"draft_pr"};
+  const output=await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  f.entry.action=output.next!;f.entry.checkpoint=JSON.stringify({...JSON.parse(output.checkpoint!),polls:20,attempts:2});
+  f.entry.phase="input_required";f.bridge.store.save(f.entry);
+  const resumed=f.bridge.supervisor.resume(f.entry.id);
+  expect(JSON.parse(resumed.checkpoint!)).toMatchObject({polls:0,attempts:2});
+  vi.mocked(readCi).mockResolvedValueOnce({sha:"output",state:"pending",checks:[],detail:"tests: pending",observedAt:"now"});
+  const waiting=await f.internals.execute(resumed,f.work,new AbortController().signal);
+  expect(waiting).toMatchObject({next:"draft-ci",retryAfterMs:60000});
+  expect(JSON.parse(waiting.checkpoint!)).toMatchObject({polls:1,attempts:2});
+});
+it("integrates a completed predecessor's external merge before the next slice implementation",async()=>{
+  const f=fixture();f.entry.spec={...f.entry.spec!,action:"implement",deliverable:"draft_pr"};
+  const predecessor=f.bridge.store.add({id:"foundation",source:"background",description:"",sender:"sender",wing:"wing_repo",work_id:f.work.work_id,phase:"completed",spec:f.entry.spec});
+  f.work.publication={entryId:predecessor.id,specHash:fingerprint(predecessor.spec),sha:"foundation",url:"https://github.com/owner/repo/pull/11",ci:null,review:"ready"};
+  f.bridge.store.saveWork(f.work);
+  vi.mocked(reconcileMergedDraft).mockImplementationOnce(async(_store,entry,work)=>{
+    expect(entry.id).toBe(predecessor.id);expect(f.text).not.toHaveBeenCalled();
+    work.publication!.mergeState="integrated";vi.mocked(getHeadSha).mockResolvedValueOnce("integrated");return "Externally merged";
+  });
+  await f.internals.execute(f.entry,f.work,new AbortController().signal);
+  expect(reconcileMergedDraft).toHaveBeenCalledOnce();
+  expect(f.bridge.store.meta(`task-baseline:${f.entry.id}`)).toBe("integrated");
+  expect(f.work.publication?.entryId).toBe(f.entry.id);expect(f.text).toHaveBeenCalledOnce();
+});
+it("blocks the next slice before implementation when predecessor integration needs inspection",async()=>{
+  const f=fixture();f.entry.spec={...f.entry.spec!,action:"implement",deliverable:"draft_pr"};
+  const predecessor=f.bridge.store.add({id:"foundation",source:"background",description:"",sender:"sender",wing:"wing_repo",work_id:f.work.work_id,phase:"completed",spec:f.entry.spec});
+  f.work.publication={entryId:predecessor.id,specHash:fingerprint(predecessor.spec),sha:"foundation",url:"https://github.com/owner/repo/pull/11",ci:null,review:"ready"};
+  vi.mocked(reconcileMergedDraft).mockRejectedValueOnce(new Error("Divergent retained work"));
+  await expect(f.internals.execute(f.entry,f.work,new AbortController().signal)).rejects.toThrow("Divergent retained work");
+  expect(f.text).not.toHaveBeenCalled();expect(publishDraft).not.toHaveBeenCalled();
+  expect(f.work.publication?.entryId).toBe(predecessor.id);
 });

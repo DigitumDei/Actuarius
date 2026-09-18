@@ -3,6 +3,7 @@ import { mkdtemp, writeFile, rm, realpath } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
 import type { Logger } from "pino";
+import { stopDetails } from "./executionStop.js";
 
 // ── Byte estimation helpers ──────────────────────────────────────────────
 
@@ -564,7 +565,8 @@ export function spawnCollect(
 ): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
     if (options.signal?.aborted) {
-      reject(Object.assign(new Error("Process cancelled before it started"), { code: "ABORT_ERR", killed: false }));
+      const details = stopDetails(options.signal.reason);
+      reject(Object.assign(new Error(`Process stopped before it started: ${details.stopReason}`, { cause: options.signal.reason }), { code: "ABORT_ERR", killed: false, ...details }));
       return;
     }
     const forceTreeTermination = options.killGraceMs !== undefined;
@@ -698,8 +700,9 @@ export function spawnCollect(
         return;
       }
       if (aborted) {
-        reject(Object.assign(new Error("Process cancelled by user request"), {
-          code: "ABORT_ERR", killed: true, signal, stdout, stderr: finalStderr,
+        const details = stopDetails(options.signal?.reason);
+        reject(Object.assign(new Error(`Process stopped: ${details.stopReason}`, { cause: options.signal?.reason }), {
+          code: "ABORT_ERR", killed: true, signal, stdout, stderr: finalStderr, lastOutput, ...details,
         }));
         return;
       }

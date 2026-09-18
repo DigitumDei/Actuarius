@@ -1,6 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Logger } from "pino";
+import { createHash } from "node:crypto";
+import { isExecutionInterruption } from "../utils/executionStop.js";
+import type { ProviderExecutionDiagnostics } from "../utils/runProviderRequest.js";
 import type { AppDatabase } from "../db/database.js";
 import type { AiProvider, ReviewVerdict } from "../db/types.js";
 import { getReviewDiff } from "./gitWorkspaceService.js";
@@ -20,7 +23,7 @@ export interface ReviewModelIdentity {
 
 export interface ReviewModelRunner extends ReviewModelIdentity {
   label: string;
-  run(input: { prompt: string; cwd: string; timeoutMs: number; model?: string }): Promise<string>;
+  run(input: { prompt: string; cwd: string; timeoutMs: number; model?: string; diagnostics?: ProviderExecutionDiagnostics }): Promise<string>;
 }
 
 interface AnalyzerStageResult {
@@ -393,13 +396,13 @@ function getRemainingBudget(startTime: number, totalTimeoutMs: number): number {
 function getStageTimeout(startTime: number, stageTimeoutMs: number, totalTimeoutMs: number, remainingStages: number): number {
   const remainingBudget = getRemainingBudget(startTime, totalTimeoutMs);
   if (remainingBudget <= 0) {
-    throw new AdversarialReviewError("PIPELINE_FAILED", `Review pipeline exceeded ${totalTimeoutMs}ms.`);
+    throw Object.assign(new AdversarialReviewError("PIPELINE_FAILED", `Review pipeline exceeded ${totalTimeoutMs}ms.`), {timeoutKind:"total",timeoutMs:totalTimeoutMs,reviewStage:"pipeline-budget"});
   }
 
   const normalizedRemainingStages = Math.max(1, remainingStages);
   const availableForCurrentStage = Math.floor(remainingBudget / normalizedRemainingStages);
   if (availableForCurrentStage <= 0) {
-    throw new AdversarialReviewError("PIPELINE_FAILED", `Review pipeline exceeded ${totalTimeoutMs}ms.`);
+    throw Object.assign(new AdversarialReviewError("PIPELINE_FAILED", `Review pipeline exceeded ${totalTimeoutMs}ms.`), {timeoutKind:"total",timeoutMs:totalTimeoutMs,reviewStage:"pipeline-budget"});
   }
 
   return Math.min(stageTimeoutMs, availableForCurrentStage);
@@ -430,6 +433,11 @@ export async function runAdversarialReview(input: {
   baseRef?: string;
   artifactRootPath: string;
   threadHistory: string;
+  /** Active task scope and exact publication evidence, never sibling task descriptions. */
+  reviewContext?: string;
+  signal?: AbortSignal;
+  stageCache?: { get(key: string): string | null; put(key: string, value: string): void };
+  assertSnapshot?: () => Promise<void>;
   analyzer: ReviewModelRunner;
   reviewers: ReviewModelRunner[];
   judge: ReviewModelRunner;
@@ -450,8 +458,9 @@ export async function runAdversarialReview(input: {
   const maxConsensusRounds = Math.max(1, input.maxConsensusRounds ?? 2);
   const reviewConcurrency = Math.max(1, input.reviewConcurrency ?? 1);
   const checkBudget = (): void => {
+    input.signal?.throwIfAborted();
     if (Date.now() - startTime > input.totalTimeoutMs) {
-      throw new AdversarialReviewError("PIPELINE_FAILED", `Review pipeline exceeded ${input.totalTimeoutMs}ms.`);
+      throw Object.assign(new AdversarialReviewError("PIPELINE_FAILED", `Review pipeline exceeded ${input.totalTimeoutMs}ms.`), {timeoutKind:"total",timeoutMs:input.totalTimeoutMs,reviewStage:"pipeline-budget"});
     }
   };
   const emitProgress = async (event: ReviewProgressEvent): Promise<void> => {
@@ -504,15 +513,39 @@ export async function runAdversarialReview(input: {
     diffHead: diff.headSha
   });
 
+  const scope = input.reviewContext ? { reviewContext: input.reviewContext } : {};
+  const runStage = async (runner: ReviewModelRunner, stage: string, args: { prompt: string; cwd: string; timeoutMs: number; model?: string }): Promise<string> => {
+    checkBudget();
+    await input.assertSnapshot?.();
+    const key = createHash("sha256").update(JSON.stringify({
+      version: 1, repository: input.repoFullName, branch: input.branchName,
+      sha: diff.headSha, base: diff.baseRef, diff: diff.diffText,
+      configuration: { reviewers: input.reviewers.map(r => [r.label, r.provider, r.model ?? null]), maxConsensusRounds }, stage, provider: runner.provider, model: runner.model ?? null,
+      prompt: args.prompt
+    })).digest("hex");
+    const cached = input.stageCache?.get(key);
+    if (cached !== null && cached !== undefined) return cached;
+    try {
+      const text = await runner.run({ ...args, diagnostics: { requestId: input.requestId, workflow: "adversarial-review", stage } });
+      input.signal?.throwIfAborted();
+      await input.assertSnapshot?.();
+      input.stageCache?.put(key, text);
+      return text;
+    } catch (error) {
+      if (error instanceof Error) Object.assign(error, { reviewStage: stage, provider: runner.provider });
+      throw error;
+    }
+  };
   try {
     checkBudget();
     await emitProgress({ type: "analyzer-start" });
     const analyzerPrompt = buildAnalyzerPrompt({
       repoFullName: input.repoFullName,
       branchName: input.branchName,
-      threadHistory: input.threadHistory
+      threadHistory: input.threadHistory,
+      ...scope
     });
-    const analyzerText = await input.analyzer.run({
+    const analyzerText = await runStage(input.analyzer, "analyzer", {
       prompt: analyzerPrompt,
       cwd: input.worktreePath,
       timeoutMs: getStageTimeout(startTime, input.stageTimeoutMs, input.totalTimeoutMs, 3),
@@ -542,11 +575,12 @@ export async function runAdversarialReview(input: {
             .filter((guidance) => guidance.reviewer === reviewer.label)
             .map((guidance) => guidance.feedback)
             .join("\n");
-          const reviewerText = await reviewer.run({
+          const reviewerText = await runStage(reviewer, `reviewer:${round}:${reviewer.label}`, {
             prompt: buildReviewerPrompt({
               repoFullName: input.repoFullName,
               branchName: input.branchName,
               baseBranch: diff.baseBranch,
+              ...scope,
               analyzerText,
               changedFiles: diff.changedFiles,
               diffText: diff.diffText,
@@ -583,6 +617,8 @@ export async function runAdversarialReview(input: {
         (result): result is PromiseRejectedResult => result.status === "rejected"
       );
 
+      const stoppedReviewer = failedReviewers.find(r => isExecutionInterruption(r.reason) || input.signal?.aborted);
+      if (stoppedReviewer) throw stoppedReviewer.reason;
       if (failedReviewers.length > 0) {
         const rejectedMessages = failedReviewers.map((r) =>
           r.reason instanceof Error ? r.reason.message : String(r.reason)
@@ -618,11 +654,12 @@ export async function runAdversarialReview(input: {
         async (reviewer) => {
           const ownReview = successfulReviewers.find((result) => result.reviewer === reviewer.label);
           const peerReviews = successfulReviewers.filter((result) => result.reviewer !== reviewer.label);
-          const critiqueText = await reviewer.run({
+          const critiqueText = await runStage(reviewer, `critique:${round}:${reviewer.label}`, {
             prompt: buildCritiquePrompt({
               repoFullName: input.repoFullName,
               branchName: input.branchName,
               baseBranch: diff.baseBranch,
+              ...scope,
               reviewerLabel: reviewer.label,
               round,
               ownReview: ownReview?.text ?? "",
@@ -653,6 +690,8 @@ export async function runAdversarialReview(input: {
       const failedCritiques = critiqueSettled.filter(
         (result): result is PromiseRejectedResult => result.status === "rejected"
       );
+      const stoppedCritique = failedCritiques.find(r => isExecutionInterruption(r.reason) || input.signal?.aborted);
+      if (stoppedCritique) throw stoppedCritique.reason;
       if (failedCritiques.length > 0) {
         input.logger.warn(
           {
@@ -678,11 +717,12 @@ export async function runAdversarialReview(input: {
       }
 
       checkBudget();
-      const judgeRawText = await input.judge.run({
+      const judgeRawText = await runStage(input.judge, `judge:${round}`, {
         prompt: buildJudgePrompt({
           repoFullName: input.repoFullName,
           branchName: input.branchName,
           baseBranch: diff.baseBranch,
+          ...scope,
           round,
           reviewerOutputs: successfulReviewers,
           critiqueOutputs: critiqueResults
@@ -708,11 +748,12 @@ export async function runAdversarialReview(input: {
 
     checkBudget();
     await emitProgress({ type: "summarizer-start" });
-    const summarizerRawText = await input.summarizer.run({
+    const summarizerRawText = await runStage(input.summarizer, "summarizer", {
       prompt: buildSummarizerPrompt({
         repoFullName: input.repoFullName,
         branchName: input.branchName,
         baseBranch: diff.baseBranch,
+        ...scope,
         analyzerText,
         reviewerOutputs: allReviewerOutputs,
         critiqueOutputs: allCritiqueOutputs,
@@ -775,7 +816,8 @@ export async function runAdversarialReview(input: {
       finalVerdict: null,
       summaryMarkdown: null,
       rawResultJson: JSON.stringify({
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
+        ...(error && typeof error === "object" ? error : {})
       }),
       artifactPath: null
     });
@@ -783,6 +825,14 @@ export async function runAdversarialReview(input: {
     if (error instanceof AdversarialReviewError) {
       throw error;
     }
-    throw new AdversarialReviewError("PIPELINE_FAILED", error instanceof Error ? error.message : "Review pipeline failed.");
+    const failure = new AdversarialReviewError("PIPELINE_FAILED", error instanceof Error ? error.message : "Review pipeline failed.");
+    if (error && typeof error === "object") {
+      const details = {...error} as Record<string, unknown>;
+      const providerErrorCode = details.code;
+      for (const field of ["code", "name", "message", "stack"]) delete details[field];
+      Object.assign(failure, details, {cause:error});
+      if (typeof providerErrorCode === "string") Object.assign(failure, {providerErrorCode});
+    }
+    throw failure;
   }
 }
