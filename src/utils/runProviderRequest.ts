@@ -1,6 +1,7 @@
 import { stripVTControlCharacters } from "node:util";
 import { providerGate, providerGateEnabled } from "../services/providerGate.js";
 import type { Logger } from "pino";
+import { stopDetails, type ExecutionStopKind } from "./executionStop.js";
 import {
   spawnCollect,
   spawnCollectWithTransport,
@@ -43,6 +44,10 @@ export interface ProviderErrorDetails {
   timeoutMs?: number;
   providerSessionId?: string;
   lastActivity?: string;
+  stopKind?: ExecutionStopKind;
+  stopReason?: string;
+  diagnostics?: ProviderExecutionDiagnostics;
+  provider?: string;
 }
 
 export interface ProviderRunnerConfig {
@@ -138,6 +143,23 @@ export interface ProviderRunnerConfig {
 function lastMeaningfulLines(text: string | undefined, count: number): string {
   const lines = text?.trim().split(/\r?\n/).filter((line) => line.trim().length > 0 && !line.includes("[object Object]")) ?? [];
   return count <= 0 ? "" : lines.slice(-count).join("\n");
+}
+
+const quotaPattern = /(?:usage limit|quota exceeded|quota_exceeded|usage_limit_reached|insufficient_quota|exceeded (?:your |the )?(?:current )?quota|hit your.*limit|exhausted your.*quota|not enough.*credits)/iu;
+
+/** Inspect provider error envelopes, never ordinary generated task output. */
+function structuredQuotaError(stdout: string): string | undefined {
+  for (const text of [stdout, ...stdout.split(/\r?\n/u)]) {
+    try {
+      const event: unknown = JSON.parse(text);
+      if (!event || typeof event !== "object" || Array.isArray(event)) continue;
+      const value = event as Record<string, unknown>;
+      if (value.type !== "error" && value.type !== "turn.failed" && value.event !== "error" && value.is_error !== true) continue;
+      const detail = JSON.stringify(value.error ?? value.message ?? value.result ?? value.errors ?? value);
+      if (quotaPattern.test(detail)) return detail;
+    } catch { /* non-JSON task output is not an error envelope */ }
+  }
+  return undefined;
 }
 
 function extractProviderSessionId(stdout: string | undefined): string | undefined {
@@ -374,6 +396,8 @@ async function runProviderRequestUnlocked(
       stderr?: string;
       timeoutReason?: "idle" | "absolute";
       lastOutput?: SpawnLastOutput;
+      stopKind?: ExecutionStopKind;
+      stopReason?: string;
     };
     const isAborted = nodeError.code === "ABORT_ERR";
     const isTimeout = !isAborted
@@ -389,6 +413,19 @@ async function runProviderRequestUnlocked(
       : timeoutKind === "total" ? input.timeoutMs : undefined;
     const providerSessionId = extractProviderSessionId(nodeError.stdout);
     const lastActivity = summarizeLastActivity(nodeError.stdout, nodeError.stderr, nodeError.lastOutput);
+    const errorDetails: ProviderErrorDetails = { provider: config.logLabel };
+    if (input.diagnostics) errorDetails.diagnostics = input.diagnostics;
+    if (nodeError.stdout) errorDetails.partialStdout = nodeError.stdout;
+    if (nodeError.stderr) errorDetails.partialStderr = nodeError.stderr;
+    if (providerSessionId) errorDetails.providerSessionId = providerSessionId;
+    if (lastActivity) errorDetails.lastActivity = lastActivity;
+    if (isAborted) Object.assign(errorDetails, nodeError.stopReason
+      ? { stopKind: nodeError.stopKind ?? "cancelled", stopReason: nodeError.stopReason }
+      : stopDetails(input.signal?.reason));
+    if (!isAborted && !isTimeout && quotaPattern.test([nodeError.stderr, message].filter(Boolean).join("\n"))) {
+      errorDetails.stopKind = "quota";
+      errorDetails.stopReason = message;
+    }
 
     logger.error(
       {
@@ -400,6 +437,8 @@ async function runProviderRequestUnlocked(
         timeoutMs: expiredTimeoutMs,
         providerSessionId,
         lastActivity,
+        stopKind: errorDetails.stopKind,
+        stopReason: errorDetails.stopReason,
         stderrTail: lastMeaningfulLines(nodeError.stderr, 20),
         stdoutHead: nodeError.stdout?.slice(0, 500),
         message,
@@ -416,17 +455,12 @@ async function runProviderRequestUnlocked(
     }
 
     if (isAborted) {
-      throw config.makeError(config.failedCode, `${config.logLabel} execution was cancelled.`);
+      throw config.makeError(config.failedCode, `${config.logLabel} execution stopped: ${errorDetails.stopReason}.`, errorDetails);
     }
 
     if (isTimeout) {
-      const errorDetails: ProviderErrorDetails = {};
-      if (nodeError.stdout) errorDetails.partialStdout = nodeError.stdout;
-      if (nodeError.stderr) errorDetails.partialStderr = nodeError.stderr;
       if (timeoutKind) errorDetails.timeoutKind = timeoutKind;
       if (expiredTimeoutMs !== undefined) errorDetails.timeoutMs = expiredTimeoutMs;
-      if (providerSessionId) errorDetails.providerSessionId = providerSessionId;
-      if (lastActivity) errorDetails.lastActivity = lastActivity;
       const timeoutMessage = timeoutKind === "idle"
         ? `${config.logLabel} produced no output for ${String(expiredTimeoutMs)}ms.`
         : `${config.logLabel} exceeded the total execution timeout of ${String(expiredTimeoutMs)}ms.`;
@@ -451,7 +485,8 @@ async function runProviderRequestUnlocked(
       (line: string) => line.trim().length > 0 && !line.includes("[object Object]")
     );
     const detail = stderrHint ? `${message}: ${stderrHint}` : message;
-    throw config.makeError(config.failedCode, detail);
+    if (errorDetails.stopKind === "quota") errorDetails.stopReason = detail;
+    throw config.makeError(config.failedCode, detail, errorDetails);
   }
 
   if (stderr) {
@@ -475,13 +510,29 @@ async function runProviderRequestUnlocked(
     }
   }
 
+  const outputDetails: ProviderErrorDetails = {provider: config.logLabel};
+  if (input.diagnostics) outputDetails.diagnostics = input.diagnostics;
+  if (stdout) outputDetails.partialStdout = stdout;
+  if (stderr) outputDetails.partialStderr = stderr;
+  const outputSessionId = extractProviderSessionId(stdout);
+  const outputActivity = summarizeLastActivity(stdout, stderr, undefined);
+  if (outputSessionId) outputDetails.providerSessionId = outputSessionId;
+  if (outputActivity) outputDetails.lastActivity = outputActivity;
+  if (config.transformOutput || structuredTransport) {
+    const quotaError = structuredQuotaError(stdout);
+    if (quotaError) throw config.makeError(config.failedCode, `${config.logLabel} quota interruption: ${quotaError}`,
+      {...outputDetails, stopKind: "quota", stopReason: quotaError});
+  }
+
   // Validate structured output before transforming, so the validator can
   // inspect the CLI's raw envelope/NDJSON.
   if (config.validateOutput && (!config.validateOutputOnlyForStream || structuredTransport)) {
     const failure = config.validateOutput(stdout);
     if (failure) {
       logger.warn({ stdout: stdout.slice(0, 1000), stderr }, `${config.logLabel} structured output reported failure`);
-      throw config.makeError(failure.code, failure.message);
+      throw config.makeError(failure.code, failure.message, {
+        ...outputDetails, ...(quotaPattern.test(failure.message) ? {stopKind: "quota" as const, stopReason: failure.message} : {})
+      });
     }
   }
 

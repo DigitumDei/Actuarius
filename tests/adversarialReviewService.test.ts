@@ -716,3 +716,52 @@ describe("renderReviewMarkdown", () => {
     expect(markdown).toContain("## Outstanding Concerns");
   });
 });
+describe("durable review stage recovery", () => {
+  let tempRoot: string;
+  beforeEach(async()=>{vi.resetAllMocks();tempRoot=await mkdtemp(join(tmpdir(),"review-recovery-"));});
+  afterEach(async()=>{await rm(tempRoot,{recursive:true,force:true});});
+  function recoveryFixture(){
+    const calls:Array<{stage:string;prompt:string}>=[];
+    const cache=new Map<string,string>();
+    const run=(stage:string,text:string)=>vi.fn(async(input:{prompt:string})=>{calls.push({stage,prompt:input.prompt});return text;});
+    const analyzer={provider:"claude" as const,label:"analyzer",run:run("analyzer","Intent: foundation types only")};
+    const reviewers=[{provider:"claude" as const,label:"A",run:run("A","No scoped blockers")},{provider:"codex" as const,label:"B",run:run("B","No scoped blockers")}];
+    const judge={provider:"claude" as const,label:"judge",run:run("judge",JSON.stringify({consensusReached:true,consensusSummary:"Agreed",reviewerGuidance:[]}))};
+    const summarizer={provider:"codex" as const,label:"summary",run:run("summary",JSON.stringify({executiveSummary:"Foundation complete",blockingIssues:[],nonBlockingIssues:[],missingTests:[],disputedIssues:[],outstandingConcerns:[],verdict:"ready_for_pr"}))};
+    mockGetReviewDiff.mockResolvedValue({baseBranch:"main",baseRef:"origin/main",headRef:"actuarius/work",headSha:"sha",changedFiles:["types.ts"],diffText:"diff foundation"});
+    const input={db:{createReviewRun:vi.fn(()=>({id:1})),completeReviewRun:vi.fn()} as never,logger:pino({level:"silent"}),requestId:1,threadId:"thread",repoFullName:"owner/repo",branchName:"actuarius/work",worktreePath:tempRoot,artifactRootPath:tempRoot,threadHistory:"Foundation types only",reviewContext:"Active slice: foundation types. Deferred: OAuth and storage. Published SHA: sha. CI: passed for sha.",analyzer,reviewers,judge,summarizer,stageTimeoutMs:10000,totalTimeoutMs:100000,maxConsensusRounds:1,stageCache:{get:(key:string)=>cache.get(key)??null,put:(key:string,value:string)=>{cache.set(key,value);}}};
+    return {input,calls,cache};
+  }
+  it("passes authoritative scope and exact-SHA CI to analyzer, reviewers, critiques, judge and summarizer",async()=>{
+    const f=recoveryFixture();await runAdversarialReview(f.input);
+    expect(f.calls).toHaveLength(7);
+    for(const call of f.calls)expect(call.prompt).toContain(f.input.reviewContext);
+  });
+  it("reuses completed stages after quota interruption without counting the stop as approval",async()=>{
+    const f=recoveryFixture();f.input.summarizer.run.mockRejectedValueOnce(Object.assign(new Error("Provider usage limit reached"),{code:"FAILED",stopKind:"quota",providerSessionId:"session"}));
+    await expect(runAdversarialReview(f.input)).rejects.toMatchObject({name:"AdversarialReviewError",code:"PIPELINE_FAILED",providerErrorCode:"FAILED",stopKind:"quota",reviewStage:"summarizer",providerSessionId:"session"});
+    expect(f.input.db.completeReviewRun).toHaveBeenLastCalledWith(expect.objectContaining({status:"failed",finalVerdict:null}));
+    await runAdversarialReview(f.input);
+    expect(f.input.analyzer.run).toHaveBeenCalledOnce();expect(f.input.reviewers[0]!.run).toHaveBeenCalledTimes(2);
+    expect(f.input.summarizer.run).toHaveBeenCalledTimes(2);
+  });
+  it("invalidates cached stages when code, task criteria or review model changes",async()=>{
+    const f=recoveryFixture();await runAdversarialReview(f.input);
+    mockGetReviewDiff.mockResolvedValue({baseBranch:"main",baseRef:"origin/main",headRef:"actuarius/work",headSha:"new-sha",changedFiles:["types.ts"],diffText:"diff corrected foundation"});
+    await runAdversarialReview(f.input);expect(f.input.analyzer.run).toHaveBeenCalledTimes(2);
+    f.input.reviewContext="Changed acceptance criteria";await runAdversarialReview(f.input);expect(f.input.analyzer.run).toHaveBeenCalledTimes(3);
+    const changed={...f.input,analyzer:{...f.input.analyzer,model:"different-model"}};await runAdversarialReview(changed);expect(f.input.analyzer.run).toHaveBeenCalledTimes(4);
+  });
+  it("does not cache a stage whose workspace changed while it ran",async()=>{
+    const f=recoveryFixture();let changed=false;
+    f.input.analyzer.run.mockImplementation(async()=>{changed=true;return "reviewed wrong head";});
+    await expect(runAdversarialReview({...f.input,assertSnapshot:async()=>{if(changed)throw new Error("Workspace changed");}})).rejects.toThrow("Workspace changed");
+    expect(f.cache.size).toBe(0);
+  });
+  it("propagates reviewer cancellation rather than summarizing incomplete work as approved",async()=>{
+    const f=recoveryFixture();f.input.reviewers[0]!.run.mockRejectedValueOnce(Object.assign(new Error("Task lease expired"),{stopKind:"lease_loss"}));
+    await expect(runAdversarialReview(f.input)).rejects.toMatchObject({stopKind:"lease_loss",reviewStage:"reviewer:1:A"});
+    expect(f.input.summarizer.run).not.toHaveBeenCalled();
+  });
+
+});

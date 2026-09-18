@@ -295,6 +295,8 @@ describe("durable supervisor", () => {
             await vi.advanceTimersByTimeAsync(30001);
             expect(aborted).toBe(false);
             await vi.advanceTimersByTimeAsync(60000);
+            expect(aborted).toBe(false);
+            await vi.advanceTimersByTimeAsync(15000);
             expect(aborted).toBe(true);
             expect(h.s.get("one")?.phase).toBe("interrupted");
             expect(h.s.get("one")?.result).toBeNull();
@@ -492,4 +494,95 @@ describe("durable supervisor", () => {
         expect(h.executed).toEqual(["ready"]);
         expect(h.s.get("blocked")?.reason).toContain("missing");
     });
+});
+
+describe("agent workflow regression recovery", () => {
+    it.each(["lost response", "revision conflict"])("refreshes the lease revision after %s without aborting useful work", async kind => {
+        const h=harness();h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});
+        await h.tick();await h.tick();
+        let complete!:()=>void;let stopped=false;let failed=false;
+        h.hooks.execute=async(_e,_w,signal)=>new Promise((resolve,reject)=>{
+            complete=()=>resolve({result:"done"});
+            signal.addEventListener("abort",()=>{stopped=true;reject(signal.reason);},{once:true});
+        });
+        h.fault.mockImplementation((name,args)=>{
+            if(!failed&&name.endsWith("task_renew")) {
+                failed=true;const task=h.tasks.get(String(args.task_id))!;task.revision++;
+                if(kind==="lost response") task.lease_expires_at=new Date(Date.now()+120000).toISOString();
+                throw new Error(kind);
+            }
+        });
+        vi.useFakeTimers();
+        try {
+            await h.sup.tick();await vi.advanceTimersByTimeAsync(150000);
+            expect(stopped).toBe(false);
+            const renewals=h.fault.mock.calls.filter(([name])=>name.endsWith("task_renew"));
+            expect(renewals[1]![1].expected_revision).toBe(Number(renewals[0]![1].expected_revision)+1);
+            complete();await vi.advanceTimersByTimeAsync(0);
+            expect(h.s.get("one")?.phase).toBe("completed");
+        } finally {vi.useRealTimers();await h.sup.stop();}
+    });
+    it("fails closed immediately when authoritative lease ownership changes",async()=>{
+        const h=harness();h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});await h.tick();await h.tick();
+        let reason:unknown;
+        h.hooks.execute=async(_e,_w,signal)=>new Promise((_resolve,reject)=>signal.addEventListener("abort",()=>{reason=signal.reason;reject(reason);},{once:true}));
+        h.fault.mockImplementation((name,args)=>{if(name.endsWith("task_renew")){const task=h.tasks.get(String(args.task_id))!;task.owner="other";task.revision++;throw new Error("conflict");}});
+        vi.useFakeTimers();
+        try {
+            await h.sup.tick();await vi.advanceTimersByTimeAsync(30001);
+            expect(reason).toMatchObject({stopKind:"lease_loss"});
+            expect(h.s.get("one")?.phase).toBe("interrupted");
+            expect(JSON.parse(h.s.meta("last-stop:one")!)).toMatchObject({stopKind:"lease_loss",stage:"implement"});
+        } finally {vi.useRealTimers();await h.sup.stop();}
+    });
+    it("cannot extend the confirmed deadline when renewal and authoritative refresh are unavailable",async()=>{
+        const h=harness();h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});await h.tick();await h.tick();
+        let renewalFailed=false;let stopped=false;
+        h.hooks.execute=async(_e,_w,signal)=>new Promise((_resolve,reject)=>signal.addEventListener("abort",()=>{stopped=true;reject(signal.reason);},{once:true}));
+        h.fault.mockImplementation(name=>{if(name.endsWith("task_renew")) {renewalFailed=true;throw new Error("offline");} if(renewalFailed&&name.endsWith("task_get")) throw new Error("offline");});
+        vi.useFakeTimers();
+        try {
+            await h.sup.tick();await vi.advanceTimersByTimeAsync(104999);expect(stopped).toBe(false);
+            await vi.advanceTimersByTimeAsync(2);expect(stopped).toBe(true);
+        } finally {vi.useRealTimers();await h.sup.stop();}
+    });
+    it("validates a branched graph while keeping native predecessors in scheduler waiting",async()=>{
+        const h=harness();const validate=vi.fn(async()=>({ready:true,questions:[]}));h.hooks.validate=validate;
+        for(let i=0;i<8;i++)h.s.add({id:`slice-${i}`,source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec,dependencies:i ? [`slice-${Math.floor((i-1)/2)}`] : []});
+        h.hooks.execute=async()=>{throw new Error("pause foundation");};
+        for(let i=0;i<25;i++)await h.tick();
+        expect(validate).toHaveBeenCalledTimes(8);
+        expect(h.s.list().filter(e=>e.id!=="slice-0").every(e=>e.phase==="execute")).toBe(true);
+        expect(h.messages).toEqual([]);
+    });
+    it("resumes the retained review stage without replanning unchanged intent",()=>{
+        const h=harness();const e=h.s.add({id:"one",source:"background",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec,phase:"input_required",action:"deliver",checkpoint:"implementation done"});
+        const resumed=h.sup.repair(e.id,"Resume the review");
+        expect(resumed).toMatchObject({phase:"execute",action:"deliver",checkpoint:"implementation done",spec});
+    });
+    it("preserves an identical correction's stage but invalidates changed scope",async()=>{
+        const h=harness();const native={task_id:"native",title:"task",description:encodeSpec(spec),state:"input_required" as const,revision:1,created_by:"sender",wing:"wing_repo",owner:null,lease_expires_at:null,dependencies:[],parent_id:null};
+        h.tasks.set(native.task_id,native);
+        h.s.add({id:"one",source:"background",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec,task:native,phase:"input_required",validation_id:"v",action:"deliver",checkpoint:"completed implementation"});
+        h.inbox.push({message_id:"same",task_id:native.task_id,sender:"sender",recipient:h.sup.worker,kind:"task_correction",payload:{version:1,validation_id:"v",spec}});
+        await h.tick();expect(h.s.get("one")).toMatchObject({action:"deliver",checkpoint:"completed implementation"});
+        const e=h.s.get("one")!;e.phase="input_required";e.validation_id="v2";h.s.save(e);
+        h.inbox.splice(0);h.inbox.push({message_id:"changed",task_id:native.task_id,sender:"sender",recipient:h.sup.worker,kind:"task_correction",payload:{version:1,validation_id:"v2",spec:{...spec,requirements:["Different scope"]}}});
+        await h.tick();expect(h.s.get("one")).toMatchObject({action:"implement",checkpoint:null});
+    });
+    it("keeps a published handoff paused rather than completing unreviewed code",async()=>{
+        const h=harness();h.s.add({id:"one",source:"discord",description:encodeSpec(spec),sender:"sender",wing:"wing_repo",spec});await h.tick();await h.tick();
+        h.hooks.execute=async()=>({result:"Draft checkpoint",pause:"Await external completion",next:"draft-ci",checkpoint:"saved publication"});
+        await h.tick();expect(h.s.get("one")).toMatchObject({phase:"input_required",action:"draft-ci",checkpoint:"saved publication",result:null});
+        h.hooks.observePublication=async()=>true;h.hooks.reconcile=async()=>"Externally merged; workspace integrated";
+        await h.tick();expect(h.s.get("one")).toMatchObject({phase:"completed",result:"Externally merged; workspace integrated"});
+    });
+});
+
+it("resumes an unchanged interrupted stage from a correlated plain-text reply",async()=>{
+    const h=harness();const e=h.s.add({id:"one",source:"background",sender:"sender",wing:"wing_repo",description:encodeSpec(spec),spec,phase:"input_required",question_message:"question",validation_id:"v",action:"deliver",checkpoint:"completed implementation"});
+    h.s.setMeta("last-stop:one",JSON.stringify({action:"deliver",stopKind:"quota"}));
+    expect(await h.sup.answer("question","Carry on","answer")).toBe(true);
+    expect(h.s.get(e.id)).toMatchObject({phase:"execute",action:"deliver",checkpoint:"completed implementation",spec});
+    expect(h.s.outbox().some(o=>o.payload.kind==="human_input_answer")).toBe(false);
 });

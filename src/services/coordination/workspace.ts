@@ -6,13 +6,13 @@ import type { CoordinationStore, Work } from "./store.js";
 import { buildRepoCheckoutPath, ensureRepoCheckedOutToMaster, withRepositoryLock, type RepoIdentity } from "../gitWorkspaceService.js";
 import { configureRepositoryGitAuth } from "../githubAuthService.js";
 import { spawnCollect } from "../../utils/spawnCollect.js";
-export async function git(cwd: string, args: string[]): Promise<string> {
-    const result = await withRepositoryLock(cwd, () => spawnCollect("git", ["-C", cwd, ...args], { cwd, timeoutMs: 120000, maxBuffer: 4 * 1024 * 1024 }));
+export async function git(cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
+    const result = await withRepositoryLock(cwd, () => spawnCollect("git", ["-C", cwd, ...args], { cwd, timeoutMs: 120000, maxBuffer: 4 * 1024 * 1024, ...(signal ? {signal} : {}) }));
     return result.stdout.trim();
 }
-export async function resolveRef(cwd: string, ref: string): Promise<string> {
+export async function resolveRef(cwd: string, ref: string, signal?: AbortSignal): Promise<string> {
     const target = /^[a-f0-9]{40}$/i.test(ref) ? ref : ref.startsWith("origin/") ? ref : `origin/${ref}`;
-    return git(cwd, ["rev-parse", "--verify", "--end-of-options", `${target}^{commit}`]);
+    return git(cwd, ["rev-parse", "--verify", "--end-of-options", `${target}^{commit}`], signal);
 }
 /** An isolated Git repository supports validation with providers requiring a Git cwd. */
 export async function prepareValidationWorkspace(root: string): Promise<string> {

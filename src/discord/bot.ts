@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { CoordinationBridge } from "./coordinationBridge.js";
+import { encodeSpec } from "../services/coordination/contract.js";
 import { setProviderGateEnabled } from "../services/providerGate.js";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -697,11 +698,12 @@ export class ActuariusBot {
           const model = input.model ?? roleModel?.model ?? selected?.model;
           const env = input.repo ? this.installService.buildMinimalExecutionEnvironment({repoId:input.repo.id,...(input.threadId ? {threadId:input.threadId}:{})}).env : undefined;
           return this.runProviderText({ prompt: input.prompt, cwd: input.cwd, provider, signal: input.signal,
+            diagnostics: { workflow: "coordination", stage: input.role ?? "task" },
             ...(model ? { model } : {}), ...(input.role ? { role: input.role } : {}), ...(env ? {env}:{}),
             ...(input.repo ? {memoryWing:buildRepoMemoryWing({owner:input.repo.owner,repo:input.repo.repo,fullName:input.repo.full_name})}:{}) });
         },
         prepare: async (repo, path) => { await this.prepareWorktreeMemoryConfig({ owner: repo.owner, repo: repo.repo, fullName: repo.full_name }, path); },
-        review: async (work, repo, signal, existingOnly, onProgress) => {
+        review: async (work, repo, signal, existingOnly, onProgress, context) => {
           if(existingOnly) {
             const review=this.db.getLatestCompletedReviewRunForBranch(work.request_id!,work.branch);
             if(!review)throw new Error("Run /review first; /pr requires a completed review");
@@ -711,10 +713,23 @@ export class ActuariusBot {
           }
           const error = await this.validateReviewConfig(repo.guild_id); if (error) throw new Error(error);
           const runners = this.buildReviewRunners({ guildId: repo.guild_id, repoId: repo.id, threadId: work.thread_id });
+          const reviewSha = await getHeadSha(work.path!);
           const result = await this.requestContext.run({ requestId: work.request_id!, signal }, () => runAdversarialReview({
             db: this.db, logger: this.logger, requestId: work.request_id!, threadId: work.thread_id!,
             repoFullName: repo.full_name, branchName: work.branch, worktreePath: work.path!, artifactRootPath: work.path!, baseRef: `origin/${work.integration_target.replace(/^origin\//, "")}`,
-            threadHistory: this.coordination?.store.list().filter(e => e.work_id === work.work_id).map(e => e.description).join("\n") ?? "",
+            threadHistory: context ? encodeSpec(context.spec) : "Review the registered branch against its integration target.",
+            signal,
+            assertSnapshot: async () => {
+              if (await getHeadSha(work.path!) !== reviewSha || await hasUncommittedChangesExcluding(work.path!,["docs/reviews/"]))
+                throw new Error("Workspace changed during review; completed stage cannot be reused as approval");
+            },
+            ...(context ? {
+              reviewContext: `Authoritative active task ${context.entryId}:\n${encodeSpec(context.spec)}\n${context.evidence}\nThe active requirements and acceptance criteria override inferred intent, historical conversation and peer comments. Do not add parent or sibling scope. Check real scoped defects; do not treat deliberately deferred features as blockers.`,
+              stageCache: {
+                get: (key: string) => this.coordination?.store.meta(`review-cache:${context.entryId}:${key}`) ?? null,
+                put: (key: string, value: string) => this.coordination?.store.setMeta(`review-cache:${context.entryId}:${key}`, value)
+              }
+            } : {}),
             ...runners, stageTimeoutMs: this.config.askExecutionTimeoutMs, reviewerTimeoutMs: this.config.reviewerTimeoutMs,
             totalTimeoutMs: this.config.askExecutionTimeoutMs * 2, reviewConcurrency: 1, maxConsensusRounds: this.getReviewRounds(repo.guild_id),
             ...(onProgress ? { onProgress } : {})
@@ -3589,14 +3604,15 @@ export class ActuariusBot {
       provider,
       ...(defaultModel ? { model: defaultModel } : {}),
       label: slotIndex !== undefined ? `${AI_PROVIDER_LABELS[provider]} (Slot ${slotIndex})` : AI_PROVIDER_LABELS[provider],
-      run: async ({ prompt, cwd, timeoutMs, model }) =>
+      run: async ({ prompt, cwd, timeoutMs, model, diagnostics }) =>
         this.runProviderText({
           provider,
           prompt,
           cwd,
           timeoutMs,
           ...(model ? { model } : {}),
-          env: reviewEnv
+          env: reviewEnv,
+          ...(diagnostics ? { diagnostics } : {})
         })
     });
 

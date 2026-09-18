@@ -243,3 +243,35 @@ describe("runCodexRequest — integration (real transport)", () => {
     });
   });
 });
+
+it("retains lease cancellation cause, session, stage and partial output",async()=>{
+    const {ExecutionStopError}=await import("../src/utils/executionStop.js");
+    const controller=new AbortController();
+    mockSpawn.mockReturnValueOnce(createMockChild({stdout:'{"sessionID":"session-lease","type":"text","part":{"text":"Review in progress"}}\n'}) as ReturnType<typeof spawn>);
+    await expect(runCodexRequest({prompt:"review",cwd:"/tmp",timeoutMs:10000,signal:controller.signal,
+        diagnostics:{workflow:"adversarial-review",stage:"reviewer:1:Codex"},
+        onActivity:()=>controller.abort(new ExecutionStopError("lease_loss","Authoritative lease expired"))},logger)).rejects.toMatchObject({
+            stopKind:"lease_loss",stopReason:"Authoritative lease expired",provider:"Codex",providerSessionId:"session-lease",
+            partialStdout:expect.stringContaining("Review in progress"),diagnostics:{stage:"reviewer:1:Codex"},
+            message:expect.stringContaining("Authoritative lease expired")
+        });
+});
+
+
+it("records provider quota errors without mistaking generated quota text for an interruption",async()=>{
+    mockSpawn.mockReturnValueOnce(createMockChild({stderr:"You've hit your usage limit. Try again later.",stdout:"partial review",exitCode:1}) as ReturnType<typeof spawn>);
+    await expect(runCodexRequest({prompt:"review",cwd:"/tmp",timeoutMs:10000,diagnostics:{stage:"reviewer"}},logger)).rejects.toMatchObject({
+        code:"FAILED",stopKind:"quota",partialStdout:"partial review",diagnostics:{stage:"reviewer"}
+    });
+    mockSpawn.mockReturnValueOnce(createMockChild({stderr:"Test process failed",stdout:'Added a test for "quota exceeded".',exitCode:1}) as ReturnType<typeof spawn>);
+    try {await runCodexRequest({prompt:"review",cwd:"/tmp",timeoutMs:10000},logger);throw new Error("Expected provider failure");}
+    catch(error){expect(error).toMatchObject({code:"FAILED"});expect(error).not.toHaveProperty("stopKind");}
+});
+it("preserves a clean-exit quota error envelope instead of returning it as review output",async()=>{
+    const {runClaudeRequest}=await import("../src/services/claudeExecutionService.js");
+    const envelope=JSON.stringify({type:"result",is_error:true,result:"You've hit your usage limit. Try again later.",sessionID:"limited-session"});
+    mockSpawn.mockReturnValueOnce(createMockChild({stdout:envelope,exitCode:0}) as ReturnType<typeof spawn>);
+    await expect(runClaudeRequest({prompt:"review",cwd:"/tmp",timeoutMs:10000,diagnostics:{stage:"summarizer"}},logger)).rejects.toMatchObject({
+        stopKind:"quota",provider:"Claude",providerSessionId:"limited-session",partialStdout:envelope,diagnostics:{stage:"summarizer"}
+    });
+});

@@ -128,7 +128,7 @@ async function runGit(args: string[], options?: { useCredentialHelper?: boolean 
 
 async function runGitWithOutput(
   args: string[],
-  options?: { cwd?: string; useCredentialHelper?: boolean; maxBuffer?: number }
+  options?: { cwd?: string; useCredentialHelper?: boolean; maxBuffer?: number; signal?: AbortSignal }
 ): Promise<{ stdout: string; stderr: string }> {
   try {
     const gitArgs = options?.useCredentialHelper
@@ -139,9 +139,11 @@ async function runGitWithOutput(
       cwd: options?.cwd ?? process.cwd(),
       env: getGitHubCommandEnvironment(),
       timeoutMs: 60_000,
-      maxBuffer: options?.maxBuffer ?? 4 * 1024 * 1024
+      maxBuffer: options?.maxBuffer ?? 4 * 1024 * 1024,
+      ...(options?.signal ? {signal: options.signal} : {})
     });
   } catch (error) {
+    if (options?.signal?.aborted) throw error;
     const spawnError = error as { message?: string; stdout?: string; stderr?: string; code?: string };
     const message = spawnError.message ?? "Git command failed.";
     const stderr = spawnError.stderr ?? "";
@@ -518,11 +520,13 @@ export async function getHeadSha(repoPath: string, ref: string = "HEAD"): Promis
   }
 }
 
-export async function pushBranch(worktreePath: string, branchName: string): Promise<void> {
+export async function pushBranch(worktreePath: string, branchName: string, signal?: AbortSignal): Promise<void> {
   try {
     await ensureGitHubCliAuthenticated();
-    await runGitWithOutput(["-C", worktreePath, "push", "-u", "origin", branchName], { useCredentialHelper: true });
+    signal?.throwIfAborted();
+    await runGitWithOutput(["-C", worktreePath, "push", "-u", "origin", branchName], { useCredentialHelper: true, ...(signal ? {signal} : {}) });
   } catch (error) {
+    if (signal?.aborted) throw error;
     if (error instanceof GitWorkspaceError) {
       throw error;
     }

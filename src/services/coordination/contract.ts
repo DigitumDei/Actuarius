@@ -11,7 +11,7 @@ export const workspaceSchema = z.object({
 }).strict();
 export const executionSchema = z.object({
     version: z.literal(1), executor: z.literal("actuarius"),
-    action: z.enum(["ask", "implement", "plan", "plan-oc", "review", "revise", "pr", "report", "workflow"]),
+    action: z.enum(["ask", "implement", "plan", "plan-oc", "review", "revise", "pr", "handoff", "report", "workflow"]),
     workspace: workspaceSchema.optional(),
     requirements: z.array(text).min(1).max(100),
     acceptance_criteria: z.array(text).min(1).max(100),
@@ -21,7 +21,7 @@ export const executionSchema = z.object({
 }).strict().superRefine((v, ctx) => {
     if (v.action === "workflow" && v.workspace)
         ctx.addIssue({ code: "custom", path: ["workspace"], message: "Workflow summaries do not allocate a repository workspace" });
-    if (v.action === "pr" && v.deliverable !== "draft_pr")
+    if ((v.action === "pr" || v.action === "handoff") && v.deliverable !== "draft_pr")
         ctx.addIssue({ code: "custom", path: ["deliverable"], message: "PR publication requires draft_pr delivery" });
     if (v.action !== "workflow" && !v.workspace)
         ctx.addIssue({ code: "custom", path: ["workspace"], message: "Repository work requires workspace.work_id" });
@@ -33,7 +33,7 @@ export const executionSchema = z.object({
 export type ExecutionSpec = z.infer<typeof executionSchema>;
 // Clarification may change intent, but never workspace identity or dependency gates.
 export const clarifiedBriefSchema = z.object({
-    action: z.enum(["ask", "implement", "plan", "plan-oc", "review", "revise", "pr", "report", "workflow"]),
+    action: z.enum(["ask", "implement", "plan", "plan-oc", "review", "revise", "pr", "handoff", "report", "workflow"]),
     requirements: z.array(text).min(1).max(100),
     acceptance_criteria: z.array(text).min(1).max(100),
     deliverable: z.enum(["workspace_changes", "report", "draft_pr"])

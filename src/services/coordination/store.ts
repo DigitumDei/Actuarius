@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { randomUUID } from "node:crypto";
 import type { ExecutionSpec, PalaceTask } from "./contract.js";
+import type { DraftPublication } from "./publication.js";
 export interface Work {
     work_id: string;
     repository: string;
@@ -13,6 +14,7 @@ export interface Work {
     thread_id: string | null;
     request_id: number | null;
     closed: boolean;
+    publication?: DraftPublication;
 }
 export interface Entry {
     id: string;
@@ -101,6 +103,10 @@ export class CoordinationStore {
                 this.db.prepare("INSERT OR IGNORE INTO coordination_archive VALUES(?,?,?,?)").run(e.id,e.task?.task_id ?? null,e.event_id,gzipSync(JSON.stringify(e)));
                 if(this.meta(`attachments:${e.id}`)) this.enqueue({key:`cache-cleanup:${e.id}`,kind:"cache-cleanup",entry:e.id,payload:{}});
                 this.db.prepare("DELETE FROM coordination_local_entries WHERE id=?").run(e.id);
+                const cachePrefix=`review-cache:${e.id}:`;
+                this.db.prepare("DELETE FROM coordination_local_meta WHERE substr(id,1,?)=?").run(cachePrefix.length,cachePrefix);
+                this.deleteMeta(`last-stop:${e.id}`);
+                this.deleteMeta(`handoff-awaiting:${e.id}`);
                 const sentPrefix=`sent:${e.id}:`;
                 this.db.prepare("DELETE FROM coordination_local_meta WHERE substr(id,1,?)=?").run(sentPrefix.length,sentPrefix);
                 this.db.exec("COMMIT");
