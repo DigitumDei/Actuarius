@@ -11,7 +11,7 @@ import { CoordinationBridge, type BridgeRunners } from "../src/discord/coordinat
 import { git, prepareValidationWorkspace, resolveRef } from "../src/services/coordination/workspace.js";
 import { spawnCollect } from "../src/utils/spawnCollect.js";
 import { publishDraft, readCi, refreshDraftHead, reconcileMergedDraft } from "../src/services/coordination/publication.js";
-import { getHeadSha } from "../src/services/gitWorkspaceService.js";
+import { autoCommitAll, getHeadSha } from "../src/services/gitWorkspaceService.js";
 import { MAX_TASK_CONTEXT_BYTES } from "../src/services/coordination/context.js";
 import { executionSchema, fingerprint } from "../src/services/coordination/contract.js";
 
@@ -361,4 +361,49 @@ it("blocks the next slice before implementation when predecessor integration nee
   await expect(f.internals.execute(f.entry,f.work,new AbortController().signal)).rejects.toThrow("Divergent retained work");
   expect(f.text).not.toHaveBeenCalled();expect(publishDraft).not.toHaveBeenCalled();
   expect(f.work.publication?.entryId).toBe(predecessor.id);
+});
+
+
+it.each([true, false])("revise bypasses planning and retains acceptance verification (iterative=%s)", async iterative => {
+  const f = fixture();
+  f.entry.spec = executionSchema.parse({...f.entry.spec!, action:"revise", iterative,
+    requirements:["Preserve existing OAuth behavior", "Fix the failing equality assertion"],
+    acceptance_criteria:["Session persistence regression passes"]});
+  f.entry.action = "revise";
+  f.bridge.store.setMeta(`clarification:${f.entry.id}`, "Fix E0369 in the session test");
+  const result = await f.internals.execute(f.entry, f.work, new AbortController().signal);
+  expect(result.next).toBe("verify-result");
+  expect(f.text).toHaveBeenCalledTimes(1);
+  expect(f.text).toHaveBeenCalledWith(expect.objectContaining({role:"implementation", prompt:expect.stringContaining("Current revision findings:\nFix E0369")}));
+  const prompt = vi.mocked(f.text).mock.calls[0]![0] as unknown as {prompt:string};
+  expect(prompt.prompt).toContain("Do not generate a new implementation plan");
+  expect(prompt.prompt).toContain("Session persistence regression passes");
+  expect(autoCommitAll).toHaveBeenCalled();
+  f.entry.action = result.next!; f.entry.checkpoint = result.checkpoint!;
+  f.text.mockResolvedValueOnce("Missing regression coverage");
+  await expect(f.internals.execute(f.entry, f.work, new AbortController().signal)).rejects.toThrow("Acceptance verification requires input");
+});
+
+it("report-only revise stays read-only without planning or publication", async () => {
+  const f = fixture();
+  f.entry.spec = executionSchema.parse({...f.entry.spec!, action:"revise", deliverable:"report"});
+  f.entry.action = "revise";
+  const result = await f.internals.execute(f.entry, f.work, new AbortController().signal);
+  expect(result.next).toBeUndefined();
+  expect(f.text).toHaveBeenCalledWith(expect.objectContaining({prompt:expect.stringContaining("Inspect and report only; do not edit files.")}));
+  expect(autoCommitAll).not.toHaveBeenCalled();
+  expect(publishDraft).not.toHaveBeenCalled();
+});
+
+
+it("draft revision still publishes through CI before final review", async () => {
+  const f = fixture();
+  f.entry.spec = executionSchema.parse({...f.entry.spec!, action:"revise", deliverable:"draft_pr", iterative:true});
+  f.entry.action = "revise";
+  const result = await f.internals.execute(f.entry, f.work, new AbortController().signal);
+  expect(result.next).toBe("draft-ci");
+  expect(JSON.parse(result.checkpoint!)).toMatchObject({resumeAction:"deliver", attempts:0});
+  expect(f.text).toHaveBeenCalledWith(expect.objectContaining({role:"implementation"}));
+  expect(publishDraft).toHaveBeenCalledOnce();
+  expect(f.review).not.toHaveBeenCalled();
 });

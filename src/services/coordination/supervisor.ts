@@ -25,7 +25,7 @@ export interface CoordinationHooks {
 }
 const terminal = new Set(["completed", "cancelled", "failed", "expired"]);
 const actionLabels: Record<string, string> = {
-    revise: "revision planning",
+    revise: "focused revision",
     implement: "implementation",
     deliver: "adversarial review and draft PR delivery",
     "publish-draft": "draft checkpoint publication",
