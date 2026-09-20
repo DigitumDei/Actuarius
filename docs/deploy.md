@@ -336,3 +336,15 @@ fields fail closed.
 
 After Terraform changes: run `terraform apply` to push metadata / create containers.
 After `redeploy.sh` changes: the redeploy script must be re-fetched (reboot or manual `curl`).
+
+## Pinned GitHub CLI
+
+The image installs GitHub CLI 2.101.0 from upstream, with separate SHA-256 pins for
+Linux amd64 and arm64 in `docker/install-github-cli.sh`. Do not replace it with the
+Debian `gh` package: 2.46.0 queries the retired Projects classic `projectCards` field
+and lacks `gh pr checks --json`. The image build verifies that JSON checks support
+is present. Update the version and both archive checksums together.
+
+After deployment, verify `gh --version` and authenticated PR queries through the
+bot's configured GitHub environment. A bare `docker exec gh auth status` may not
+use the bot's `GH_CONFIG_DIR` and is not sufficient to diagnose its authentication.
