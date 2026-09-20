@@ -620,7 +620,7 @@ export class CoordinationBridge {
             this.store.setMeta(`output-sha:${e.id}`, review.sha);
             return {result:`${publication.url}\n${ciContext()}\n${review.text}`};
         }
-        const planning = ["plan", "plan-oc", "revise"].includes(action);
+        const planning = ["plan", "plan-oc"].includes(action);
         let attachmentText = "";
         const cachedAttachments = this.store.meta(`attachments:${e.id}`);
         if (cachedAttachments) {
@@ -636,6 +636,16 @@ export class CoordinationBridge {
         const history = this.store.list().filter(t => t.work_id === work.work_id && t.id !== e.id && t.result).slice(-8).map(t => `${t.task?.title}: ${t.result}`).join("\n").slice(-24000);
         const readOnly = spec.deliverable === "report" || planning;
         let prompt = `${readOnly ? "Produce a report/plan only; do not modify repository files." : "Implement the requested change on the existing branch. Do not merge, release, push, or open a PR; the supervisor handles delivery."}\nDo not spawn other LLMs or subagents: this host supports one LLM at a time.\nWork ${work.work_id}; branch ${work.branch}; integration target ${work.integration_target}.\nRequirements:\n${spec.requirements.join("\n")}\nAcceptance criteria:\n${spec.acceptance_criteria.join("\n")}\nPrior work:\n${history}\n${e.checkpoint ?? ""}${attachmentText}`;
+        if (action === "revise") {
+            const findings = this.store.meta(`clarification:${e.id}`) ?? spec.requirements.at(-1)!;
+            prompt = `Focused revision of existing work. ${readOnly ? "Inspect and report only; do not edit files." : "Apply the smallest complete repair for the supplied findings on the retained branch."}
+Do not generate a new implementation plan or split this revision into additional tasks. Preserve completed work and existing scope; requirements and acceptance criteria are constraints, not a request to reimplement them. Fix the reported defect and directly affected behavior, with relevant regression coverage. Avoid unrelated refactoring, cosmetic changes, and tests that merely restate configuration. If the findings require broader scope or cannot be reproduced, report the concrete blocker instead of inventing work.
+Check current code and actual failure evidence before editing; old recovery notes may describe defects already fixed. Report each finding's disposition, changed behavior, validation evidence, and any remaining blocker. Do not claim completion from a review job alone.
+Current revision findings:
+${findings}
+
+${prompt}`;
+        }
         if (planning)
             prompt = buildPlanPrompt({ repoFullName: repo.full_name, requestPrompt: prompt, iterative: spec.iterative !== false, maxTasks: 20 });
         if (spec.action === "ask") prompt = `Answer the user's question. Do not change files unless the user explicitly requests changes. Do not spawn other LLMs, push, merge or release.\n${spec.requirements.join("\n")}\nWork context:\n${this.workContext(e)}\n${history}${attachmentText}`;
