@@ -10,13 +10,15 @@ RUN apt-get update \
     dbus-x11 \
     git \
     gnome-keyring \
-    gh \
     ca-certificates \
     pkg-config \
     python3 \
     sudo \
     util-linux \
   && rm -rf /var/lib/apt/lists/*
+
+COPY docker/install-github-cli.sh /tmp/install-github-cli.sh
+RUN sh /tmp/install-github-cli.sh && rm /tmp/install-github-cli.sh
 
 FROM base AS deps
 
