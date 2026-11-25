@@ -1,10 +1,10 @@
 #!/bin/sh
 # Install the pinned upstream GitHub CLI; distro packages may query retired APIs.
 set -eu
-version=2.101.0
+version=2.105.0
 case "$(dpkg --print-architecture)" in
-  amd64) arch=amd64; checksum=9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8 ;;
-  arm64) arch=arm64; checksum=b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f ;;
+  amd64) arch=amd64; checksum=79e7ab5db738c48777b696e374f8b428f0647debfb424f44d2f426370407fe2f ;;
+  arm64) arch=arm64; checksum=b1278c75107423d818f1937fd92cafc9e5e9b606631568f68d7fb816f5885a02 ;;
   *) echo 'Unsupported GitHub CLI architecture' >&2; exit 1 ;;
 esac
 tmp=$(mktemp -d)

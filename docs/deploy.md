@@ -339,7 +339,7 @@ After `redeploy.sh` changes: the redeploy script must be re-fetched (reboot or m
 
 ## Pinned GitHub CLI
 
-The image installs GitHub CLI 2.101.0 from upstream, with separate SHA-256 pins for
+The image installs GitHub CLI 2.105.0 from upstream, with separate SHA-256 pins for
 Linux amd64 and arm64 in `docker/install-github-cli.sh`. Do not replace it with the
 Debian `gh` package: 2.46.0 queries the retired Projects classic `projectCards` field
 and lacks `gh pr checks --json`. The image build verifies that JSON checks support
