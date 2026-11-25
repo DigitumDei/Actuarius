@@ -38,12 +38,13 @@ FROM base AS runtime
 
 WORKDIR /app
 
-# Pinned AgentPalace 0.1.48: one executable serves HTTP MCP and federation REST.
+# Pinned AgentPalace v0.2.23: one executable serves HTTP MCP and federation REST.
 RUN curl -fsSL \
-      https://github.com/DigitumDei/agentpalace/releases/download/v0.1.48-nightly.cbb440a5660e2b56a831cf3a99dff46112a1228c/agentpalace-linux-x86_64 \
+      https://github.com/DigitumDei/agentpalace/releases/download/v0.2.23/agentpalace-linux-x86_64 \
       -o /usr/local/bin/agentpalace \
-    && echo "ccb13eb4ff05eae6fb0bbada5b53e819092163720de0f6f8d4a11dd63ad9182a  /usr/local/bin/agentpalace" | sha256sum -c - \
-    && chmod 0755 /usr/local/bin/agentpalace
+    && echo "ace2f2a408eeb1070493236e1e442fa1cc56792c03bdfe70faccc45c7e91bbf9  /usr/local/bin/agentpalace" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/agentpalace \
+    && /usr/local/bin/agentpalace --version
 
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/data/app.db
